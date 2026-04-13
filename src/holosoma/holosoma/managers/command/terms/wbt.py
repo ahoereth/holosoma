@@ -632,6 +632,12 @@ class MotionCommand(CommandTermBase):
         self._body_indexes_in_motion = self.motion._body_indexes
         self._joint_indexes_in_motion = self.motion._joint_indexes
 
+        # Cache default pose roll/pitch from config (constant, avoids per-reset tensor creation)
+        if self.motion_cfg.default_pose_transition_strategy == "learned":
+            init_state = self._env.robot_config.init_state
+            init_quat = torch.tensor(init_state.rot, dtype=torch.float32, device=self.device).unsqueeze(0)
+            self._default_init_roll, self._default_init_pitch, _ = get_euler_xyz(init_quat, w_last=True)
+
         # Maybe prepend interpolated transition from default pose
         self._maybe_add_default_pose_transition(prepend=True)
 
@@ -728,6 +734,30 @@ class MotionCommand(CommandTermBase):
 
         dof_pos = self.motion.get_joint_pos(reset_ts)
         dof_vel = self.motion.get_joint_vel(reset_ts)
+
+        # "learned" strategy: for envs starting at frame 0, init robot in default standing
+        # pose. Motion command stays at frame 0 — policy learns the transition autonomously.
+        if self.motion_cfg.default_pose_transition_strategy == "learned":
+            at_start_mask = self.time_steps[env_ids] == start_idx
+            if torch.any(at_start_mask):
+                n_start = int(at_start_mask.sum().item())
+                # Default joint angles
+                dof_pos[at_start_mask] = self._env.default_dof_pos_base.expand(n_start, -1)
+                dof_vel[at_start_mask] = 0.0
+                # Default root: keep motion x/y + env_origin, use config z/roll/pitch
+                init_state = self._env.robot_config.init_state
+                root_pos[at_start_mask, 2] = env_origins[at_start_mask, 2] + init_state.pos[2]
+                root_lin_vel[at_start_mask] = 0.0
+                root_ang_vel[at_start_mask] = 0.0
+                # Root rotation: keep motion yaw, replace roll/pitch with config defaults
+                init_roll, init_pitch = self._default_init_roll, self._default_init_pitch
+                _, _, motion_yaw = get_euler_xyz(root_rot[at_start_mask], w_last=True)
+                default_rot = quat_from_euler_xyz(
+                    init_roll.expand(n_start),
+                    init_pitch.expand(n_start),
+                    motion_yaw,
+                )
+                root_rot[at_start_mask] = default_rot
 
         # 2. Adding noise
         # 2.1 prepare the noise scale
@@ -1122,7 +1152,13 @@ class MotionCommand(CommandTermBase):
     #########################################################################################
     def _maybe_add_default_pose_transition(self, *, prepend: bool) -> None:
         """Shared path for optionally inserting default-pose interpolation before/after the clip."""
-        enabled = self.motion_cfg.enable_default_pose_prepend if prepend else self.motion_cfg.enable_default_pose_append
+        if prepend:
+            enabled = (
+                self.motion_cfg.enable_default_pose_prepend
+                or self.motion_cfg.default_pose_transition_strategy == "interpolation"
+            )
+        else:
+            enabled = self.motion_cfg.enable_default_pose_append
         if not enabled:
             return
 

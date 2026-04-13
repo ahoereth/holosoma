@@ -117,13 +117,25 @@ class MotionConfig:
     This makes the robot practice holding the initial pose. Only applies when episode starts at timestep 0.
     Sampled independently each policy step; expected wait is roughly 1 / (1 - p) steps before unfreezing."""
 
+    default_pose_transition_strategy: str = "none"
+    """Strategy for the default-to-motion-start transition at the beginning of each clip:
+      - 'none': no special handling (default, backward compatible).
+      - 'interpolation': prepend interpolated frames from default standing pose to motion
+        start. The motion data is physically augmented with smooth transition frames.
+        Uses default_pose_prepend_duration_s for timing.
+      - 'learned': at episode resets starting at frame 0, the robot is initialized in the
+        default standing pose but the motion command starts at frame 0 of the original clip.
+        The policy must learn the transition autonomously without an explicit trajectory.
+    When set to 'interpolation', enable_default_pose_prepend is implicitly enabled."""
+
     enable_default_pose_prepend: bool = False
     """If True, pre-append interpolated frames from default pose to the motion's first pose.
-    This provides a smooth transition trajectory that the policy can track."""
+    This provides a smooth transition trajectory that the policy can track.
+    Also enabled implicitly when default_pose_transition_strategy='interpolation'."""
 
     default_pose_prepend_duration_s: float = 2.0
     """Duration in seconds of the pre-appended interpolation phase.
-    Only used if enable_default_pose_prepend is True."""
+    Only used if enable_default_pose_prepend is True or strategy is 'interpolation'."""
 
     enable_default_pose_append: bool = False
     """If True, post-append interpolated frames from the motion's last pose back to default pose.
