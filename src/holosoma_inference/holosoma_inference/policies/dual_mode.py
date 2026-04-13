@@ -13,18 +13,26 @@ from holosoma_inference.config.config_types.inference import InferenceConfig
 def _select_policy_class(config: InferenceConfig):
     """Determine policy class based on observation config and robot type.
 
-    Checks entry point groups ``holosoma.policies.locomotion`` and
-    ``holosoma.policies.wbt`` (keyed by ``robot_type``) so extensions can
-    register custom policy classes without monkey-patching.
+    Checks entry point groups ``holosoma.policies.by_type`` (keyed by
+    ``task.policy_type``), ``holosoma.policies.wbt`` and
+    ``holosoma.policies.locomotion`` (keyed by ``robot_type``) so extensions
+    can register custom policy classes without monkey-patching.
     """
     from holosoma_inference.compat import entry_points
     from holosoma_inference.policies.locomotion import LocomotionPolicy
     from holosoma_inference.policies.wbt import WholeBodyTrackingPolicy
 
+    # Explicit policy_type takes priority (e.g. WBTTaskConfig.policy_type)
+    policy_type = getattr(config.task, "policy_type", None)
+    if policy_type:
+        for ep in entry_points(group="holosoma.policies.by_type"):
+            if ep.name == policy_type:
+                return ep.load()
+
     robot_type = config.robot.robot_type
     actor_obs = config.observation.obs_dict.get("actor_obs", [])
 
-    if "motion_command" in actor_obs:
+    if "motion_command" in actor_obs or "command" in actor_obs:
         for ep in entry_points(group="holosoma.policies.wbt"):
             if ep.name == robot_type:
                 return ep.load()
