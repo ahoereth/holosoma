@@ -74,12 +74,6 @@ class BasePolicy:
         self.default_dof_angles = np.array(self.robot_config.default_dof_angles)
         self.num_upper_dofs = robot_config.num_upper_body_joints
 
-        # Initialize motor limits (only position limits are used)
-        q_max = self.robot_config.joint_pos_max
-        q_min = self.robot_config.joint_pos_min
-        self.q_max_arr: np.array | None = np.array(q_max) if q_max is not None else None
-        self.q_min_arr: np.array | None = np.array(q_min) if q_min is not None else None
-
         # Per-robot joint offsets (action-space calibration, does not affect observations)
         offsets_deg = robot_config.joint_offsets_deg
         self.joint_offsets = np.deg2rad(offsets_deg) if offsets_deg is not None else np.zeros(self.num_dofs)
