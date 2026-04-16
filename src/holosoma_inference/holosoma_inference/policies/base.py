@@ -654,6 +654,7 @@ class BasePolicy:
 
         kp_override = None
         kd_override = None
+        apply_offsets = True
 
         # Stage 1: Read State
         with self.latency_tracker.measure("read_state"):
@@ -673,6 +674,7 @@ class BasePolicy:
                     kd_override = manual_cmd.get("kd")
                 else:
                     q_target = robot_state_data[:, 7 : 7 + self.num_dofs]
+                    apply_offsets = False
             else:
                 # Prepare for inference - any preprocessing before RL inference
                 pass
@@ -695,7 +697,9 @@ class BasePolicy:
                 q_target = scaled_policy_action + self.default_dof_angles
 
             # Prepare command (reuse pre-allocated arrays)
-            self.cmd_q[:] = q_target[0] + self.joint_offsets
+            # Only apply calibration offsets when commanding an actual target,
+            # not when echoing current position (which would drift every cycle).
+            self.cmd_q[:] = q_target[0] + self.joint_offsets if apply_offsets else q_target[0]
 
         # Stage 5: Action Pub
         with self.latency_tracker.measure("action_pub"):
