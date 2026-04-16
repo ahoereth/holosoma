@@ -639,8 +639,13 @@ class BasePolicy:
         """Get initialization target joint positions."""
         dof_pos = robot_state_data[:, 7 : 7 + self.num_dofs]
         if self.get_ready_state:
-            # Interpolate from current dof_pos to default angles
-            q_target = dof_pos + (self.default_dof_angles - dof_pos) * (self.init_count / 500)
+            # Snapshot start position on the first cycle so interpolation
+            # uses two fixed endpoints instead of re-reading each tick
+            # (re-reading would compound joint_offsets every cycle).
+            if self._init_start_pos is None:
+                self._init_start_pos = dof_pos.copy()
+            alpha = self.init_count / 500
+            q_target = self._init_start_pos + (self.default_dof_angles - self._init_start_pos) * alpha
             self.init_count += 1
             return q_target
         return dof_pos
@@ -803,6 +808,7 @@ class BasePolicy:
         """Handle initialization state."""
         self.get_ready_state = True
         self.init_count = 0
+        self._init_start_pos = None  # snapshot taken on first cycle
         self.logger.info("Setting to init state")
         if hasattr(self.interface, "no_action"):
             self.interface.no_action = 0
