@@ -323,11 +323,11 @@ class IsaacSim(BaseSimulator):
             # Add a height scanner to the torso to detect the height of the terrain mesh
             # TODO: Scene USD files need ground mapping
             height_scanner_config = RayCasterCfg(
+                update_period=0.02,
                 prim_path=f"/World/envs/env_.*/Robot/{self.robot_config.body_names[0]}",
-                offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.0)),
+                offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
                 attach_yaw_only=True,
-                # Apply a grid pattern that is smaller than the resolution to only return one height value.
-                pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[0.05, 0.05]),
+                pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.6]),
                 debug_vis=False,
                 mesh_prim_paths=[terrain_prim_path],
             )
