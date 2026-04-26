@@ -95,14 +95,15 @@ g1_29dof_wbt_fast_sac = ExperimentConfig(
             num_learning_iterations=400000,
             v_max=20.0,
             v_min=-20.0,
-            gamma=0.99,  # For motion tracking, high gamma + high num_steps is better
+            gamma=0.99,
             num_steps=1,
             num_updates=4,
-            num_atoms=501,
+            num_atoms=251,
             policy_frequency=2,
-            target_entropy_ratio=0.5,
+            target_entropy_ratio=1.0,
             tau=0.05,
             use_symmetry=False,
+            max_grad_norm=1.0,
         ),
     ),
     simulator=replace(
@@ -119,7 +120,7 @@ g1_29dof_wbt_fast_sac = ExperimentConfig(
         robot.g1_29dof,
         control=replace(
             robot.g1_29dof.control,
-            action_scale=0.25,
+            action_scale=1.0,
             action_scales_by_effort_limit_over_p_gain=True,
         ),
         asset=replace(robot.g1_29dof.asset, enable_self_collisions=True),

@@ -37,3 +37,4 @@ __pycache__
 .logs/
 holosoma_config.yaml
 wandb-metadata.json
+wandb/
