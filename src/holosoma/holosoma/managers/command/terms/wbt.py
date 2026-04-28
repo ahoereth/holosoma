@@ -140,6 +140,22 @@ class MotionLoader:
             self._body_lin_vel_w = torch.tensor(body_lin_vel_w_raw, dtype=torch.float32, device=device)
             self._body_ang_vel_w = torch.tensor(body_ang_vel_w_raw, dtype=torch.float32, device=device)
 
+            # Load motion_ends / motion_idxs for multi-clip files (from combine_motions).
+            # Ref consumes these in step() to resample envs at each source-clip boundary;
+            # without them, the concatenated motion is treated as one giant clip and
+            # the target pose jumps discontinuously across source-clip borders,
+            # leaving the robot unable to track and terminating early.
+            num_frames = self._joint_pos.shape[0]
+            if "motion_ends" in data.files:
+                self.motion_ends = torch.tensor(data["motion_ends"], dtype=torch.bool, device=device)
+            else:
+                self.motion_ends = torch.zeros(num_frames, dtype=torch.bool, device=device)
+                self.motion_ends[-1] = True
+            if "motion_idxs" in data.files:
+                self.motion_idxs = torch.tensor(data["motion_idxs"], dtype=torch.long, device=device)
+            else:
+                self.motion_idxs = torch.zeros(num_frames, dtype=torch.long, device=device)
+
             # add object pos and quat
             self.has_object = "object_pos_w" in data
             if self.has_object:
@@ -325,6 +341,15 @@ class MultiMotionLoader:
         self._body_quat_w = torch.cat([ld._body_quat_w for ld in loaders], dim=0)
         self._body_lin_vel_w = torch.cat([ld._body_lin_vel_w for ld in loaders], dim=0)
         self._body_ang_vel_w = torch.cat([ld._body_ang_vel_w for ld in loaders], dim=0)
+
+        # Per-frame clip-end markers and per-frame source-clip index, matching
+        # the single-file layout used by ref. Consumed by step() for clip-
+        # boundary resampling (resample_on_motion_end=True).
+        self.motion_ends = torch.cat([ld.motion_ends for ld in loaders], dim=0)
+        self.motion_idxs = torch.cat(
+            [torch.full((ld.time_step_total,), i, dtype=torch.long, device=device) for i, ld in enumerate(loaders)],
+            dim=0,
+        )
 
         # Use indexes from first loader (all loaders share the same robot)
         self._joint_indexes = loaders[0]._joint_indexes
@@ -537,13 +562,14 @@ class AdaptiveTimestepsSampler:
 
     @property
     def sampling_probabilities(self) -> torch.Tensor:
-        sampling_probabilities = self.bin_failed_count + self.adaptive_uniform_ratio / float(self.num_bins)
+        sampling_probabilities = self.bin_failed_count + 1e-6
         sampling_probabilities = torch.nn.functional.pad(
             sampling_probabilities.unsqueeze(0).unsqueeze(0),
             (0, self.adaptive_kernel_size - 1),  # Non-causal kernel
             mode="replicate",
         )
         sampling_probabilities = torch.nn.functional.conv1d(sampling_probabilities, self.kernel.view(1, 1, -1)).view(-1)
+        sampling_probabilities += 0.01  # Uniform floor post-convolution (matches FAR-Holosoma-terrain)
         return sampling_probabilities / sampling_probabilities.sum()
 
     def sample(self, num_samples: int) -> torch.Tensor:
@@ -590,6 +616,9 @@ class MotionCommand(CommandTermBase):
         else:
             self.motion_cfg = MotionConfig(**cfg.params["motion_config"])
         self.init_pose_cfg: NoiseToInitialPoseConfig = self.motion_cfg.noise_to_initial_pose
+        # Ref semantic: when False, reset root-velocity noise falls back to push
+        # randomizer max_push_vel. When True, use init_pose_cfg.root_lin/ang_vel.
+        self.use_configured_root_velocity_noise = bool(cfg.params.get("use_configured_root_velocity_noise", False))
 
     def setup(self) -> None:
         self.num_envs = self._env.num_envs
@@ -665,7 +694,13 @@ class MotionCommand(CommandTermBase):
         # 4. get the adaptive timesteps sampler
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler = AdaptiveTimestepsSampler(
-                self.motion.time_step_total, self.device, int(1 / (self._env.dt))
+                self.motion.time_step_total,
+                self.device,
+                int(1 / (self._env.dt)),
+                adaptive_kernel_size=self.motion_cfg.adaptive_kernel_size,
+                adaptive_lambda=self.motion_cfg.adaptive_lambda,
+                adaptive_uniform_ratio=self.motion_cfg.adaptive_uniform_ratio,
+                adaptive_alpha=self.motion_cfg.adaptive_alpha,
             )
 
         # 5. metrics
@@ -776,20 +811,33 @@ class MotionCommand(CommandTermBase):
             )
             * self.init_pose_cfg.overall_noise_scale
         )  # (3,)
-        root_vel_noise = (
-            torch.tensor(
-                self.init_pose_cfg.root_lin_vel,
-                device=self.device,
-            )
-            * self.init_pose_cfg.overall_noise_scale
-        )  # (3,)
-        root_ang_vel_noise_rpy = (
-            torch.tensor(
-                self.init_pose_cfg.root_ang_vel,
-                device=self.device,
-            )
-            * self.init_pose_cfg.overall_noise_scale
-        )  # (3,)
+        if self.use_configured_root_velocity_noise:
+            root_vel_noise = (
+                torch.tensor(
+                    self.init_pose_cfg.root_lin_vel,
+                    device=self.device,
+                )
+                * self.init_pose_cfg.overall_noise_scale
+            )  # (3,)
+            root_ang_vel_noise_rpy = (
+                torch.tensor(
+                    self.init_pose_cfg.root_ang_vel,
+                    device=self.device,
+                )
+                * self.init_pose_cfg.overall_noise_scale
+            )  # (3,)
+        else:
+            # Reuse push randomizer velocity limits for reset-state velocity noise
+            # (matches FAR-Holosoma-terrain). Falls back to zero when the push
+            # randomizer is disabled.
+            push_state = self._env.randomization_manager.get_state("push_randomizer_state")
+            _push_vel = getattr(push_state, "max_push_vel", None) if push_state is not None else None
+            if _push_vel is None:
+                max_push_vel = torch.zeros(6, device=self.device)
+            else:
+                max_push_vel = torch.abs(_push_vel.to(self.device))
+            root_vel_noise = max_push_vel[:3]
+            root_ang_vel_noise_rpy = max_push_vel[3:6]
 
         # 2.2 Adding noise to dof_pos, root_pos, root_vel, root_ang_vel, root_rot
         # 1.2.1 dof_pos
@@ -869,11 +917,21 @@ class MotionCommand(CommandTermBase):
 
         self.time_steps += advance_mask.long()
 
-        # BeyondMimic-style behavior: when the clip ends, resample motion and
+        # BeyondMimic-style behavior: when any source clip ends (boundary
+        # between concatenated clips, or end of the NPZ), resample motion and
         # reset robot/object state without terminating the whole episode.
-        per_motion_end = self.motion.motion_end_idx[self.motion_ids]
-        ended_env_ids = torch.where(self.time_steps >= per_motion_end)[0]
+        # Uses per-frame motion_ends bool tensor (matches ref) so source-clip
+        # boundaries inside a combined NPZ are detected, not just NPZ end.
+        self.motion_end_reset.zero_()
+        if self.motion_cfg.resample_on_motion_end:
+            clamped = self.time_steps.clamp(0, self.motion.time_step_total - 1)
+            at_end = self.motion.motion_ends[clamped]
+            ended_env_ids = torch.where(at_end)[0]
+        else:
+            per_motion_end = self.motion.motion_end_idx[self.motion_ids]
+            ended_env_ids = torch.where(self.time_steps >= per_motion_end)[0]
         if ended_env_ids.numel() > 0:
+            self.motion_end_reset[ended_env_ids] = True
             self.reset(ended_env_ids)
             # Flush the mutated root/dof state into the simulator so that
             # rigid-body positions are up-to-date for downstream consumers
@@ -900,21 +958,20 @@ class MotionCommand(CommandTermBase):
         # (since kinematic forward has not been applied yet).
         # Therefore, using robot_ref_pos_w and robot_ref_quat_w as reference body poses is not resetted correctly.
 
-        # Solution:
+        # Solution (matches FAR-Holosoma-terrain):
         # ------------------------------------------------------------
-        # if episode_length_buf == 0, use robot_root_pos_w and robot_root_quat_w as reference body.
-        # else, use configured reference body as reference body.
-        use_root = (self._env.episode_length_buf == 0).unsqueeze(1).float()
-
-        ref_pos_w = self.root_pos_w * use_root + self.ref_pos_w * (1 - use_root)
-        ref_quat_w = self.root_quat_w * use_root + self.ref_quat_w * (1 - use_root)
+        # if episode_length_buf == 0 OR motion just wrapped (motion_end_reset),
+        # use robot_root on the ROBOT side only. Motion side always uses
+        # ref_pos_w/ref_quat_w so tracking targets stay on the configured
+        # reference body (torso_link), not the motion pelvis.
+        use_root = ((self._env.episode_length_buf == 0) | self.motion_end_reset).unsqueeze(1).float()
         robot_ref_pos_w = self.robot_root_pos_w * use_root + self.robot_ref_pos_w * (1 - use_root)
         robot_ref_quat_w = self.robot_root_quat_w * use_root + self.robot_ref_quat_w * (1 - use_root)
 
         ## 1.1 expand to match the number of body parts (no memory copy, unlike repeat)
         _nb = len(self.motion_cfg.body_names_to_track)  # type: ignore[arg-type]
-        ref_pos_w_repeat = ref_pos_w[:, None, :].expand(-1, _nb, -1)
-        ref_quat_w_repeat = ref_quat_w[:, None, :].expand(-1, _nb, -1)
+        ref_pos_w_repeat = self.ref_pos_w[:, None, :].expand(-1, _nb, -1)
+        ref_quat_w_repeat = self.ref_quat_w[:, None, :].expand(-1, _nb, -1)
         robot_ref_pos_w_repeat = robot_ref_pos_w[:, None, :].expand(-1, _nb, -1)
         robot_ref_quat_w_repeat = robot_ref_quat_w[:, None, :].expand(-1, _nb, -1)
 
@@ -1106,6 +1163,11 @@ class MotionCommand(CommandTermBase):
             self.num_envs, len(self.motion_cfg.body_names_to_track), 4, device=self.device
         )  # type: ignore[arg-type]
         self.body_quat_relative_w[:, :, 0] = 1.0
+
+        # Per-env flag signalling that a motion clip just ended and the env was resampled.
+        # Consumed by _update_body_pos_relative_w to fall back on robot_root on the
+        # resample step, since body tensors lag one frame after teleport.
+        self.motion_end_reset = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler.init_buffers()

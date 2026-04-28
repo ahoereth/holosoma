@@ -145,5 +145,23 @@ class MotionConfig:
     """Duration in seconds of the post-appended interpolation phase.
     Only used if enable_default_pose_append is True."""
 
+    resample_on_motion_end: bool = True
+    """When True, resample a new motion clip when the current one ends instead of
+    relying on episode termination. The episode continues with the new clip.
+    Matches FAR-Holosoma-terrain default (True)."""
+
+    # adaptive sampling parameters (ported from FAR-Holosoma-terrain)
+    adaptive_kernel_size: int = 1
+    """Kernel size for smoothing failure bin counts in adaptive sampling."""
+
+    adaptive_lambda: float = 0.8
+    """Exponential decay factor for the non-causal smoothing kernel."""
+
+    adaptive_alpha: float = 0.001
+    """EMA coefficient used when accumulating per-bin failure counts."""
+
+    adaptive_uniform_ratio: float = 0.1
+    """Fraction of uniform exploration mixed into the adaptive sampling distribution."""
+
     # noise related
     noise_to_initial_pose: NoiseToInitialPoseConfig = field(default_factory=NoiseToInitialPoseConfig)

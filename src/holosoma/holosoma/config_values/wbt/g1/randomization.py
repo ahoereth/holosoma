@@ -230,6 +230,7 @@ g1_29dof_wbt_randomization_aggressive = RandomizationManagerCfg(
 )
 
 __all__ = [
+    "base_step_terms",
     "g1_29dof_wbt_randomization",
     "g1_29dof_wbt_randomization_aggressive",
     "g1_29dof_wbt_randomization_ee_mass",

@@ -12,6 +12,47 @@ if TYPE_CHECKING:
     from holosoma.config_types.action import ActionTermCfg
 
 
+class JointPositionTargetActionTerm(ActionTermBase):
+    """Action term that matches IsaacLab implicit joint-position targets.
+
+    Ported verbatim from FAR-Holosoma-terrain. Raw actions are interpreted
+    as joint-position deltas around ``default_dof_pos`` and applied directly
+    as articulation position targets. This switches actuator semantics from
+    explicit torque control to implicit position drives inside Isaac Sim.
+
+    Used by the terrain preset (``control_mode="implicit_position_target"``).
+    """
+
+    def __init__(self, cfg: ActionTermCfg, env: Any):
+        super().__init__(cfg, env)
+        self._action_dim: int = env.num_dof
+        self._raw_actions: torch.Tensor = torch.zeros(env.num_envs, self._action_dim, device=env.device)
+        self._processed_actions: torch.Tensor = torch.zeros(env.num_envs, self._action_dim, device=env.device)
+        self._applied_position_targets: torch.Tensor = torch.zeros(env.num_envs, self._action_dim, device=env.device)
+
+    @property
+    def action_dim(self) -> int:
+        return self._action_dim
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        self._raw_actions[:] = actions
+        if self.env.robot_config.control.clip_actions:
+            clip_limit = self.env.robot_config.control.action_clip_value
+            clipped_actions = torch.clip(actions, -clip_limit, clip_limit)
+            self.env.log_dict["action_clip_frac"] = (
+                clipped_actions.abs() == clip_limit
+            ).sum() / clipped_actions.numel()
+        else:
+            clipped_actions = actions
+            self.env.log_dict["action_clip_frac"] = torch.tensor(0.0, device=self.env.device)
+
+        self._processed_actions[:] = self.env.default_dof_pos + clipped_actions
+
+    def apply_actions(self) -> None:
+        self._applied_position_targets[:] = self._processed_actions
+        self.env.simulator.apply_position_targets_at_dof(self._applied_position_targets)
+
+
 class JointPositionActionTerm(ActionTermBase):
     """Action term for joint position control with PD controller.
 

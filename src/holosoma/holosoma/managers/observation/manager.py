@@ -136,10 +136,10 @@ class ObservationManager:
 
         # Concatenate or return dict
         if group_cfg.concatenate:
-            # Concatenate in alphabetically sorted order (to match direct system behavior)
-            # Direct system does: sorted(obs_config) before concatenation
-            sorted_keys = sorted(obs_tensors.keys())
-            return torch.cat([obs_tensors[key] for key in sorted_keys], dim=-1)
+            # Concatenate in dict insertion order (matches FAR-Holosoma-terrain reference).
+            # Existing alphabetical presets in FAR-pi use obsN_ numeric prefixes so
+            # insertion order == alphabetical order and this flip is a no-op for them.
+            return torch.cat([obs_tensors[key] for key in obs_tensors], dim=-1)
         return obs_tensors
 
     def _compute_term(self, group_name: str, term_name: str, term_cfg: ObsTermCfg) -> torch.Tensor:

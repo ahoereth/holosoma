@@ -368,8 +368,25 @@ def setup_torque_rfi(env, *, enabled: bool = False, rfi_lim: float = 0.1, **_) -
     term.configure_torque_rfi(enabled=env._pending_torque_rfi[0], rfi_lim=env._pending_torque_rfi[1])
 
 
-def setup_dof_pos_bias(env, *, dof_pos_bias_range: Sequence[float], enabled: bool = False, **_) -> None:
-    """Apply startup DOF position bias randomization."""
+def setup_dof_pos_bias(
+    env,
+    *,
+    dof_pos_bias_range: Sequence[float],
+    enabled: bool = False,
+    dof_pos_bias_additive_overrides: dict[str, Sequence[float]] | None = None,
+    **_,
+) -> None:
+    """Apply startup DOF position bias randomization.
+
+    Args:
+        dof_pos_bias_range: Global [min, max] bias applied to all joints.
+        enabled: Whether to apply the bias.
+        dof_pos_bias_additive_overrides: Optional dict mapping joint-name
+            substrings to [min, max] ranges. An additional bias sampled from
+            each range is **added** on top of the global bias for matching
+            joints (e.g. ``{"ankle": [-0.05, 0.05]}``). Ported from
+            FAR-Holosoma-terrain to support the terrain preset.
+    """
     env._randomize_dof_pos_bias = bool(enabled)
     env._dof_pos_bias_range = list(dof_pos_bias_range)
 
@@ -382,6 +399,21 @@ def setup_dof_pos_bias(env, *, dof_pos_bias_range: Sequence[float], enabled: boo
         (env.num_envs, env.num_dof),
         device=env.device,
     )
+
+    # Additive per-joint-group overrides (e.g. ankle-specific bias)
+    if dof_pos_bias_additive_overrides:
+        for pattern, override_range in dof_pos_bias_additive_overrides.items():
+            indices = [i for i, name in enumerate(env.dof_names) if pattern in name]
+            if indices:
+                additive_bias = torch_rand_float(
+                    override_range[0],
+                    override_range[1],
+                    (env.num_envs, len(indices)),
+                    device=env.device,
+                )
+                for j, idx in enumerate(indices):
+                    default_dof_pos_bias[:, idx] += additive_bias[:, j]
+
     env.default_dof_pos = env.default_dof_pos_base + default_dof_pos_bias
 
 

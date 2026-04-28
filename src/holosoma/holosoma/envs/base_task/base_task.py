@@ -121,8 +121,11 @@ class BaseTask:
         # so it can be applied during env creation (before prepare_sim).
         # For IsaacSim: The manager will be initialized later (scene is already created in __init__)
         is_isaacgym_manager = hasattr(self.simulator, "gym")
-        # IsaacGym needs tasks callback before termination to avoid physics instabilities
-        self._update_tasks_before_termination = is_isaacgym_manager
+        # Run tasks callback (command_manager.step) BEFORE termination+reward, to
+        # match FAR-Holosoma-terrain's step order. Previously this was conditional
+        # on IsaacGym only, but WBT reward/termination expects the motion clip to
+        # have advanced before they evaluate the tracking error.
+        self._update_tasks_before_termination = True
         if is_isaacgym_manager:
             self.randomization_manager = RandomizationManager(randomization_config, self, self.device)
             if self.randomization_manager is not None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import sys
@@ -254,6 +255,18 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
                 f"Distributed training: GPU {distributed_conf['global_rank']} will run {tyro_config.training.num_envs} "
                 f"environments (total across all GPUs: {original_num_envs})"
             )
+
+        # If an experiment preset registers `training.preprocess_hook`,
+        # resolve it and invoke it to mutate the tyro_config before env
+        # construction. Application-specific work (registry downloads,
+        # obstacle injection, motion-file splicing) lives in the hook.
+        if tyro_config.training.preprocess_hook:
+            from holosoma.managers.utils import resolve_callable
+
+            _hook = resolve_callable(tyro_config.training.preprocess_hook, context="preprocess_hook")
+            _kwargs = json.loads(tyro_config.training.preprocess_hook_kwargs or "{}")
+            tyro_config = _hook(tyro_config, **_kwargs)
+            logger.info(f"Applied preprocess_hook={tyro_config.training.preprocess_hook!r}")
 
         env_target = tyro_config.env_class
 
