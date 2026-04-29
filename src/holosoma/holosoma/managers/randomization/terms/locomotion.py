@@ -385,7 +385,7 @@ def setup_dof_pos_bias(
             substrings to [min, max] ranges. An additional bias sampled from
             each range is **added** on top of the global bias for matching
             joints (e.g. ``{"ankle": [-0.05, 0.05]}``). Ported from
-            FAR-Holosoma-terrain to support the terrain preset.
+            terrain preset.
     """
     env._randomize_dof_pos_bias = bool(enabled)
     env._dof_pos_bias_range = list(dof_pos_bias_range)

@@ -136,7 +136,7 @@ class ObservationManager:
 
         # Concatenate or return dict
         if group_cfg.concatenate:
-            # Concatenate in dict insertion order (matches FAR-Holosoma-terrain reference).
+            # Concatenate in dict insertion order.
             # Existing alphabetical presets in FAR-pi use obsN_ numeric prefixes so
             # insertion order == alphabetical order and this flip is a no-op for them.
             return torch.cat([obs_tensors[key] for key in obs_tensors], dim=-1)

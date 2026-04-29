@@ -45,7 +45,7 @@ from holosoma.simulator.isaacsim.proxy_utils import AllRootStatesProxy, RootStat
 from holosoma.simulator.isaacsim.state_adapter import IsaacSimStateAdapter
 
 # Body-name aliases for USD articulations where some fixed child links are
-# not exposed as articulation bodies (ported from FAR-Holosoma-terrain).
+# not exposed as articulation bodies.
 # G1 URDFs have LL_FOOT/LR_FOOT frames in the articulation but the
 # foot_contact_point fixed links are absorbed during USD conversion — map
 # them to ankle_roll_link as the closest articulation-visible body.
@@ -226,7 +226,7 @@ class IsaacSim(BaseSimulator):
 
         robot_articulation_props = sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=robot_asset_cfg.enable_self_collisions,
-            # NOTE: (4, 0) -> (8, 4) necessary for reproducing FAR-tracking-implementation
+            # NOTE: (4, 0) -> (8, 4) necessary for reproducing previous reference training runs
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=4,
         )
@@ -382,7 +382,7 @@ class IsaacSim(BaseSimulator):
         elif terrain_state.mesh_type in ["trimesh", "load_obj"]:
             self.terrain = self.terrain_manager.get_state("locomotion_terrain").terrain
             visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0))
-            # friction/restitution combine modes match FAR-Holosoma-terrain ref;
+            # Friction/restitution combine modes use multiply (not average);
             # needed so terrain_locomotion_mix / LOAD_OBJ friction is multiplicative
             # with robot material (not averaged).
             physics_material = sim_utils.RigidBodyMaterialCfg(
@@ -848,7 +848,7 @@ class IsaacSim(BaseSimulator):
     def _resolve_robot_body_names_with_aliases(self, requested_body_names: list[str]):
         """Resolve requested body names with BODY_NAME_ALIASES fallback.
 
-        Ported from FAR-Holosoma-terrain. For each requested name, try
+        For each requested name, try
         ``find_bodies(name)`` first; if that fails, try the aliased name from
         BODY_NAME_ALIASES. Preserves the public (config-specified) names in
         ``self.body_names`` while using the articulation's indices.
@@ -898,7 +898,7 @@ class IsaacSim(BaseSimulator):
     def apply_position_targets_at_dof(self, targets):
         """Apply joint position targets to the articulation (implicit PD).
 
-        Ported from FAR-Holosoma-terrain — used by
+        Used by
         :class:`JointPositionTargetActionTerm` when
         ``control_mode='implicit_position_target'``.
         """

@@ -569,7 +569,7 @@ class AdaptiveTimestepsSampler:
             mode="replicate",
         )
         sampling_probabilities = torch.nn.functional.conv1d(sampling_probabilities, self.kernel.view(1, 1, -1)).view(-1)
-        sampling_probabilities += 0.01  # Uniform floor post-convolution (matches FAR-Holosoma-terrain)
+        sampling_probabilities += 0.01  # Uniform floor post-convolution
         return sampling_probabilities / sampling_probabilities.sum()
 
     def sample(self, num_samples: int) -> torch.Tensor:
@@ -828,7 +828,7 @@ class MotionCommand(CommandTermBase):
             )  # (3,)
         else:
             # Reuse push randomizer velocity limits for reset-state velocity noise
-            # (matches FAR-Holosoma-terrain). Falls back to zero when the push
+            # . Falls back to zero when the push
             # randomizer is disabled.
             push_state = self._env.randomization_manager.get_state("push_randomizer_state")
             _push_vel = getattr(push_state, "max_push_vel", None) if push_state is not None else None
@@ -958,7 +958,7 @@ class MotionCommand(CommandTermBase):
         # (since kinematic forward has not been applied yet).
         # Therefore, using robot_ref_pos_w and robot_ref_quat_w as reference body poses is not resetted correctly.
 
-        # Solution (matches FAR-Holosoma-terrain):
+        # Solution:
         # ------------------------------------------------------------
         # if episode_length_buf == 0 OR motion just wrapped (motion_end_reset),
         # use robot_root on the ROBOT side only. Motion side always uses

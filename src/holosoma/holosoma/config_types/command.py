@@ -148,9 +148,9 @@ class MotionConfig:
     resample_on_motion_end: bool = True
     """When True, resample a new motion clip when the current one ends instead of
     relying on episode termination. The episode continues with the new clip.
-    Matches FAR-Holosoma-terrain default (True)."""
+    Enabled by default."""
 
-    # adaptive sampling parameters (ported from FAR-Holosoma-terrain)
+    # adaptive sampling parameters
     adaptive_kernel_size: int = 1
     """Kernel size for smoothing failure bin counts in adaptive sampling."""
 

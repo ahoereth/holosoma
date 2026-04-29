@@ -1,6 +1,6 @@
 """WandB artifact download utilities for motion/terrain data and checkpoints.
 
-Ported from far-tracking's wandb_helpers.py. Pure WandB SDK calls with no
+Pure WandB SDK calls with no
 framework dependencies.
 """
 

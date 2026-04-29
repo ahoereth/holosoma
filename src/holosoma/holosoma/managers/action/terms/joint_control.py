@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class JointPositionTargetActionTerm(ActionTermBase):
     """Action term that matches IsaacLab implicit joint-position targets.
 
-    Ported verbatim from FAR-Holosoma-terrain. Raw actions are interpreted
+    # Raw actions are interpreted
     as joint-position deltas around ``default_dof_pos`` and applied directly
     as articulation position targets. This switches actuator semantics from
     explicit torque control to implicit position drives inside Isaac Sim.

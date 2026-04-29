@@ -122,7 +122,7 @@ class BaseTask:
         # For IsaacSim: The manager will be initialized later (scene is already created in __init__)
         is_isaacgym_manager = hasattr(self.simulator, "gym")
         # Run tasks callback (command_manager.step) BEFORE termination+reward, to
-        # match FAR-Holosoma-terrain's step order. Previously this was conditional
+        # Run commands before termination. Previously this was conditional
         # on IsaacGym only, but WBT reward/termination expects the motion clip to
         # have advanced before they evaluate the tracking error.
         self._update_tasks_before_termination = True
