@@ -306,10 +306,6 @@ class UnitreeInterface(BaseInterface):
         msg = self._msg_ctor()
         msg.mode_pr = 0
         msg.mode_machine = self._mode_machine
-        # In motion mode, motor_cmd[0] carries the "release" token (1.0 = hand
-        # control over to rt/arm_sdk). Matches g1_arm_client.publish_command.
-        if self._motion_mode and num_motors > 0:
-            msg.motor_cmd[0].q = 1.0
 
         for m_id in range(num_motors):
             mc = msg.motor_cmd[m_id]
@@ -319,6 +315,15 @@ class UnitreeInterface(BaseInterface):
             mc.tau = float(cmd_tau_target[m_id])
             mc.kp = float(motor_kp[m_id])
             mc.kd = float(motor_kd[m_id])
+
+        # In motion mode, motor_cmd[29] ("k_not_used_joint_0") carries the
+        # "release" token — q=1.0 hands control over to the rt/arm_sdk path.
+        # Matches ``g1_arm_client.publish_command`` (line 140).
+        # Set AFTER the main loop so we don't overwrite the release slot.
+        if self._motion_mode:
+            _release_idx = 29
+            if _release_idx < len(msg.motor_cmd):
+                msg.motor_cmd[_release_idx].q = 1.0
 
         msg.crc = self._crc.Crc(msg)
 
