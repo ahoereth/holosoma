@@ -13,7 +13,6 @@ import trimesh
 from holosoma.config_types.full_sim import FullSimConfig
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObject, RigidObjectCfg
-import isaaclab.terrains as terrain_gen
 import omni.log
 import torch
 from isaaclab.actuators import IdealPDActuatorCfg, ImplicitActuatorCfg
@@ -24,7 +23,7 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg, RayCaster, RayCasterCfg, patterns
 from isaaclab.sim import PhysxCfg, SimulationCfg, SimulationContext
-from isaaclab.terrains import TerrainGeneratorCfg, TerrainImporterCfg
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.terrains.utils import create_prim_from_mesh
 from isaaclab.utils.timer import Timer
 from loguru import logger

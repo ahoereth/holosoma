@@ -15,10 +15,13 @@ if TYPE_CHECKING:
 class JointPositionTargetActionTerm(ActionTermBase):
     """Action term that matches IsaacLab implicit joint-position targets.
 
-    # Raw actions are interpreted
-    as joint-position deltas around ``default_dof_pos`` and applied directly
-    as articulation position targets. This switches actuator semantics from
-    explicit torque control to implicit position drives inside Isaac Sim.
+    Raw actions are interpreted as joint-position deltas around
+    ``default_dof_pos`` and applied directly as articulation position targets
+    (Isaac Sim's built-in implicit PD drive). The per-joint scale is computed
+    the same way as :class:`JointPositionActionTerm` so the preset's
+    ``control.action_scale`` and ``action_scales_by_effort_limit_over_p_gain``
+    contracts are honored and the exported ONNX metadata carries per-joint
+    scales (via ``env.action_scales``).
 
     Used by the terrain preset (``control_mode="implicit_position_target"``).
     """
@@ -29,6 +32,35 @@ class JointPositionTargetActionTerm(ActionTermBase):
         self._raw_actions: torch.Tensor = torch.zeros(env.num_envs, self._action_dim, device=env.device)
         self._processed_actions: torch.Tensor = torch.zeros(env.num_envs, self._action_dim, device=env.device)
         self._applied_position_targets: torch.Tensor = torch.zeros(env.num_envs, self._action_dim, device=env.device)
+
+        # Per-joint scale for `actions_scaled = raw_actions * action_scales`.
+        # Matches JointPositionActionTerm._configure_action_scales so the
+        # exported ONNX metadata is the same whether the preset uses the
+        # explicit-PD or implicit-PD action term.
+        control_cfg = env.robot_config.control
+        self.action_scales: torch.Tensor = torch.full(
+            (self._action_dim,), float(control_cfg.action_scale), device=env.device
+        )
+        if control_cfg.action_scales_by_effort_limit_over_p_gain:
+            stiffness_dict = control_cfg.stiffness
+            dof_names = env.robot_config.dof_names
+            dof_effort_limit_list = env.robot_config.dof_effort_limit_list
+            for i, name in enumerate(dof_names):
+                stripped = name.replace("_joint", "")
+                stiffness = 0.0
+                for key, value in stiffness_dict.items():
+                    if key in stripped:
+                        stiffness = float(value)
+                        break
+                effort = float(dof_effort_limit_list[i])
+                if stiffness == 0.0:
+                    self.action_scales[i] = 0.0
+                else:
+                    self.action_scales[i] = control_cfg.action_scale * effort / stiffness
+        # Expose on env so exporter writes per-joint scales into ONNX metadata
+        # (PPO/FastSAC exporters read env.action_scales — same path as
+        # JointPositionActionTerm).
+        env.action_scales = self.action_scales
 
     @property
     def action_dim(self) -> int:
@@ -46,7 +78,7 @@ class JointPositionTargetActionTerm(ActionTermBase):
             clipped_actions = actions
             self.env.log_dict["action_clip_frac"] = torch.tensor(0.0, device=self.env.device)
 
-        self._processed_actions[:] = self.env.default_dof_pos + clipped_actions
+        self._processed_actions[:] = self.env.default_dof_pos + clipped_actions * self.action_scales
 
     def apply_actions(self) -> None:
         self._applied_position_targets[:] = self._processed_actions

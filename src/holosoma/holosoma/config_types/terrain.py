@@ -34,7 +34,7 @@ class MeshType(str, Enum):
     """
 
     LOAD_OBJ = "load_obj"
-    """Load an OBJ file as a terrain. This is temporary."""
+    """Load an OBJ file as a terrain mesh (used by the on-path-obstacle pipeline)."""
 
     FAKE = "fake"
     """Mock terrain for testing purposes.
