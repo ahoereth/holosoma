@@ -230,6 +230,15 @@ class UnitreeInterface(BaseInterface):
         # behaves like the wheel's (.motor, .imu on read_low_state()).
         self.unitree_interface = _Sdk2pyInnerInterface(self._lowstate_subscriber, self.robot_config.num_motors)
 
+        while True:
+            state = self.get_low_state()
+            with open("/tmp/blah.txt", "a") as _f:
+                _f.write(
+                    f"[{time.time():.3f}] pid={os.getpid()} "
+                    f"{state}"
+                )
+            time.sleep(2)
+
     # ── BaseInterface impl ─────────────────────────────────────────────────
 
     def get_low_state(self) -> np.ndarray:
