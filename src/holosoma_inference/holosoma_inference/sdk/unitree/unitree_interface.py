@@ -229,16 +229,6 @@ class UnitreeInterface(BaseInterface):
         # Telemetry parity: expose a self.unitree_interface attribute that
         # behaves like the wheel's (.motor, .imu on read_low_state()).
         self.unitree_interface = _Sdk2pyInnerInterface(self._lowstate_subscriber, self.robot_config.num_motors)
-
-        while True:
-            state = self.get_low_state()
-            with open("/tmp/blah.txt", "a") as _f:
-                _f.write(
-                    f"[{time.time():.3f}] pid={os.getpid()} "
-                    f"{state}"
-                )
-            time.sleep(2)
-
     # ── BaseInterface impl ─────────────────────────────────────────────────
 
     def get_low_state(self) -> np.ndarray:
@@ -341,17 +331,6 @@ class UnitreeInterface(BaseInterface):
         if not hasattr(self, "_wlc_counter"):
             self._wlc_counter = 0
         self._wlc_counter += 1
-        if self._wlc_counter % 100 == 0:
-            try:
-                state = self.get_low_state()
-                with open("/tmp/blah.txt", "a") as _f:
-                    _f.write(
-                        f"[{time.time():.3f}] pid={os.getpid()} wlc_count={self._wlc_counter} "
-                        f"{state}"
-                    )
-            except Exception:  # noqa: BLE001
-                pass
-
         self._lowcmd_publisher.Write(msg)
 
     def get_joystick_msg(self):
