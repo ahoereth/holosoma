@@ -63,7 +63,7 @@ class InterfaceWrapper:
             # Parse message type
             message_type_map = {"HG": unitree_interface.MessageType.HG, "GO2": unitree_interface.MessageType.GO2}
             self.unitree_interface = unitree_interface.create_robot(
-                self.interface_str,
+                "eno1",
                 robot_type_map[self.robot_config.robot.upper()],
                 message_type_map[self.robot_config.message_type.upper()],
             )

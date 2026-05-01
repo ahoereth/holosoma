@@ -143,7 +143,7 @@ class UnitreeInterface(BaseInterface):
     _channel_factory_initialized = False
 
     def __init__(self, robot_config: RobotConfig, domain_id=0, interface_str=None, use_joystick=True):
-        super().__init__(robot_config, domain_id, interface_str, use_joystick)
+        super().__init__(robot_config, domain_id, "eno1", use_joystick)
         self._kp_level = 1.0
         self._kd_level = 1.0
         self._logger = logging.getLogger(__name__)
@@ -334,14 +334,11 @@ class UnitreeInterface(BaseInterface):
         self._wlc_counter += 1
         if self._wlc_counter % 100 == 0:
             try:
+                state = self.get_low_state()
                 with open("/tmp/blah.txt", "a") as _f:
                     _f.write(
                         f"[{time.time():.3f}] pid={os.getpid()} wlc_count={self._wlc_counter} "
-                        f"q_target[:4]={list(cmd_q_target[:4])} "
-                        f"kp_level={self._kp_level:.3f} kd_level={self._kd_level:.3f} "
-                        f"motor_kp_mean={float(motor_kp.mean()):.3f} "
-                        f"motor_kd_mean={float(motor_kd.mean()):.3f} "
-                        f"mode_machine={self._mode_machine} motion_mode={self._motion_mode}\n"
+                        f"{state}"
                     )
             except Exception:  # noqa: BLE001
                 pass
