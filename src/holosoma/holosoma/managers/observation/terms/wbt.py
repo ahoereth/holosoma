@@ -135,6 +135,24 @@ def motion_command(env: WholeBodyTrackingManager) -> torch.Tensor:
     return motion_command.command
 
 
+def robot_anchor_projected_gravity(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Gravity vector projected into the motion-command anchor (ref) frame.
+
+    Mirrors far-tracking's ``robot_anchor_projected_gravity``
+    (tracking/mdp/observations.py:82-88). Gives the student a static
+    orientation cue relative to the reference pose — complements
+    :func:`base_ang_vel` (rates) and :func:`dof_pos` (joint angles) which
+    don't encode absolute torso attitude.
+
+    Returns:
+        Tensor of shape [num_envs, 3].
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    return quat_rotate_inverse(
+        motion_command.robot_ref_quat_w, gravity_vector(env), w_last=True
+    ).view(env.num_envs, -1)
+
+
 def motion_ref_pos_b(env: WholeBodyTrackingManager) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
     pos, _ = subtract_frame_transforms(
