@@ -466,6 +466,73 @@ class DistillationPPOAlgoConfig:
     config: DistillationPPOConfig
 
 
-AlgoInitConfig = Union[PPOConfig, FastSACConfig, DistillationPPOConfig]
+@dataclass(frozen=True)
+class DistillationConfig:
+    """Configuration for the :class:`Distillation` (pure-DAgger) algorithm.
 
-AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig, DistillationPPOAlgoConfig]
+    Strips all PPO-related fields from :class:`DistillationPPOConfig`. The
+    student is trained purely against teacher actions; there is no critic,
+    no value loss, and no KL-adaptive LR schedule.
+    """
+
+    module: StudentTeacherModuleConfig
+    """Student/teacher module configuration. ``critic_hidden_dims`` on the
+    shared module cfg is ignored here since Distillation doesn't build a critic."""
+
+    num_learning_epochs: int = 2
+    """Number of learning epochs per update."""
+
+    num_mini_batches: int = 96
+    """Number of mini-batches per epoch."""
+
+    learning_rate: float = 3e-4
+    """Learning rate for the Adam optimizer (applied uniformly to student +
+    depth backbone)."""
+
+    max_grad_norm: float = 1.0
+    """Maximum gradient norm for clipping."""
+
+    num_steps_per_env: int = 24
+    """Number of rollout steps per environment between updates."""
+
+    save_interval: int = 500
+    """Interval for saving model checkpoints."""
+
+    init_noise_std: float = 0.001
+    """Initial action noise std forwarded to the student module. Pure DAgger
+    uses near-zero noise (far-tracking default) so the student mostly mirrors
+    the teacher during rollouts."""
+
+    num_learning_iterations: int = 10000
+    """Total number of learning iterations (matches far-tracking's
+    ``G1FlatDistillationRunnerCfg.max_iterations``)."""
+
+    empirical_normalization: bool = False
+    """Not supported; must remain False."""
+
+    distill_loss_type: str = "mse"
+    """``mse`` or ``huber``."""
+
+    distillation_warmup_steps: int = 0
+    """Iterations at the start of ``learn()`` during which the env is stepped
+    with the teacher's action instead of the student's. Student head is still
+    trained on the stored actions; only the physics trajectory changes."""
+
+    eval_callbacks: Any = None
+    """Evaluation callbacks configuration."""
+
+
+@dataclass(frozen=True)
+class DistillationAlgoConfig:
+    """Wrapper paralleling :class:`DistillationPPOAlgoConfig`."""
+
+    _target_: str
+    _recursive_: bool
+    config: DistillationConfig
+
+
+AlgoInitConfig = Union[PPOConfig, FastSACConfig, DistillationPPOConfig, DistillationConfig]
+
+AlgoConfig = Union[
+    PPOAlgoConfig, FastSACAlgoConfig, DistillationPPOAlgoConfig, DistillationAlgoConfig
+]

@@ -528,9 +528,17 @@ class DistillationPPO(BaseAlgo):
         # Mean over (valid rows) * (action dim).
         dagger_loss = (distill_raw * keep_mask).sum() / (valid * distill_raw.shape[-1])
 
-        # Combined loss.
-        ppo_loss = surrogate_loss + self.config.value_loss_coef * value_loss - self.config.entropy_coef * entropy_mean
-        total_loss = self.ppo_coef * ppo_loss + (1.0 - self.ppo_coef) * self.config.dagger_loss_coef * dagger_loss
+        # Combined loss. Matches far-tracking's DepthDistillationPPO formula at
+        # my_distillation.py:978-985, 1037: value loss is **always active**
+        # (ungated by ppo_coef) so the critic and the shared depth backbone
+        # keep training from iteration 0; only the PPO surrogate + entropy
+        # term is gated by ppo_coef. The DAgger term is independently scaled
+        # by (1 - ppo_coef).
+        ppo_loss = (
+            self.config.value_loss_coef * value_loss
+            + self.ppo_coef * (surrogate_loss - self.config.entropy_coef * entropy_mean)
+        )
+        total_loss = ppo_loss + (1.0 - self.ppo_coef) * self.config.dagger_loss_coef * dagger_loss
 
         self.optimizer.zero_grad()
         total_loss.backward()
@@ -541,7 +549,9 @@ class DistillationPPO(BaseAlgo):
             "total_loss": total_loss.detach(),
             "surrogate_loss": surrogate_loss.detach(),
             "value_loss": value_loss.detach(),
-            "dagger_loss": dagger_loss.detach(),
+            # Logged as "behavior" to match far-tracking's distillation loss
+            # dict key (my_distillation.py:238, 1073).
+            "behavior": dagger_loss.detach(),
             "entropy_mean": entropy_mean.detach(),
             "mean_kl": kl_mean.detach(),
         }

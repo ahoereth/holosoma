@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from holosoma.agents.modules.ppo_modules import PPOActor, PPOActorEncoder, PPOCritic, PPOCriticEncoder
 from holosoma.agents.modules.student_teacher_modules import (
+    DepthStudentTeacher,
     DepthStudentTeacherCritic,
     StudentTeacher,
     StudentTeacherCritic,
@@ -85,6 +86,36 @@ def setup_student_teacher_module(
         student_hidden_dims=list(module_config.student_hidden_dims),
         teacher_hidden_dims=list(module_config.teacher_hidden_dims),
         critic_hidden_dims=list(module_config.critic_hidden_dims),
+        activation=module_config.activation,
+        init_noise_std=module_config.init_noise_std,
+    ).to(device)
+
+
+def setup_depth_student_teacher_module(
+    num_actor_obs: int,
+    num_teacher_obs: int,
+    num_actions: int,
+    module_config,
+    device,
+):
+    """Build a :class:`DepthStudentTeacher` (no critic). Used by the pure-DAgger
+    :class:`Distillation` algorithm.
+
+    Shares :class:`StudentTeacherModuleConfig` with the PPO variant;
+    ``critic_hidden_dims`` on the cfg is silently ignored since this module
+    has no critic MLP.
+    """
+    backbone_cls = get_class(module_config.depth_backbone)
+    depth_backbone = backbone_cls(module_config.depth_output_dim)
+
+    return DepthStudentTeacher(
+        num_actor_obs=num_actor_obs,
+        num_teacher_obs=num_teacher_obs,
+        num_actions=num_actions,
+        depth_backbone=depth_backbone,
+        depth_output_dim=module_config.depth_output_dim,
+        student_hidden_dims=list(module_config.student_hidden_dims),
+        teacher_hidden_dims=list(module_config.teacher_hidden_dims),
         activation=module_config.activation,
         init_noise_std=module_config.init_noise_std,
     ).to(device)

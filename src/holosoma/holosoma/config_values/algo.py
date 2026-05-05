@@ -1,4 +1,6 @@
 from holosoma.config_types.algo import (
+    DistillationAlgoConfig,
+    DistillationConfig,
     DistillationPPOAlgoConfig,
     DistillationPPOConfig,
     FastSACAlgoConfig,
@@ -110,8 +112,15 @@ distillation_ppo = DistillationPPOAlgoConfig(
     config=DistillationPPOConfig(module=StudentTeacherModuleConfig()),
 )
 
+distillation = DistillationAlgoConfig(
+    _target_="holosoma.agents.distillation.distillation.Distillation",
+    _recursive_=False,
+    config=DistillationConfig(module=StudentTeacherModuleConfig()),
+)
+
 DEFAULTS = {
     "ppo": ppo,
     "fast_sac": fast_sac,
     "distillation_ppo": distillation_ppo,
+    "distillation": distillation,
 }
