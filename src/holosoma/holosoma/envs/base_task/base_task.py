@@ -491,14 +491,29 @@ class BaseTask:
             return
         final_store = self.extras.setdefault("final_observations", {})
         for obs_key, values in final_obs_dict.items():
-            if obs_key not in final_store:
-                final_store[obs_key] = torch.zeros_like(self.obs_buf_dict[obs_key])
-            final_store[obs_key][env_ids] = values[env_ids]
+            current = self.obs_buf_dict[obs_key]
+            # Mirror `_clip_observations`: non-concatenating groups are dicts.
+            if isinstance(values, dict):
+                if obs_key not in final_store:
+                    final_store[obs_key] = {k: torch.zeros_like(v) for k, v in current.items()}
+                for term_name, term_val in values.items():
+                    final_store[obs_key][term_name][env_ids] = term_val[env_ids]
+            else:
+                if obs_key not in final_store:
+                    final_store[obs_key] = torch.zeros_like(current)
+                final_store[obs_key][env_ids] = values[env_ids]
 
     def _clip_observations(self):
         clip_limit = self.observation_manager.cfg.clip_observations
         for obs_key, obs_val in self.obs_buf_dict.items():
-            self.obs_buf_dict[obs_key] = torch.clip(obs_val, -clip_limit, clip_limit)
+            # Non-concatenating groups (e.g. depth images) return a {term: tensor}
+            # dict. Clip each term tensor in place rather than clipping the dict.
+            if isinstance(obs_val, dict):
+                self.obs_buf_dict[obs_key] = {
+                    k: torch.clip(v, -clip_limit, clip_limit) for k, v in obs_val.items()
+                }
+            else:
+                self.obs_buf_dict[obs_key] = torch.clip(obs_val, -clip_limit, clip_limit)
 
     def _compute_reward(self):
         self.rew_buf[:] = self.reward_manager.compute(self.dt)

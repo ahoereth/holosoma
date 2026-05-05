@@ -340,6 +340,132 @@ class FastSACAlgoConfig:
     """Algorithm-specific configuration."""
 
 
-AlgoInitConfig = Union[PPOConfig, FastSACConfig]
+@dataclass(frozen=True)
+class StudentTeacherModuleConfig:
+    """Configuration for a DepthStudentTeacherCritic module composite.
 
-AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig]
+    Slots into :class:`DistillationPPOConfig`. Dimensions are resolved at
+    runtime from the observation manager; only hidden-layer shapes and the
+    depth-backbone class are declared here.
+    """
+
+    student_hidden_dims: List[int] = field(default_factory=lambda: [2048, 1024, 512, 256, 128])
+    """Student MLP hidden layer widths."""
+
+    teacher_hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128])
+    """Teacher MLP hidden layer widths. Must match the teacher checkpoint being loaded."""
+
+    critic_hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128])
+    """Critic MLP hidden layer widths."""
+
+    activation: str = "ELU"
+    """Activation function name."""
+
+    depth_backbone: str = "wbt_training.utils.depth_backbone.DepthOnlyFCBackbone58x87Small"
+    """Dotted path to the depth-backbone nn.Module class, instantiated as ``cls(depth_output_dim)``."""
+
+    depth_output_dim: int = 32
+    """Latent dim produced by the depth backbone and concatenated onto the student input."""
+
+    init_noise_std: float = 0.01
+    """Initial action noise std. Student exploration is small during DAgger phase."""
+
+
+@dataclass(frozen=True)
+class DistillationPPOConfig:
+    """Configuration for the :class:`DistillationPPO` algorithm.
+
+    Mirrors :class:`PPOConfig` but replaces ``module_dict`` with a single
+    :class:`StudentTeacherModuleConfig` and adds DAgger schedule knobs.
+    """
+
+    module: StudentTeacherModuleConfig
+    """Student/teacher/critic module configuration."""
+
+    num_learning_epochs: int = 2
+    """Number of learning epochs per update."""
+
+    num_mini_batches: int = 96
+    """Number of mini-batches per epoch."""
+
+    clip_param: float = 0.2
+    """PPO clipping parameter."""
+
+    gamma: float = 0.99
+    """Discount factor for future rewards."""
+
+    lam: float = 0.95
+    """GAE lambda parameter."""
+
+    value_loss_coef: float = 1.0
+    """Value loss coefficient."""
+
+    entropy_coef: float = 0.001
+    """Entropy coefficient for exploration."""
+
+    learning_rate: float = 3e-4
+    """Learning rate applied to all parameter groups."""
+
+    max_grad_norm: float = 1.0
+    """Maximum gradient norm for clipping."""
+
+    schedule: str = "adaptive"
+    """Learning rate schedule type."""
+
+    desired_kl: float = 0.01
+    """Desired KL divergence for adaptive learning rate."""
+
+    num_steps_per_env: int = 24
+    """Number of rollout steps per environment."""
+
+    save_interval: int = 500
+    """Interval for saving model checkpoints."""
+
+    init_noise_std: float = 0.01
+    """Initial action noise standard deviation (forwarded to the student-teacher module)."""
+
+    num_learning_iterations: int = 20000
+    """Total number of learning iterations."""
+
+    empirical_normalization: bool = False
+    """Whether to apply empirical normalization. Not supported for distillation."""
+
+    ppo_start_epoch: int = 0
+    """Iteration at which PPO coefficient begins ramping up from 0."""
+
+    dagger_end_epoch: int = 10000
+    """Iteration at which PPO coefficient reaches its plateau (0.9)."""
+
+    distill_loss_type: str = "mse"
+    """``mse`` or ``huber``."""
+
+    dagger_loss_coef: float = 10.0
+    """Multiplier applied to the (1 - ppo_coef) * distill_loss term."""
+
+    distillation_warmup_steps: int = 0
+    """Iterations at the start of ``learn()`` during which the env is stepped
+    with the *teacher's* action instead of the student's. The student head is
+    still trained on-the-fly (DAgger + PPO losses evaluated against the
+    stored actions), but rollouts follow the teacher's policy so the student
+    sees expert trajectories early. ``0`` disables warmup (matches
+    far-tracking's shipped presets)."""
+
+    weight_decay: float = 0.0
+    """Weight decay for the student/critic AdamW param groups."""
+
+    eval_callbacks: Any = None
+    """Evaluation callbacks configuration."""
+
+
+@dataclass(frozen=True)
+class DistillationPPOAlgoConfig:
+    """Wrapper paralleling :class:`PPOAlgoConfig`."""
+
+    _target_: str
+    _recursive_: bool
+    config: DistillationPPOConfig
+
+
+AlgoInitConfig = Union[PPOConfig, FastSACConfig, DistillationPPOConfig]
+
+AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig, DistillationPPOAlgoConfig]

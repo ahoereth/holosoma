@@ -309,6 +309,21 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
             )
             algo.load(loaded_checkpoint)
 
+        # Load a teacher-only checkpoint into the student-teacher policy, if the
+        # algo supports it. Runs after `algo.load()` so a full-resume checkpoint
+        # wins for student/critic/optimizer state, and we only overwrite the
+        # frozen teacher branch here.
+        if tyro_config.training.teacher_checkpoint is not None:
+            if not hasattr(algo, "load_teacher"):
+                raise RuntimeError(
+                    f"`training.teacher_checkpoint` was set but algorithm "
+                    f"{type(algo).__name__} does not implement load_teacher()."
+                )
+            teacher_ckpt_path = load_checkpoint(
+                tyro_config.training.teacher_checkpoint, str(experiment_save_dir)
+            )
+            algo.load_teacher(teacher_ckpt_path)
+
         # handle saving config
         algo.learn()
 

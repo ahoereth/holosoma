@@ -353,7 +353,7 @@ class IsaacSim(BaseSimulator):
                 update_period=0.02,
                 prim_path=f"/World/envs/env_.*/Robot/{self.robot_config.body_names[0]}",
                 offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-                attach_yaw_only=True,
+                ray_alignment="yaw",
                 pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.6]),
                 debug_vis=False,
                 mesh_prim_paths=[terrain_prim_path],
