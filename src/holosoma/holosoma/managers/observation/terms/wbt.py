@@ -135,6 +135,18 @@ def motion_command(env: WholeBodyTrackingManager) -> torch.Tensor:
     return motion_command.command
 
 
+def velocity_command(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """One-hot velocity command from the motion data (shape [num_envs, 15]).
+
+    Mirrors far-tracking's ``velocity_command`` at
+    tracking/mdp/observations.py:205-208. Gives the student policy the
+    commanded forward/lateral velocity for the currently-tracked clip; the
+    teacher has this information implicitly through its motion-ref inputs.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    return motion_command.vel_cmd.view(env.num_envs, -1)
+
+
 def robot_anchor_projected_gravity(env: WholeBodyTrackingManager) -> torch.Tensor:
     """Gravity vector projected into the motion-command anchor (ref) frame.
 

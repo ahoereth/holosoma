@@ -156,6 +156,15 @@ class MotionLoader:
             else:
                 self.motion_idxs = torch.zeros(num_frames, dtype=torch.long, device=device)
 
+            # One-hot velocity command (15,) per frame. Present in
+            # BeyondMimic-style NPZs; absent on older motions. When absent,
+            # self._vel_cmd is None and the `velocity_command` obs term
+            # falls back to a zero tensor at runtime.
+            if "vel_cmd" in data.files:
+                self._vel_cmd = torch.tensor(data["vel_cmd"], dtype=torch.float32, device=device)
+            else:
+                self._vel_cmd = None
+
             # add object pos and quat
             self.has_object = "object_pos_w" in data
             if self.has_object:
@@ -350,6 +359,13 @@ class MultiMotionLoader:
             [torch.full((ld.time_step_total,), i, dtype=torch.long, device=device) for i, ld in enumerate(loaders)],
             dim=0,
         )
+
+        # Concatenate one-hot velocity commands. Drop entirely if any loader
+        # lacks the field, so every frame has a consistent shape.
+        if all(ld._vel_cmd is not None for ld in loaders):
+            self._vel_cmd = torch.cat([ld._vel_cmd for ld in loaders], dim=0)
+        else:
+            self._vel_cmd = None
 
         # Use indexes from first loader (all loaders share the same robot)
         self._joint_indexes = loaders[0]._joint_indexes
@@ -1043,6 +1059,25 @@ class MotionCommand(CommandTermBase):
     @property
     def ref_ang_vel_w(self) -> torch.Tensor:
         return self.motion._body_ang_vel_w[self.time_steps, self.ref_body_index]
+
+    @property
+    def vel_cmd(self) -> torch.Tensor:
+        """One-hot velocity command at the per-env current timestep.
+
+        Mirrors far-tracking's ``MotionCommand.vel_cmd`` property
+        (tracking/mdp/commands.py:237-244). Raises if the motion file lacks
+        a ``vel_cmd`` field — a preset that wires the ``velocity_command``
+        obs term cannot be run against motions without the field, and a
+        silent zero fallback would produce a training-time input shape
+        mismatch with a checkpoint that was trained with the field.
+        """
+        if self.motion._vel_cmd is None:
+            raise RuntimeError(
+                "MotionCommand.vel_cmd: motion file has no 'vel_cmd' field. "
+                "Presets that use the velocity_command obs term require "
+                "motions with one-hot velocity commands."
+            )
+        return self.motion._vel_cmd[self.time_steps]
 
     @property
     def root_pos_w(self) -> torch.Tensor:
