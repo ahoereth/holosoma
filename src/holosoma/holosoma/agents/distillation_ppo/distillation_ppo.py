@@ -330,8 +330,15 @@ class DistillationPPO(BaseAlgo):
             self.ppo_coef = min((iteration - start) / max(end - start, 1), 0.9)
 
     def _set_std_lr_from_ppo_coef(self) -> None:
-        """Zero the std param group's LR while DAgger dominates the loss."""
-        std_lr = 0.0 if self.ppo_coef <= 0.1 else self.config.learning_rate
+        """Zero the std param group's LR while DAgger dominates the loss.
+
+        When PPO is active, the std group follows the *current* decayed
+        ``self.learning_rate`` (mirrors far-tracking my_distillation.py:977-979).
+        Using ``self.config.learning_rate`` instead would insulate the std
+        parameter from the KL-driven adaptive LR decay and let it drift to
+        a higher steady-state value than far-tracking's.
+        """
+        std_lr = 0.0 if self.ppo_coef <= 0.1 else self.learning_rate
         self.optimizer.param_groups[self._STD_GROUP_IDX]["lr"] = std_lr
 
     # ------------------------------------------------------------- rollout step
@@ -454,6 +461,11 @@ class DistillationPPO(BaseAlgo):
         loss_dict: dict[str, float] = {
             "ppo_coef": float(self.ppo_coef),
             "warmup_active": float(self._warmup_active),
+            # Mirror far-tracking's rsl_rl runner `Loss/learning_rate`
+            # (emitted from their on_policy_runner). FAR-pi also logs the
+            # same value under `LR/student_critic_lr`; this key is here
+            # purely to match the far-tracking wandb schema.
+            "learning_rate": float(self.learning_rate),
         }
         if num_updates > 0:
             for k, tensor in loss_accum.items():
@@ -519,14 +531,13 @@ class DistillationPPO(BaseAlgo):
         # DAgger (behavior-cloning) loss with expert-terminate masking. Rows
         # where the teacher emits all-zero actions (a convention from the
         # reference implementation marking trajectories the expert terminated)
-        # are dropped from the mean. We use a multiplicative mask rather than
-        # indexed in-place assignment to keep the autograd graph intact.
+        # are zeroed and the .mean() denominator is the full batch — matches
+        # far-tracking my_distillation.py:1021-1035. A multiplicative mask
+        # keeps the autograd graph intact.
         distill_raw = self.distill_loss_fn(student_mean, teacher_actions, reduction="none")
         expert_terminate = torch.all(teacher_actions == 0.0, dim=-1)
         keep_mask = (~expert_terminate).float().unsqueeze(-1)
-        valid = keep_mask.sum().clamp(min=1.0)  # number of kept rows
-        # Mean over (valid rows) * (action dim).
-        dagger_loss = (distill_raw * keep_mask).sum() / (valid * distill_raw.shape[-1])
+        dagger_loss = (distill_raw * keep_mask).mean()
 
         # Combined loss. Matches far-tracking's DepthDistillationPPO formula at
         # my_distillation.py:978-985, 1037: value loss is **always active**
@@ -550,8 +561,13 @@ class DistillationPPO(BaseAlgo):
             "surrogate_loss": surrogate_loss.detach(),
             "value_loss": value_loss.detach(),
             # Logged as "behavior" to match far-tracking's distillation loss
-            # dict key (my_distillation.py:238, 1073).
-            "behavior": dagger_loss.detach(),
+            # dict key (my_distillation.py:238, 1073). far-tracking bakes
+            # (1 - ppo_coeff) into the tensor before .item() at
+            # my_distillation.py:1021, 1073; we mirror that here so the
+            # plot scales line up across the two codebases. The actual
+            # BC gradient magnitude is unchanged — the (1 - ppo_coef)
+            # factor is already applied to `total_loss` at line 553.
+            "behavior": ((1.0 - self.ppo_coef) * dagger_loss).detach(),
             "entropy_mean": entropy_mean.detach(),
             "mean_kl": kl_mean.detach(),
         }
@@ -580,9 +596,12 @@ class DistillationPPO(BaseAlgo):
         elif kl_mean < self.config.desired_kl / 2.0 and kl_mean > 0.0:
             self.learning_rate = min(1e-2, self.learning_rate * 1.5)
 
-        # Push to student + critic groups; std group follows ppo_coef, not KL.
+        # Push the decayed LR to all groups, including the std group when it
+        # is active (ppo_coef > 0.1). Matches far-tracking
+        # my_distillation.py:953-954 which updates every param group.
         for idx, group in enumerate(self.optimizer.param_groups):
-            if idx == self._STD_GROUP_IDX:
+            if idx == self._STD_GROUP_IDX and self.ppo_coef <= 0.1:
+                # Still gated to 0 while DAgger dominates; don't overwrite.
                 continue
             group["lr"] = self.learning_rate
 
