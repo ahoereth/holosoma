@@ -93,10 +93,15 @@ class DistillationPPO(BaseAlgo):
         multi_gpu_cfg: dict | None = None,
     ):
         super().__init__(env, config, device, multi_gpu_cfg)
-        if self.is_multi_gpu:
-            # TODO: DistillationPPO has never been exercised multi-GPU; refuse
-            # to launch rather than silently diverge.
-            raise NotImplementedError("DistillationPPO does not yet support multi-GPU training.")
+        # Multi-GPU training: mirrors holosoma's PPO
+        # (ppo.py:267-268 + _reduce_parameters / _synchronize_model_weights)
+        # and far-tracking's DepthDistillationPPO (my_distillation.py:529-554,
+        # 1087-1088, 1101-1117). Under torchrun, each rank runs its own env
+        # shard; the optimizer step is kept in sync by (a) broadcasting
+        # initial weights from rank 0, (b) all-reducing gradients before
+        # optimizer.step, (c) all-reducing the KL estimate before the
+        # adaptive-LR schedule, and (d) broadcasting the LR decision from
+        # rank 0 so every rank advances its optimizer in lockstep.
 
         self.log_dir = str(log_dir)
         self.writer = TensorboardSummaryWriter(log_dir=self.log_dir, flush_secs=10)
@@ -144,6 +149,11 @@ class DistillationPPO(BaseAlgo):
         logger.info("Setting up DistillationPPO")
         self._resolve_obs_dims()
         self._build_policy()
+        # Broadcast initial weights from rank 0 so every rank starts from the
+        # same random init. Must happen after the policy is built but before
+        # the optimizer is built (so the optimizer sees synchronized params).
+        if self.is_multi_gpu:
+            self._synchronize_model_weights()
         self._build_optimizer()
         self._build_storage()
 
@@ -553,6 +563,12 @@ class DistillationPPO(BaseAlgo):
 
         self.optimizer.zero_grad()
         total_loss.backward()
+        # Average gradients across ranks so every rank's optimizer.step()
+        # applies the same update. Clip-grad-norm operates on the averaged
+        # gradients (matches holosoma PPO._update_algo_step at
+        # ppo.py:505-510 and far-tracking my_distillation.py:1057-1063).
+        if self.is_multi_gpu:
+            self._reduce_parameters()
         nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
         self.optimizer.step()
 
@@ -588,13 +604,31 @@ class DistillationPPO(BaseAlgo):
                 - 0.5,
                 dim=-1,
             )
-            return torch.mean(kl)
+            kl_mean = torch.mean(kl)
+            # Average the KL estimate across ranks so every rank makes the
+            # same adaptive-LR decision. Matches holosoma PPO at
+            # ppo.py:640-642 and far-tracking my_distillation.py:529-530.
+            if self.is_multi_gpu:
+                torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                kl_mean /= self.gpu_world_size
+            return kl_mean
 
     def _update_learning_rate(self, kl_mean: torch.Tensor) -> None:
-        if kl_mean > self.config.desired_kl * 2.0:
-            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
-        elif kl_mean < self.config.desired_kl / 2.0 and kl_mean > 0.0:
-            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+        # Only rank 0 computes the LR update; broadcast the decision so
+        # every rank's optimizer ticks in lockstep. Without this, tiny
+        # float-comparison mismatches can push ranks onto different LRs
+        # and the all-reduced grads become inconsistent.
+        # Mirror of far-tracking my_distillation.py:533-543, 940-950, 1323-1334.
+        if not self.is_multi_gpu or self.gpu_global_rank == 0:
+            if kl_mean > self.config.desired_kl * 2.0:
+                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+            elif kl_mean < self.config.desired_kl / 2.0 and kl_mean > 0.0:
+                self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+
+        if self.is_multi_gpu:
+            lr_tensor = torch.tensor(self.learning_rate, device=self.device)
+            torch.distributed.broadcast(lr_tensor, src=0)
+            self.learning_rate = lr_tensor.item()
 
         # Push the decayed LR to all groups, including the std group when it
         # is active (ppo_coef > 0.1). Matches far-tracking
@@ -604,6 +638,43 @@ class DistillationPPO(BaseAlgo):
                 # Still gated to 0 while DAgger dominates; don't overwrite.
                 continue
             group["lr"] = self.learning_rate
+
+    # --------------------------------------------------------------- multi-gpu
+
+    def _reduce_parameters(self) -> None:
+        """All-reduce gradients across ranks and scale by world size.
+
+        Mirrors holosoma PPO._reduce_parameters (ppo.py:773-793) but covers
+        every trainable group managed by the single DistillationPPO
+        optimizer: student MLP, depth backbone, critic, and the `std`
+        parameter. Teacher params are frozen (eval mode, requires_grad=False)
+        so their grads are None and are skipped naturally.
+        """
+        grads = [p.grad.view(-1) for p in self.policy.parameters() if p.grad is not None]
+        if not grads:
+            return
+        all_grads = torch.cat(grads)
+        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
+        all_grads /= self.gpu_world_size
+
+        offset = 0
+        for p in self.policy.parameters():
+            if p.grad is None:
+                continue
+            numel = p.numel()
+            p.grad.data.copy_(all_grads[offset : offset + numel].view_as(p.grad))
+            offset += numel
+
+    def _synchronize_model_weights(self) -> None:
+        """Broadcast initial policy weights from rank 0 to every other rank.
+
+        Called once at setup so every rank starts training from the same
+        random initialization. Matches holosoma PPO._synchronize_model_weights
+        (ppo.py:795-805).
+        """
+        for p in self.policy.parameters():
+            torch.distributed.broadcast(p.data, src=0)
+        logger.info(f"Synchronized DistillationPPO model weights across {self.gpu_world_size} GPUs")
 
     # ------------------------------------------------------------------- logging
 
