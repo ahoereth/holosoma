@@ -124,6 +124,12 @@ class DistillationPPO(BaseAlgo):
         self.current_learning_iteration = 0
         self.eval_callbacks: list[RLEvalCallback] = []
 
+        # Number of frozen teacher MLPs to build in ``_build_policy``. Set by
+        # ``train_agent.py`` from the comma count in ``training.teacher_checkpoint``
+        # before ``setup()``; defaults to 1. ``teacher_obs`` must carry the
+        # routing motion_idx in its leading column when this is > 1.
+        self.num_teachers: int = 1
+
         # PPO/DAgger schedule state -- filled in by adjust_ppo_dagger_coeff.
         self.ppo_coef = 0.0
         self.learning_rate = self.config.learning_rate
@@ -220,6 +226,7 @@ class DistillationPPO(BaseAlgo):
             num_actions=self.num_act,
             module_config=self.config.module,
             device=self.device,
+            num_teachers=self.num_teachers,
         )
 
     def _build_optimizer(self) -> None:
@@ -733,27 +740,38 @@ class DistillationPPO(BaseAlgo):
             p.requires_grad_(False)
         return loaded.get("infos")
 
-    def load_teacher(self, path: str) -> None:
-        """Load a teacher-only checkpoint into ``policy.teacher``.
+    def load_teacher(self, paths: str | list[str]) -> None:
+        """Load one or more teacher-only checkpoints into ``policy.teachers``.
 
-        Accepts either a holosoma PPO algo checkpoint (contains
-        ``actor_model_state_dict`` or ``model_state_dict``) or a raw
-        state_dict. Delegates renaming to
-        :meth:`DepthStudentTeacherCritic.load_teacher_state_dict` (which
-        handles the ``actor.*`` / ``actor_module.module.*`` prefixes).
+        Accepts a single path or a list of paths (one per teacher slot,
+        in the same order as ``policy.teachers``). Each path may be a
+        holosoma PPO algo checkpoint (contains ``actor_model_state_dict`` or
+        ``model_state_dict``) or a raw state_dict. Delegates renaming to
+        :meth:`DepthStudentTeacherCritic.load_teacher_state_dict`.
         """
-        logger.info(f"Loading teacher weights from {path}")
-        loaded = torch.load(path, map_location=self.device)
-        # Prefer the PPO actor state dict if present; fall back to the generic
-        # bucket; else assume the top-level is already a raw state dict.
-        if isinstance(loaded, dict) and "actor_model_state_dict" in loaded:
-            teacher_ckpt = {"model_state_dict": loaded["actor_model_state_dict"]}
-        else:
-            teacher_ckpt = loaded
-        self.policy.load_teacher_state_dict(teacher_ckpt, strict=True)
-        self.policy.teacher.eval()
-        for p in self.policy.teacher.parameters():
-            p.requires_grad_(False)
+        if isinstance(paths, str):
+            paths = [paths]
+        if len(paths) != self.policy.num_teachers:
+            raise RuntimeError(
+                f"load_teacher: got {len(paths)} paths but policy has "
+                f"{self.policy.num_teachers} teacher slots. Rebuild the policy "
+                f"with matching num_teachers or pass the correct number of paths."
+            )
+        for i, path in enumerate(paths):
+            logger.info(f"Loading teacher[{i}] weights from {path}")
+            loaded = torch.load(path, map_location=self.device)
+            # Prefer the PPO actor state dict if present; fall back to the
+            # generic bucket; else assume the top-level is already a raw
+            # state dict.
+            if isinstance(loaded, dict) and "actor_model_state_dict" in loaded:
+                teacher_ckpt = {"model_state_dict": loaded["actor_model_state_dict"]}
+            else:
+                teacher_ckpt = loaded
+            self.policy.load_teacher_state_dict(teacher_ckpt, strict=True, teacher_index=i)
+        for t in self.policy.teachers:
+            t.eval()
+            for p in t.parameters():
+                p.requires_grad_(False)
 
     # --------------------------------------------------------- inference / eval
 

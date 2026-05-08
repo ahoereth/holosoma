@@ -60,7 +60,10 @@ def init_eval_logging() -> None:
 @dataclass(frozen=True)
 class CheckpointConfig:
     checkpoint: str | None = None
-    """Path to a local checkpoint file, or W&B URI in the format `wandb://<entity>/<project>/<run_id>[/<checkpoint_name>]`."""
+    """Path to a local checkpoint file, or W&B URI in the format
+    ``wandb://<entity>/<project>/<run_id>[/<checkpoint_name>]``. If the
+    trailing ``<checkpoint_name>`` is omitted, the run's latest ``model_N.pt``
+    is picked automatically."""
 
 
 def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[ExperimentConfig, str | None]:
@@ -239,6 +242,17 @@ def load_checkpoint(checkpoint: str, log_dir: str) -> Path:
     import shutil
 
     if checkpoint.startswith(_WANDB_PREFIX):
+        # Resolve "wandb://entity/project/run_id" (no trailing filename) to the
+        # latest model_N.pt on the run. Keeps get_cached_file_path's contract
+        # (needs a filename) intact by rewriting the URI here.
+        run_path, artifact_path = _parse_wandb_reference(checkpoint)
+        if artifact_path is None:
+            from holosoma.utils.wandb_registry import get_wandb_run_and_file
+
+            _, resolved_run, fname = get_wandb_run_and_file(run_path)
+            checkpoint = f"{_WANDB_PREFIX}{resolved_run}/{fname}"
+            logger.info(f"Auto-resolved latest checkpoint: {checkpoint}")
+
         # 1. Cache globally (fast on repeated access)
         cached_path = get_cached_file_path(checkpoint)
         logger.info(f"Checkpoint cached at: {cached_path}")

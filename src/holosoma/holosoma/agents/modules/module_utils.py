@@ -66,12 +66,15 @@ def setup_student_teacher_module(
     num_actions: int,
     module_config,
     device,
+    num_teachers: int = 1,
 ):
     """Build a ``DepthStudentTeacherCritic`` (the only variant we ship today).
 
     ``module_config`` is a :class:`StudentTeacherModuleConfig`. The depth
     backbone is resolved from ``module_config.depth_backbone`` (dotted path)
-    and instantiated with ``(depth_output_dim,)``.
+    and instantiated with ``(depth_output_dim,)``. ``num_teachers`` controls
+    how many frozen teacher MLPs are built; ``teacher_obs`` must carry the
+    routing motion_idx in its leading column.
     """
     backbone_cls = get_class(module_config.depth_backbone)
     depth_backbone = backbone_cls(module_config.depth_output_dim)
@@ -88,6 +91,7 @@ def setup_student_teacher_module(
         critic_hidden_dims=list(module_config.critic_hidden_dims),
         activation=module_config.activation,
         init_noise_std=module_config.init_noise_std,
+        num_teachers=num_teachers,
     ).to(device)
 
 
@@ -97,6 +101,7 @@ def setup_depth_student_teacher_module(
     num_actions: int,
     module_config,
     device,
+    num_teachers: int = 1,
 ):
     """Build a :class:`DepthStudentTeacher` (no critic). Used by the pure-DAgger
     :class:`Distillation` algorithm.
@@ -118,4 +123,5 @@ def setup_depth_student_teacher_module(
         teacher_hidden_dims=list(module_config.teacher_hidden_dims),
         activation=module_config.activation,
         init_noise_std=module_config.init_noise_std,
+        num_teachers=num_teachers,
     ).to(device)

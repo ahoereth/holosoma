@@ -300,6 +300,25 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
             log_dir=experiment_save_dir,
             multi_gpu_cfg=distributed_conf,
         )
+
+        # Multi-teacher: training.teacher_checkpoint may be a comma-separated
+        # list, one entry per teacher slot. Parse once here, publish the count
+        # to the algo *before* setup() so _build_policy sizes the
+        # StudentTeacher's ModuleList correctly.
+        teacher_checkpoints: list[str] = []
+        if tyro_config.training.teacher_checkpoint is not None:
+            teacher_checkpoints = [
+                s.strip() for s in tyro_config.training.teacher_checkpoint.split(",") if s.strip()
+            ]
+            if hasattr(algo, "num_teachers"):
+                algo.num_teachers = len(teacher_checkpoints)
+            elif len(teacher_checkpoints) > 1:
+                raise RuntimeError(
+                    f"`training.teacher_checkpoint` has {len(teacher_checkpoints)} entries "
+                    f"but algorithm {type(algo).__name__} has no num_teachers attribute; "
+                    f"only 1 teacher is supported."
+                )
+
         algo.setup()
         algo.attach_checkpoint_metadata(tyro_config, wandb_run_path)
         if tyro_config.training.checkpoint is not None:
@@ -309,20 +328,20 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
             )
             algo.load(loaded_checkpoint)
 
-        # Load a teacher-only checkpoint into the student-teacher policy, if the
+        # Load teacher-only checkpoint(s) into the student-teacher policy, if the
         # algo supports it. Runs after `algo.load()` so a full-resume checkpoint
         # wins for student/critic/optimizer state, and we only overwrite the
-        # frozen teacher branch here.
-        if tyro_config.training.teacher_checkpoint is not None:
+        # frozen teacher branch(es) here.
+        if teacher_checkpoints:
             if not hasattr(algo, "load_teacher"):
                 raise RuntimeError(
                     f"`training.teacher_checkpoint` was set but algorithm "
                     f"{type(algo).__name__} does not implement load_teacher()."
                 )
-            teacher_ckpt_path = load_checkpoint(
-                tyro_config.training.teacher_checkpoint, str(experiment_save_dir)
-            )
-            algo.load_teacher(teacher_ckpt_path)
+            teacher_ckpt_paths = [
+                str(load_checkpoint(tc, str(experiment_save_dir))) for tc in teacher_checkpoints
+            ]
+            algo.load_teacher(teacher_ckpt_paths)
 
         # handle saving config
         algo.learn()

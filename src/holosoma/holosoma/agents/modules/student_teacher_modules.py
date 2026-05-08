@@ -38,11 +38,16 @@ def _build_mlp(input_dim: int, hidden_dims: list[int], output_dim: int, activati
 
 
 class StudentTeacher(nn.Module):
-    """Proprio-only student + frozen privileged teacher.
+    """Proprio-only student + one or more frozen privileged teachers.
 
     Student consumes ``actor_obs`` (+ optional depth latent from a subclass).
-    Teacher consumes ``teacher_obs``; its weights are loaded via
+    Each teacher consumes ``teacher_obs[:, 1:]``; their weights are loaded via
     :meth:`load_teacher_state_dict` and frozen (``eval()`` + no grad).
+
+    When ``num_teachers > 1``, the first column of ``teacher_obs`` is treated
+    as a motion index that routes each env to the matching teacher. Mirrors
+    far-tracking's ``MultiTeacher.forward`` (whole_body_tracking/utils/
+    multi_motion_helpers.py:283-297). ``motion_idx == -1`` → output 0.
     """
 
     def __init__(
@@ -54,38 +59,68 @@ class StudentTeacher(nn.Module):
         teacher_hidden_dims: list[int],
         activation: str = "ELU",
         init_noise_std: float = 0.01,
+        num_teachers: int = 1,
     ):
         super().__init__()
+        if num_teachers < 1:
+            raise ValueError(f"num_teachers must be >= 1, got {num_teachers}")
         self.num_actor_obs = num_actor_obs
         self.num_teacher_obs = num_teacher_obs
         self.num_actions = num_actions
+        # Each teacher MLP sees teacher_obs[:, 1:] (the leading column carries
+        # the motion-routing index and is stripped in teacher_act). Pretrained
+        # teachers were never exposed to that column.
+        self._teacher_in_dim = num_teacher_obs - 1
 
         self.student = _build_mlp(num_actor_obs, student_hidden_dims, num_actions, activation)
-        self.teacher = _build_mlp(num_teacher_obs, teacher_hidden_dims, num_actions, activation)
+        self.teachers = nn.ModuleList(
+            [
+                _build_mlp(self._teacher_in_dim, teacher_hidden_dims, num_actions, activation)
+                for _ in range(num_teachers)
+            ]
+        )
 
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         self.distribution: Normal | None = None
         Normal.set_default_validate_args(False)
 
-        self._loaded_teacher = False
-        self.teacher.eval()
-        for p in self.teacher.parameters():
-            p.requires_grad_(False)
+        self._loaded_teacher = [False] * num_teachers
+        for t in self.teachers:
+            t.eval()
+            for p in t.parameters():
+                p.requires_grad_(False)
 
         print(f"Student MLP: {self.student}")
-        print(f"Teacher MLP: {self.teacher}")
+        print(f"Teachers ({num_teachers}x): {self.teachers[0]}")
+
+    # Keep ``policy.teacher`` as a legacy alias so existing call sites like
+    # ``algo._train_mode`` / ``algo.load`` (which defensively do
+    # ``self.policy.teacher.eval()`` / iterate parameters) keep working. New
+    # code should iterate ``self.teachers`` instead.
+    @property
+    def teacher(self) -> nn.Module:
+        return self.teachers
 
     @property
     def loaded_teacher(self) -> bool:
-        return self._loaded_teacher
+        return all(self._loaded_teacher)
 
-    def load_teacher_state_dict(self, ckpt: dict, strict: bool = True) -> None:
-        """Load a teacher-PPO checkpoint into ``self.teacher``.
+    @property
+    def num_teachers(self) -> int:
+        return len(self.teachers)
+
+    def load_teacher_state_dict(self, ckpt: dict, strict: bool = True, teacher_index: int = 0) -> None:
+        """Load a teacher-PPO checkpoint into ``self.teachers[teacher_index]``.
 
         Accepts either a raw state dict or a holosoma algo checkpoint dict.
         Renames ``actor.*`` / ``actor_module.module.*`` keys to ``<bare>`` so
-        they match ``self.teacher``'s plain ``nn.Sequential`` layout.
+        they match a plain ``nn.Sequential`` layout.
         """
+        if teacher_index < 0 or teacher_index >= len(self.teachers):
+            raise IndexError(
+                f"teacher_index={teacher_index} out of range for {len(self.teachers)} teachers"
+            )
+
         state: dict = ckpt
         # unwrap common holosoma/rsl_rl ckpt wrappers. holosoma PPO saves as
         # {'actor_model_state_dict': ..., 'critic_model_state_dict': ...}; other
@@ -115,20 +150,21 @@ class StudentTeacher(nn.Module):
                     break
             renamed[new_k] = v
 
-        # keep only keys that match teacher
-        teacher_keys = set(dict(self.teacher.named_parameters()).keys()) | set(dict(self.teacher.named_buffers()).keys())
+        target = self.teachers[teacher_index]
+        teacher_keys = set(dict(target.named_parameters()).keys()) | set(dict(target.named_buffers()).keys())
         filtered = {k: v for k, v in renamed.items() if k in teacher_keys}
         missing = [k for k in teacher_keys if k not in filtered]
         if missing and strict:
             raise RuntimeError(
-                f"load_teacher_state_dict: missing keys after renaming: {missing[:5]}{'...' if len(missing) > 5 else ''}. "
+                f"load_teacher_state_dict[{teacher_index}]: missing keys after renaming: "
+                f"{missing[:5]}{'...' if len(missing) > 5 else ''}. "
                 f"Available (post-rename): {list(renamed.keys())[:10]}"
             )
-        self.teacher.load_state_dict(filtered, strict=strict)
-        self.teacher.eval()
-        for p in self.teacher.parameters():
+        target.load_state_dict(filtered, strict=strict)
+        target.eval()
+        for p in target.parameters():
             p.requires_grad_(False)
-        self._loaded_teacher = True
+        self._loaded_teacher[teacher_index] = True
 
     # ---------- action interfaces (parallel PPOActor) ----------
 
@@ -170,8 +206,31 @@ class StudentTeacher(nn.Module):
 
     @torch.no_grad()
     def teacher_act(self, teacher_obs: torch.Tensor) -> torch.Tensor:
-        """Deterministic teacher forward. Used to generate DAgger labels."""
-        return self.teacher(teacher_obs)
+        """Deterministic teacher forward. Used to generate DAgger labels.
+
+        ``teacher_obs[:, 0]`` is the motion index (routing key);
+        ``teacher_obs[:, 1:]`` is the privileged obs consumed by the teacher
+        MLP. With ``num_teachers == 1`` this is a single forward; with
+        ``num_teachers > 1`` each env is routed to
+        ``self.teachers[motion_idx]``. ``motion_idx == -1`` zeros the output
+        for that env.
+        """
+        if teacher_obs.shape[-1] != self.num_teacher_obs:
+            raise RuntimeError(
+                f"teacher_act: expected last dim {self.num_teacher_obs} "
+                f"(includes leading motion_idx column), got {teacher_obs.shape[-1]}"
+            )
+        x = teacher_obs[:, 1:]
+        if len(self.teachers) == 1:
+            return self.teachers[0](x)
+        idx = teacher_obs[:, 0].long()
+        out = self.teachers[0](x)
+        for i in range(1, len(self.teachers)):
+            mask = idx == i
+            if mask.any():
+                out[mask] = self.teachers[i](x[mask])
+        out[idx < 0] = 0.0
+        return out
 
     def reset(self, dones=None) -> None:
         pass
@@ -195,6 +254,7 @@ class DepthStudentTeacher(StudentTeacher):
         teacher_hidden_dims: list[int],
         activation: str = "ELU",
         init_noise_std: float = 0.01,
+        num_teachers: int = 1,
     ):
         # Student sees actor_obs (proprio) concatenated with depth latent.
         super().__init__(
@@ -205,6 +265,7 @@ class DepthStudentTeacher(StudentTeacher):
             teacher_hidden_dims=teacher_hidden_dims,
             activation=activation,
             init_noise_std=init_noise_std,
+            num_teachers=num_teachers,
         )
         self.proprio_dim = num_actor_obs
         self.depth_output_dim = depth_output_dim
@@ -231,6 +292,7 @@ class StudentTeacherCritic(StudentTeacher):
         critic_hidden_dims: list[int],
         activation: str = "ELU",
         init_noise_std: float = 0.01,
+        num_teachers: int = 1,
     ):
         super().__init__(
             num_actor_obs=num_actor_obs,
@@ -240,6 +302,7 @@ class StudentTeacherCritic(StudentTeacher):
             teacher_hidden_dims=teacher_hidden_dims,
             activation=activation,
             init_noise_std=init_noise_std,
+            num_teachers=num_teachers,
         )
         self.num_critic_obs = num_critic_obs
         self.critic = _build_mlp(num_critic_obs, critic_hidden_dims, 1, activation)
@@ -265,6 +328,7 @@ class DepthStudentTeacherCritic(DepthStudentTeacher):
         critic_hidden_dims: list[int],
         activation: str = "ELU",
         init_noise_std: float = 0.01,
+        num_teachers: int = 1,
     ):
         super().__init__(
             num_actor_obs=num_actor_obs,
@@ -276,6 +340,7 @@ class DepthStudentTeacherCritic(DepthStudentTeacher):
             teacher_hidden_dims=teacher_hidden_dims,
             activation=activation,
             init_noise_std=init_noise_std,
+            num_teachers=num_teachers,
         )
         self.num_critic_obs = num_critic_obs
         self.critic = _build_mlp(num_critic_obs, critic_hidden_dims, 1, activation)

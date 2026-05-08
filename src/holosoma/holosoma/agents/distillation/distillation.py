@@ -96,6 +96,10 @@ class Distillation(BaseAlgo):
         self.eval_callbacks: list[RLEvalCallback] = []
         self._warmup_active = False
 
+        # See DistillationPPO: set by train_agent before setup() when
+        # training.teacher_checkpoint is a comma-separated list.
+        self.num_teachers: int = 1
+
         if self.config.distill_loss_type == "mse":
             self.distill_loss_fn = F.mse_loss
         elif self.config.distill_loss_type == "huber":
@@ -166,6 +170,7 @@ class Distillation(BaseAlgo):
             num_actions=self.num_act,
             module_config=self.config.module,
             device=self.device,
+            num_teachers=self.num_teachers,
         )
 
     def _build_optimizer(self) -> None:
@@ -383,20 +388,31 @@ class Distillation(BaseAlgo):
             p.requires_grad_(False)
         return loaded.get("infos")
 
-    def load_teacher(self, path: str) -> None:
-        """Load a teacher-only checkpoint into ``policy.teacher``. Same logic
-        as :meth:`DistillationPPO.load_teacher`; delegates to the shared
-        :meth:`StudentTeacher.load_teacher_state_dict`."""
-        logger.info(f"Loading teacher weights from {path}")
-        loaded = torch.load(path, map_location=self.device)
-        if isinstance(loaded, dict) and "actor_model_state_dict" in loaded:
-            teacher_ckpt = {"model_state_dict": loaded["actor_model_state_dict"]}
-        else:
-            teacher_ckpt = loaded
-        self.policy.load_teacher_state_dict(teacher_ckpt, strict=True)
-        self.policy.teacher.eval()
-        for p in self.policy.teacher.parameters():
-            p.requires_grad_(False)
+    def load_teacher(self, paths: str | list[str]) -> None:
+        """Load one or more teacher-only checkpoints into ``policy.teachers``.
+
+        Same semantics as :meth:`DistillationPPO.load_teacher`; delegates to
+        :meth:`StudentTeacher.load_teacher_state_dict` once per slot.
+        """
+        if isinstance(paths, str):
+            paths = [paths]
+        if len(paths) != self.policy.num_teachers:
+            raise RuntimeError(
+                f"load_teacher: got {len(paths)} paths but policy has "
+                f"{self.policy.num_teachers} teacher slots."
+            )
+        for i, path in enumerate(paths):
+            logger.info(f"Loading teacher[{i}] weights from {path}")
+            loaded = torch.load(path, map_location=self.device)
+            if isinstance(loaded, dict) and "actor_model_state_dict" in loaded:
+                teacher_ckpt = {"model_state_dict": loaded["actor_model_state_dict"]}
+            else:
+                teacher_ckpt = loaded
+            self.policy.load_teacher_state_dict(teacher_ckpt, strict=True, teacher_index=i)
+        for t in self.policy.teachers:
+            t.eval()
+            for p in t.parameters():
+                p.requires_grad_(False)
 
     # --------------------------------------------------------- inference / eval
 

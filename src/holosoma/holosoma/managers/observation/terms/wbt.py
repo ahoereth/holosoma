@@ -147,6 +147,22 @@ def velocity_command(env: WholeBodyTrackingManager) -> torch.Tensor:
     return motion_command.vel_cmd.view(env.num_envs, -1)
 
 
+def which_motion(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Per-env current motion index (shape [num_envs, 1]).
+
+    Used as the leading column of ``teacher_obs`` to route samples to the
+    matching teacher in ``StudentTeacher.teacher_act``. Mirrors
+    far-tracking's ``which_motion`` (tracking/mdp/observations.py). When the
+    motion file lacks a ``motion_idxs`` field, ``MotionLoader`` already
+    zero-fills (terms/wbt.py:157) so this term is always safe to read and
+    returns 0 for single-motion files (which collapses to a single-teacher
+    forward inside ``teacher_act``).
+    """
+    cmd = _get_motion_command_and_assert_type(env)
+    idx = cmd.motion.motion_idxs[cmd.time_steps]
+    return idx.to(torch.float32).view(env.num_envs, 1)
+
+
 def robot_anchor_projected_gravity(env: WholeBodyTrackingManager) -> torch.Tensor:
     """Gravity vector projected into the motion-command anchor (ref) frame.
 
