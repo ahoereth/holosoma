@@ -669,6 +669,8 @@ class BasePolicy:
             self._handle_stop_policy()
         elif cmd == StateCommand.INIT:
             self._handle_init_state()
+        elif cmd == StateCommand.DAMP:
+            self._handle_damp_state()
         elif cmd == StateCommand.KILL:
             self.logger.info(colored("Killing program via command", "red"))
             sys.exit(0)
@@ -695,29 +697,55 @@ class BasePolicy:
     # ============================================================================
 
     def _handle_start_policy(self):
-        """Handle start policy action."""
-        self.use_policy_action = True
-        self.get_ready_state = False
+        """Transition to RUN_POLICY. Resets gait phase."""
+        from holosoma_inference.controller import ControllerState
+
+        if self.controller is not None:
+            self.controller.set_state(ControllerState.RUN_POLICY)
+        else:
+            # Legacy path used by tests that build the policy without a Controller.
+            self.use_policy_action = True
+            self.get_ready_state = False
         self.logger.info(colored("Using policy actions", "blue"))
         self.phase = np.array([[0.0, np.pi]])
         if hasattr(self.interface, "no_action"):
             self.interface.no_action = 0
 
     def _handle_stop_policy(self):
-        """Handle stop policy action."""
-        self.use_policy_action = False
-        self.get_ready_state = False
+        """Transition to IDLE — actions zero."""
+        from holosoma_inference.controller import ControllerState
+
+        if self.controller is not None:
+            self.controller.set_state(ControllerState.IDLE)
+        else:
+            self.use_policy_action = False
+            self.get_ready_state = False
         self.logger.info("Actions set to zero")
         if hasattr(self.interface, "no_action"):
             self.interface.no_action = 1
 
     def _handle_init_state(self):
-        """Handle initialization state."""
-        self.get_ready_state = True
-        self.init_count = 0
+        """Transition to INIT — interpolate to default pose."""
+        from holosoma_inference.controller import ControllerState
+
+        if self.controller is not None:
+            self.controller.set_state(ControllerState.INIT)
+        else:
+            self.get_ready_state = True
+            self.init_count = 0
         self.logger.info("Setting to init state")
         if hasattr(self.interface, "no_action"):
             self.interface.no_action = 0
+
+    def _handle_damp_state(self):
+        """Transition to DAMP — hold last observed pose with low gains."""
+        from holosoma_inference.controller import ControllerState
+
+        if self.controller is None:
+            self.logger.warning("DAMP requested but no Controller is bound; ignoring")
+            return
+        self.controller.set_state(ControllerState.DAMP)
+        self.logger.info(colored("Entering damping mode (hold last pose)", "yellow"))
 
     def _print_control_status(self):
         """Print current control status."""

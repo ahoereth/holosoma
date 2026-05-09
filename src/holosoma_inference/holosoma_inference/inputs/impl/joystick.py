@@ -24,4 +24,5 @@ JOYSTICK_COMMANDS: dict[str, StateCommand] = {
     "select+A": StateCommand.START_MOTION_CLIP,
     "X": StateCommand.SWITCH_MODE,
     "x": StateCommand.SWITCH_MODE,
+    "B+X": StateCommand.DAMP,
 }

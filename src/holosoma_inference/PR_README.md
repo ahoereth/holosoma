@@ -7,14 +7,11 @@ Branch: `dev/tomasz/controller`
 | Step | Commit | Status |
 |---|---|---|
 | 0 — Sim2sim test harness + design doc | `846c299` | done |
-| 1 — Extract `Controller` (run loop only, no behavior change) | next | done |
-| 2 — Move hardware ownership to Controller | future PR | not started |
-| 3 — Formalize FSM (replace flags with `ControllerState`) | future PR | not started |
-| 4 — Add `DAMP` state | future PR | not started |
-| 5 — Collapse `DualModePolicy` to a swap | future PR | not started |
-
-Steps 2–5 will follow as separate PRs because each one touches all policy
-subclasses and warrants its own review.
+| 1 — Extract `Controller` (run loop only, no behavior change) | `5983b6c` | done |
+| — `--render` flag for visual sanity | `1507af1` | done |
+| 2+5 — Hardware ownership to Controller, dual-mode collapse | `aa92a3f` | done |
+| 3+4 — Formalize FSM, add DAMP state | next | done |
+| 7 — Update FAR-pi extensions and rewrite skipped input tests | future PR | not started |
 
 ## Design
 
@@ -77,6 +74,25 @@ before this PR.
   former loop is in `Controller.step()` and `Controller.run()`.
 - `tests/sim2sim/` — new directory with the headless harness, MuJoCo
   interface stub, and a pytest entry.
+
+## DAMP state usage
+
+After Step 4, the policy responds to a new ``StateCommand.DAMP`` that
+holds the last observed joint positions with the policy's KP/KD gains.
+This is the user-visible deliverable Adam asked for — the robot stays
+energized at its current pose when the teleop handle is released.
+
+| Trigger | Effect |
+|---|---|
+| Keyboard ``\`` (backslash) | Enter DAMP |
+| Joystick ``B+X`` chord | Enter DAMP |
+| ``StateCommand.DAMP`` via any provider | Enter DAMP |
+| ``StateCommand.START`` (``]`` or ``A``) | Exit DAMP into RUN_POLICY |
+| ``StateCommand.STOP`` (``o`` or ``B``) | Exit DAMP into IDLE |
+
+While in DAMP the controller publishes the held pose every tick with
+``send_low_command(q_hold, kp_override=kp, kd_override=kd)`` until
+another command transitions out.
 
 ## What did NOT change
 

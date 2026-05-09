@@ -69,6 +69,15 @@ class Controller:
         self.use_joystick = use_joystick
         self.use_keyboard = use_keyboard
 
+        # DAMP state holds last-observed joint positions with the policy's
+        # KP/KD gains. The intent is "robot stays energized at the pose it
+        # was at when teleop released the handle" — not low gains, full
+        # gains tracking a stationary target.
+        self._damp_active = False
+        self._damp_q = None
+        self.damp_kp_scale = 1.0
+        self.damp_kd_scale = 1.0
+
         # Two-way wiring: policy can call back into the controller for
         # operations like velocity_input.zero() that live on hardware.
         policy.controller = self
@@ -79,7 +88,15 @@ class Controller:
 
     @property
     def state(self) -> ControllerState:
-        """Best-effort projection of policy flags onto ControllerState."""
+        """Current Controller FSM state.
+
+        Backed by the legacy flags on the policy
+        (``use_policy_action`` / ``get_ready_state`` / ``_stiff_hold_active``)
+        plus a DAMP override on the controller itself. Reads project the
+        flag set onto a single state.
+        """
+        if self._damp_active:
+            return ControllerState.DAMP
         if getattr(self.policy, "get_ready_state", False):
             return ControllerState.INIT
         if getattr(self.policy, "use_policy_action", False):
@@ -87,6 +104,38 @@ class Controller:
         if getattr(self.policy, "_stiff_hold_active", False):
             return ControllerState.STIFF_HOLD
         return ControllerState.IDLE
+
+    def set_state(self, new_state: ControllerState) -> None:
+        """Transition the FSM. Updates the legacy flags atomically.
+
+        ``DAMP`` is held by a controller-side flag; on entry, the current
+        joint positions are captured for the hold target. Other states
+        clear the damp flag.
+        """
+        policy = self.policy
+        # Clear all flags first so transitions are idempotent.
+        policy.use_policy_action = False
+        policy.get_ready_state = False
+        if hasattr(policy, "_stiff_hold_active"):
+            policy._stiff_hold_active = False
+        self._damp_active = False
+        self._damp_q = None
+
+        if new_state is ControllerState.RUN_POLICY:
+            policy.use_policy_action = True
+        elif new_state is ControllerState.INIT:
+            policy.get_ready_state = True
+            policy.init_count = 0
+        elif new_state is ControllerState.STIFF_HOLD:
+            if hasattr(policy, "_stiff_hold_active"):
+                policy._stiff_hold_active = True
+        elif new_state is ControllerState.DAMP:
+            self._damp_active = True
+            try:
+                state = self.interface.get_low_state()
+                self._damp_q = state[0, 7 : 7 + policy.num_dofs].copy()
+            except Exception:
+                self.logger.warning("DAMP entry: get_low_state() failed; will capture on first tick")
 
     def set_policy(self, policy: BasePolicy) -> None:
         """Swap the active policy. Used by dual-mode SWITCH_MODE in Step 5."""
@@ -96,11 +145,7 @@ class Controller:
             policy.interface = self.interface
 
     def step(self) -> None:
-        """Execute one rl_rate tick of the run loop body.
-
-        Equivalent to the per-iteration body of the previous
-        ``BasePolicy.run()``, minus iteration counting and FPS logging.
-        """
+        """Execute one rl_rate tick of the run loop body."""
         policy = self.policy
         policy.latency_tracker.start_cycle()
 
@@ -114,12 +159,34 @@ class Controller:
         if commands:
             policy._print_control_status()
 
-        if policy.use_phase:
-            policy.update_phase_time()
-
-        policy.policy_action()
+        if self._damp_active:
+            self._publish_damp_command()
+        else:
+            if policy.use_phase:
+                policy.update_phase_time()
+            policy.policy_action()
 
         policy.latency_tracker.end_cycle()
+
+    def _publish_damp_command(self) -> None:
+        """Hold last-observed joint positions with low KP/KD."""
+        import numpy as np
+
+        policy = self.policy
+        state = self.interface.get_low_state()
+        if self._damp_q is None:
+            self._damp_q = state[0, 7 : 7 + policy.num_dofs].copy()
+        kp_full = np.asarray(policy.robot_config.motor_kp, dtype=np.float64) * self.damp_kp_scale
+        kd_full = np.asarray(policy.robot_config.motor_kd, dtype=np.float64) * self.damp_kd_scale
+        zeros = np.zeros(policy.num_dofs)
+        self.interface.send_low_command(
+            self._damp_q + policy.joint_offsets,
+            zeros,
+            zeros,
+            state[0, 7 : 7 + policy.num_dofs],
+            kp_override=kp_full,
+            kd_override=kd_full,
+        )
 
     def run(self) -> None:
         """Run until KeyboardInterrupt."""

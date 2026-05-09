@@ -59,3 +59,6 @@ class StateCommand(Enum):
 
     # --- Dual mode ---
     SWITCH_MODE = auto()  # Injected by DualModePolicy at runtime
+
+    # --- Safety / standby ---
+    DAMP = auto()  # Hold last observed pose with low KP/KD
