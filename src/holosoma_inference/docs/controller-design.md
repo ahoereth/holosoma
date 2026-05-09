@@ -1,160 +1,383 @@
-# Controller API — Design
+# Controller refactor — Design
 
-## Problem
+## Status
 
-`BasePolicy` owns the SDK interface, input providers, run loop, FSM flags
-(`use_policy_action`, `get_ready_state`, `_stiff_hold_active`), joint
-interpolation, *and* the ONNX policy. Result: `_shared_hardware_source` hack for
-dual-mode, duplicated run loop in `DualModePolicy`, and no clean place to add
-"damping mode" or a startup FSM.
+| Step | What | Status |
+|---|---|---|
+| 0 | Sim2sim test harness | done (`846c299`) |
+| 1 | Extract `Controller` (run loop only) | done (`5983b6c`) |
+| — | `--render` flag for visual sanity | done (`1507af1`) |
+| 2 + 5 | Hardware ownership to Controller, dual-mode collapse | done (`aa92a3f`) |
+| 3 + 4 | Formalize FSM, add `DAMP` state | done (`f80806a`) |
+| 7 | Update FAR-pi extensions, rewrite skipped input tests | not started |
+| 8 | `PolicyProtocol` — make state→action a first-class type | not started |
 
-## Split
+Steps 1–4 already landed and are described at the bottom of this doc as
+"what's true today." The body of the doc describes Step 8, which is
+where the architecture is actually heading.
 
-```
-Controller           ← orchestrator: hardware, FSM, run loop, command dispatch
-  └─ BasePolicy      ← pure obs→action: ONNX, history buffers, obs construction
-```
+## Problem (the one Step 8 closes)
 
-`BasePolicy` no longer knows about `interface`, `rate`, or `run()`.
-`Controller` is what `run_policy.py` instantiates and what `holosoma_service`
-will run as a daemon.
+`BasePolicy` is doing two unrelated things:
 
-## Controller states
+1. **State→action mapping** — the actual control law. The hot path of
+   `policy_action()`. This is what every kind of "active behaviour"
+   (locomotion, WBT, damping, init ramp, stiff hold) shares.
+2. **Observation pipeline** — obs scaling, history buffers, ONNX
+   wiring. An implementation detail of the *learned* policies. Damping
+   and init don't need any of it.
+
+Today every variant of (1) inherits the apparatus of (2) by being a
+subclass of `BasePolicy`. That's why DAMP had to land as a Controller
+flag (`_damp_active`) rather than as a peer of `LocomotionPolicy` —
+making it a `BasePolicy` subclass would have forced it to drag along
+ONNX init, obs config, and the rest.
+
+Step 8 fixes this by promoting (1) to a `PolicyProtocol` and letting
+each impl decide how it wants to satisfy it.
+
+## The protocol
 
 ```python
-class ControllerState(Enum):
-    IDLE         # no commands sent (motors slack)
-    INIT         # interpolating to default/start pose over N ticks
-    DAMP         # holds last observed q with low kp/kd — survives teleop release
-    STIFF_HOLD   # holds configured pose with high kp/kd (WBT startup)
-    RUN_POLICY   # delegates q_target to active BasePolicy
+class PolicyProtocol(Protocol):
+    """Maps robot state to a low-level command."""
+    name: str
+
+    def act(self, ctx: Controller, state: np.ndarray) -> Command:
+        """One tick: state → low-level command. The hot path."""
+
+    def on_activate(self, ctx: Controller) -> None:
+        """Called when this policy becomes the active one.
+        KP/KD push, q_hold capture, gait-phase reset, init counter reset."""
+
+    def on_deactivate(self, ctx: Controller) -> None:
+        """Called when this policy stops being active. Most impls are no-op."""
+
+    def apply_velocity(self, vc: VelCmd) -> None:
+        """Locomotion gates by stand_command; WBT ignores; damping ignores."""
+
+    def apply_command(self, cmd: StateCommand) -> bool:
+        """Handle a policy-specific command. Returns True if handled,
+        False to fall through to the Controller's builtin dispatch."""
 ```
 
-Transitions are command-driven (`StateCommand.START`, `INIT`, `STOP`,
-`DAMP`, `KILL`, plus policy-specific). Each state is a pure function
-`(robot_state) -> (q, kp_override, kd_override)`.
+Five members. Symmetric verb shape (`apply_velocity` / `apply_command`).
+`apply_command` returns `bool` so the Controller can fall back to
+builtin handlers for commands the active policy doesn't bind.
 
-## Controller API
+## `Command` dataclass
+
+```python
+@dataclass
+class Command:
+    q: np.ndarray                          # (N,) target joint positions
+    dq: np.ndarray | None = None
+    tau: np.ndarray | None = None
+    kp_override: np.ndarray | None = None
+    kd_override: np.ndarray | None = None
+    dof_pos_latest: np.ndarray | None = None
+```
+
+Same six fields as `interface.send_low_command`, reified. Controller is
+the only caller of `send_low_command`. Every `act()` returns a `Command`.
+
+## Concrete implementations
+
+```python
+class OnnxLocomotionPolicy(OnnxBasePolicy):
+    """Today's LocomotionPolicy. Inherits OnnxBasePolicy for obs/ONNX."""
+    name = "locomotion"
+    def act(self, ctx, state):
+        if self.use_phase: self.update_phase_time()
+        action = self._rl_inference(state)
+        return Command(q=action + self.default_dof_angles + self.joint_offsets)
+    def on_activate(self, ctx):
+        self._resolve_control_gains()
+        self.phase = np.array([[0.0, np.pi]])
+    def apply_command(self, cmd):
+        if   cmd is StateCommand.STAND_TOGGLE:  self._toggle_stand(); return True
+        elif cmd is StateCommand.ZERO_VELOCITY: self._zero_velocity(); return True
+        elif cmd in (StateCommand.WALK, StateCommand.STAND):
+            self._set_stand(cmd is StateCommand.STAND); return True
+        return False
+    def apply_velocity(self, vc):
+        ...  # same gating-by-stand_command as today
+
+class OnnxWBTPolicy(OnnxBasePolicy):
+    """Today's WholeBodyTrackingPolicy."""
+    name = "wbt"
+    def apply_command(self, cmd):
+        if cmd is StateCommand.START_MOTION_CLIP:
+            self._handle_start_motion_clip(); return True
+        return False
+
+class DampingPolicy:
+    """Hold last observed q with policy KP/KD. ~40 LOC, no inheritance."""
+    name = "damping"
+    def __init__(self, kp_scale=1.0, kd_scale=1.0):
+        self.kp_scale, self.kd_scale, self._q_hold = kp_scale, kd_scale, None
+    def on_activate(self, ctx):    self._q_hold = None
+    def on_deactivate(self, ctx):  self._q_hold = None
+    def apply_velocity(self, vc):  pass
+    def apply_command(self, cmd):  return False
+    def act(self, ctx, state):
+        n = ctx.num_dofs
+        if self._q_hold is None: self._q_hold = state[7:7+n].copy()
+        return Command(
+            q=self._q_hold + ctx.joint_offsets,
+            dq=np.zeros(n), tau=np.zeros(n),
+            dof_pos_latest=state[7:7+n],
+            kp_override=ctx.motor_kp * self.kp_scale,
+            kd_override=ctx.motor_kd * self.kd_scale,
+        )
+
+class InitPolicy:
+    """Interpolate from current dof_pos → target_q over n_steps. ~30 LOC."""
+    name = "init"
+    def __init__(self, target_q, n_steps=500):
+        self.target_q, self.n_steps = np.asarray(target_q), n_steps
+        self._counter, self._q0 = 0, None
+    def on_activate(self, ctx):
+        self._counter = 0
+        self._q0 = ctx.interface.get_low_state()[0, 7:7+ctx.num_dofs].copy()
+    def is_done(self): return self._counter >= self.n_steps
+    def apply_command(self, cmd): return False
+    def apply_velocity(self, vc): pass
+    def act(self, ctx, state):
+        alpha = min(self._counter / self.n_steps, 1.0); self._counter += 1
+        q = self._q0 + (self.target_q - self._q0) * alpha
+        return Command(q=q + ctx.joint_offsets, dof_pos_latest=state[7:7+ctx.num_dofs])
+
+class StiffHoldPolicy:
+    """WBT's startup stiff hold. Replaces the _stiff_hold_active flag. ~20 LOC."""
+    name = "stiff_hold"
+    def __init__(self, q, kp, kd):
+        self.q, self.kp, self.kd = np.asarray(q), np.asarray(kp), np.asarray(kd)
+    def on_activate(self, ctx):  pass
+    def on_deactivate(self, ctx): pass
+    def apply_command(self, cmd): return False
+    def apply_velocity(self, vc): pass
+    def act(self, ctx, state):
+        n = ctx.num_dofs
+        return Command(q=self.q + ctx.joint_offsets,
+                       kp_override=self.kp, kd_override=self.kd,
+                       dof_pos_latest=state[7:7+n])
+```
+
+Lightweight policies (`DampingPolicy`, `InitPolicy`, `StiffHoldPolicy`)
+implement `PolicyProtocol` directly — they don't pay for the obs/ONNX
+machinery they don't use. ONNX-based policies inherit from
+`OnnxBasePolicy` (renamed from `BasePolicy`) for that machinery.
+
+## Controller
 
 ```python
 class Controller:
-    def __init__(
-        self,
-        config: InferenceConfig,
-        policy: BasePolicy,                  # active policy (swappable)
-        interface: RobotInterface,           # SDK
-        velocity_input: VelCmdProvider,
-        command_provider: StateCommandProvider,
-    ): ...
+    def __init__(self, policies, initial, *, interface, velocity_input,
+                 command_provider, rate, logger=None):
+        self.policies = policies
+        self.active = policies[initial]
+        self.interface, self.velocity_input = interface, velocity_input
+        self.command_provider, self.rate = command_provider, rate
+        self.logger = logger or _default_logger
+        self.active.on_activate(self)
 
-    # Mutators called by command dispatch or external (service RPC, FSM):
-    def set_state(self, state: ControllerState) -> None: ...
-    def set_policy(self, policy: BasePolicy) -> None: ...   # dual-mode swap
+    # Convenience accessors for policies (they take ctx, not raw config):
+    @property
+    def num_dofs(self):  return self._num_dofs
+    @property
+    def motor_kp(self):  return np.asarray(self._robot_config.motor_kp, dtype=np.float64)
+    @property
+    def motor_kd(self):  return np.asarray(self._robot_config.motor_kd, dtype=np.float64)
+    @property
+    def joint_offsets(self): return self._joint_offsets
 
-    # Per-tick step — called by run() or by an external scheduler:
-    def step(self) -> None: ...
+    def transition_to(self, name: str) -> None:
+        if name == self.active.name: return
+        self.active.on_deactivate(self)
+        self.active = self.policies[name]
+        self.active.on_activate(self)
+        self.logger.info(f"Active policy: {name}")
 
-    def run(self) -> None:                   # the only loop in the codebase
-        for _ in itertools.count():
-            self._poll_inputs()
-            self.step()
-            self.rate.sleep()
+    def step(self) -> None:
+        vc = self.velocity_input.poll_velocity()
+        if vc is not None: self.active.apply_velocity(vc)
+
+        for cmd in self.command_provider.poll_commands():
+            if not self.active.apply_command(cmd):
+                self._builtin_dispatch(cmd)
+
+        state = self.interface.get_low_state()[0]
+        command = self.active.act(self, state)
+        self._send(command)
+
+    def _builtin_dispatch(self, cmd):
+        if   cmd is StateCommand.START:  self.transition_to(self._default_run_policy)
+        elif cmd is StateCommand.STOP:   self.transition_to("damping")
+        elif cmd is StateCommand.INIT:   self.transition_to("init")
+        elif cmd is StateCommand.DAMP:   self.transition_to("damping")
+        elif cmd is StateCommand.KILL:   sys.exit(0)
+        elif cmd in STATE_COMMAND_TO_POLICY_INDEX: ...   # multi-model select
+        elif cmd is StateCommand.SWITCH_MODE: self._cycle_run_policies()
+        elif cmd is StateCommand.NEXT_POLICY: ...
+        elif cmd in {KP_UP, KP_DOWN, ...}: self._adjust_kp(cmd)
+
+    def _send(self, c: Command):
+        n = self._num_dofs
+        zeros = np.zeros(n)
+        self.interface.send_low_command(
+            c.q, c.dq if c.dq is not None else zeros,
+            c.tau if c.tau is not None else zeros,
+            c.dof_pos_latest,
+            kp_override=c.kp_override, kd_override=c.kd_override,
+        )
+
+    def run(self):
+        try:
+            while True:
+                self.step()
+                self.rate.sleep()
+        except KeyboardInterrupt: pass
 ```
 
-## `step()` — the orchestration
+Controller is ~80 LOC. The 5-way `if get_ready/use_policy/_stiff_hold/...`
+branch is gone — each branch is now its own policy.
+
+## Adam's use case in two lines
 
 ```python
-def step(self) -> None:
-    state_data = self.interface.get_low_state()
+# holosoma_service (daemon):
+controller = Controller(
+    policies={
+        "damping":    DampingPolicy(),
+        "locomotion": OnnxLocomotionPolicy(config=cfg, interface=interface),
+        "init":       InitPolicy(target_q=cfg.robot.default_dof_angles),
+    },
+    initial="damping",        # robot starts energized at default pose
+    interface=interface, velocity_input=vel_in, command_provider=cmd_in, rate=rate,
+)
+controller.run()
 
-    if self.state is ControllerState.IDLE:
-        return                                # do not publish
-
-    elif self.state is ControllerState.INIT:
-        q, kp, kd = self._interp_to(self.default_dof_angles, state_data)
-        if self._init_done(): self.state = ControllerState.RUN_POLICY
-
-    elif self.state is ControllerState.DAMP:
-        if self._damp_q is None:
-            self._damp_q = state_data[:, 7:7 + self.num_dofs].copy()
-        q, kp, kd = self._damp_q, self.damp_kp, self.damp_kd
-
-    elif self.state is ControllerState.STIFF_HOLD:
-        q, kp, kd = self.policy.stiff_hold_target()      # policy-provided
-
-    elif self.state is ControllerState.RUN_POLICY:
-        action = self.policy.act(state_data)             # ← the only call into policy
-        q = action + self.default_dof_angles
-        kp, kd = None, None
-
-    self.interface.send_low_command(q + self.joint_offsets, ..., kp, kd)
+# teleop_app (client) sends `transition_to("locomotion")` over IPC.
+# Releases handle? Service catches the disconnect, calls transition_to("damping").
+# Robot never goes slack.
 ```
 
-`_interp_to` and `_damp_q` live on `Controller`; they are *not* policy concerns.
+Dual-mode = `policies={"primary": ..., "secondary": ...}` and `SWITCH_MODE`
+cycles between policy keys.
 
-## `BasePolicy` shrinks to
+## What gets deleted by Step 8
+
+- `DualModePolicy` class (~140 LOC).
+- `BasePolicy._handle_start_policy / _handle_stop_policy / _handle_init_state / _handle_damp_state`.
+- `use_policy_action`, `get_ready_state`, `_stiff_hold_active`, `init_count` flags.
+- `Controller.state` property, `set_state` writethrough, `_damp_active`,
+  `_damp_q`, `_publish_damp_command`, `ControllerState` enum.
+- `policy_action()`'s 5-way branching.
+- The `_dispatch_command` lambda-patching in `DualModePolicy.bind_controller`.
+
+## Layout
+
+```
+holosoma_inference/
+├── controllers/                    NEW — orchestrator + protocol
+│   ├── __init__.py
+│   ├── controller.py               Controller class (moved from top-level)
+│   └── protocol.py                 PolicyProtocol, Command
+├── policies/                       all PolicyProtocol implementations
+│   ├── base.py                     OnnxBasePolicy (renamed from BasePolicy)
+│   ├── locomotion.py               OnnxLocomotionPolicy
+│   ├── wbt.py                      OnnxWBTPolicy
+│   ├── damping.py                  NEW — DampingPolicy (~40 LOC)
+│   ├── init_ramp.py                NEW — InitPolicy (~30 LOC)
+│   └── stiff_hold.py               NEW — StiffHoldPolicy (~20 LOC)
+```
+
+`BasePolicy = OnnxBasePolicy` deprecation alias for one release cycle.
+The current `holosoma_inference/controller.py` moves to
+`holosoma_inference/controllers/controller.py`; the top-level file
+becomes a deprecation shim re-exporting `Controller` for one cycle.
+
+## Migration order for Step 8
+
+1. Add `PolicyProtocol` and `Command` (no consumers yet).
+2. Rename `BasePolicy → OnnxBasePolicy`. Make it conform to the protocol
+   by adding `act` (wraps `policy_action()`), `on_activate` (wraps
+   `_handle_start_policy`), `apply_command`, `apply_velocity`. Keep the
+   old methods as private helpers for one step. Harness still passes.
+3. Add `DampingPolicy`, `InitPolicy`, `StiffHoldPolicy` as new files.
+4. Rewrite `Controller` to drive policies by protocol. Delete
+   `set_state`, `_damp_active`, `_publish_damp_command`, `ControllerState`.
+5. Delete `DualModePolicy`. Rewrite `run_policy.py` to build the
+   policies dict from the config (locomotion + damping always; init if
+   the user has an init-pose; secondary if dual-mode).
+6. Delete the legacy flags from `OnnxBasePolicy`.
+7. Rewrite the harness to construct policies dict directly.
+8. Rewrite `inputs/tests/{test_factory,test_providers,test_dual_mode}.py`
+   against the new protocol.
+
+The transition is non-trivial but each step is independently testable
+against the sim2sim harness.
+
+## Out of scope for Step 8
+
+- Mode chaining ("after INIT completes, auto-transition to locomotion").
+- Declared transition graph with `(from, to)` validation.
+- Per-policy persistent state across activations (today each policy
+  resets on `on_activate`).
+
+---
+
+# What's true today (after Steps 1–4)
+
+These are the abstractions Step 8 builds on / replaces.
+
+## States (today)
 
 ```python
-class BasePolicy:
-    def __init__(self, config, robot_config): ...        # no SDK, no inputs
-
-    def act(self, robot_state_data) -> np.ndarray:       # was rl_inference
-        obs = self.prepare_obs_for_rl(robot_state_data)
-        return self.policy_fn(obs) * self.action_scale
-
-    def stiff_hold_target(self) -> tuple[q, kp, kd]:     # default: raises
-        raise NotImplementedError
-
-    def on_velocity(self, vc: VelCmd) -> None: ...       # was _apply_velocity
-    def on_command(self, cmd) -> ControllerState | None: # policy-specific
-        # e.g. LocomotionPolicy handles STAND_TOGGLE here, returns None
-        # WBT returns ControllerState.STIFF_HOLD on stop
-        ...
+class ControllerState(Enum):
+    IDLE         # no commands sent
+    INIT         # interpolating to default pose
+    DAMP         # holds last q with low gains
+    STIFF_HOLD   # WBT's startup hold
+    RUN_POLICY   # policy_action() drives the robot
 ```
 
-## Damping mode wires up trivially
+`Controller.state` is a derived property — reads back the legacy flags
+(`use_policy_action`, `get_ready_state`, `_stiff_hold_active`) and the
+controller-side `_damp_active`. `Controller.set_state(s)` writes through
+to those flags atomically. Step 8 deletes both.
+
+## Controller API (today)
 
 ```python
-# In _dispatch_command:
-elif cmd == StateCommand.DAMP:
-    self.controller.set_state(ControllerState.DAMP)
+class Controller:
+    def __init__(self, policy, interface, velocity_input, command_provider,
+                 rate, logger=None, use_joystick=False, use_keyboard=False): ...
+    state: ControllerState                   # derived property
+    def set_state(s: ControllerState): ...
+    def set_policy(p: BasePolicy): ...       # used by DualModePolicy
+    def step(): ...                          # one rl_rate tick
+    def run(): ...                           # while True: step(); rate.sleep()
 ```
 
-`holosoma_service` daemon: construct `Controller` once, default to `DAMP` on
-startup, accept RPC/IPC to flip to `RUN_POLICY` when `teleop_app` connects, flip
-back to `DAMP` on disconnect. No motors-go-slack on handle release.
+## `DAMP` state wires up via `StateCommand.DAMP`
 
-## Dual-mode collapses to policy swap
+Keyboard `\\`, joystick `B+X`. Controller captures `q` on entry from
+`interface.get_low_state()`, then publishes `send_low_command(q_hold,
+kp_override=kp, kd_override=kd)` every tick until exited.
+
+## Dual-mode (today, Steps 2+5)
 
 ```python
 class DualModePolicy:
-    def __init__(self, controller, primary, secondary):
-        self.controller = controller
-        self.policies = {"primary": primary, "secondary": secondary}
-        self.active = "primary"
-
-    def switch(self):
-        self.active = "secondary" if self.active == "primary" else "primary"
-        self.controller.set_policy(self.policies[self.active])
+    def __init__(self, primary_config, secondary_config, interface):
+        self.primary = ...; self.secondary = ...
+    def bind_controller(self, controller):
+        # Inject SWITCH_MODE → self._handle_mode_switch into command provider
+        # Patch each policy's _dispatch_command with a SWITCH_MODE intercept
+    def run(self): self.controller.run()
 ```
 
-No second run loop. No `_shared_hardware_source` guard.
-
-## Migration order
-
-1. Add `Controller` + `ControllerState`; keep `BasePolicy.run()` as thin wrapper
-   that constructs a Controller. No behavior change.
-2. Move `interface`, `rate`, input providers, latency tracker, joint offsets,
-   `policy_action()` body, and command dispatch into `Controller`.
-3. Replace `BasePolicy.run()` with `Controller.run()` at call sites
-   (`run_policy.py`, `DualModePolicy`).
-4. Add `DAMP` state + `StateCommand.DAMP` mapping.
-5. Delete `_shared_hardware_source` plumbing; rewrite `DualModePolicy` as swap.
-6. (Future) Split `holosoma_service` (daemon w/ Controller) from `teleop_app`.
-
-## Out of scope
-
-- FSM transition graph beyond the 5 states above (Adam's "string utilities
-  together" sequencing).
-- Replacing tyro config plumbing.
-- `holosoma_service` IPC protocol.
+The patched-`_dispatch_command` lambdas are the worst remaining smell —
+Step 8's protocol-based approach removes them entirely.
