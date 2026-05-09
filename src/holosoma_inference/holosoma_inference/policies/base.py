@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import json
 import sys
 import time
@@ -819,31 +818,7 @@ class BasePolicy:
     # ============================================================================
 
     def run(self):
-        """Main run loop for the policy."""
-        try:
-            for it in itertools.count():
-                self.latency_tracker.start_cycle()
+        """Main run loop — delegates to Controller."""
+        from holosoma_inference.controller import Controller
 
-                vc = self._velocity_input.poll_velocity()
-                if vc is not None:
-                    self._apply_velocity(vc)
-                commands = self._command_provider.poll_commands()
-                for cmd in commands:
-                    self._dispatch_command(cmd)
-                if commands:
-                    self._print_control_status()
-                if self.use_phase:
-                    self.update_phase_time()
-
-                self.policy_action()
-
-                self.latency_tracker.end_cycle()
-
-                if it % 50 == 0 and self.use_policy_action:
-                    debug_str = f"RL FPS: {self.latency_tracker.get_fps():.2f} | {self.latency_tracker.get_stats_str()}"
-                    self.logger.info(debug_str, flush=True)
-
-                self.rate.sleep()
-
-        except KeyboardInterrupt:
-            pass
+        Controller(self).run()
