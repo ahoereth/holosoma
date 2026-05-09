@@ -85,11 +85,12 @@ def build_policy_with_sim(
     sim_steps_per_control: int = 4,
     initial_pelvis_height: float = 0.78,
 ):
-    """Construct a real LocomotionPolicy whose hardware is replaced with
-    a MuJoCo in-process interface and stub input providers.
+    """Construct a real LocomotionPolicy + Controller wired to a MuJoCo
+    in-process interface and stub input providers.
 
-    Returns ``(policy, sim_interface)``.
+    Returns ``(policy, controller, sim_interface)``.
     """
+    from holosoma_inference.controller import Controller
     from holosoma_inference.policies.locomotion import LocomotionPolicy
 
     config = config if config is not None else replace(g1_29dof_loco, secondary=None)
@@ -104,10 +105,6 @@ def build_policy_with_sim(
         ),
     )
 
-    # Use the policy's own initialisation but pre-supply the interface and
-    # inputs via the same _shared_hardware_source guard pattern that the
-    # secondary policy uses in dual-mode. This keeps Step 0 zero-touch on
-    # the production code path.
     sim_interface = MujocoSimInterface(
         model_path=G1_MJCF,
         kp=np.array(config.robot.motor_kp) if config.robot.motor_kp is not None else np.ones(29) * 80.0,
@@ -119,22 +116,18 @@ def build_policy_with_sim(
         initial_height=initial_pelvis_height,
     )
 
-    class _HardwareSource:
-        sdk_type = "mujoco_test"
-        interface = sim_interface
-        logger = _NullLogger()
-        rate = _NullRate()
-        rl_rate = config.task.rl_rate
-        use_joystick = False
-        use_keyboard = False
-        _velocity_input = _StubVelInput()
-        _command_provider = _StubCmdProvider()
+    policy = LocomotionPolicy(config=config, interface=sim_interface)
 
-    policy = object.__new__(LocomotionPolicy)
-    policy._shared_hardware_source = _HardwareSource()
-    LocomotionPolicy.__init__(policy, config=config)
+    controller = Controller(
+        policy=policy,
+        interface=sim_interface,
+        velocity_input=_StubVelInput(),
+        command_provider=_StubCmdProvider(),
+        rate=_NullRate(),
+        logger=_NullLogger(),
+    )
 
-    return policy, sim_interface
+    return policy, controller, sim_interface
 
 
 def run_harness(
@@ -151,7 +144,7 @@ def run_harness(
     """
     import time
 
-    policy, sim_interface = build_policy_with_sim(initial_pelvis_height=initial_pelvis_height)
+    policy, controller, sim_interface = build_policy_with_sim(initial_pelvis_height=initial_pelvis_height)
 
     n_steps = int(duration_s * policy.config.task.rl_rate)
     min_z = sim_interface.pelvis_height
@@ -164,27 +157,15 @@ def run_harness(
         viewer = mujoco.viewer.launch_passive(sim_interface.model, sim_interface.data)
 
     try:
-        # Drain the scripted command queue once to enter walking mode.
-        for cmd in policy._command_provider.poll_commands():
-            policy._dispatch_command(cmd)
-
-        # Apply velocity once.
-        vc = policy._velocity_input.poll_velocity()
-        if vc is not None:
-            policy._apply_velocity(vc)
-
         for _ in range(n_steps):
             tick_start = time.perf_counter()
-            if policy.use_phase:
-                policy.update_phase_time()
-            policy.policy_action()
+            controller.step()
             z = sim_interface.pelvis_height
             min_z = min(min_z, z)
             if min_z < fall_threshold:
                 break
             if viewer is not None:
                 viewer.sync()
-                # Pace at real-time so the viewer is watchable
                 elapsed = time.perf_counter() - tick_start
                 remaining = control_dt - elapsed
                 if remaining > 0:

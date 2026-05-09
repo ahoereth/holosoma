@@ -1,22 +1,23 @@
-"""Dual-mode policy with runtime switching between two policy instances."""
+"""Dual-mode policy with runtime switching between two policy instances.
+
+After Step 5 of the Controller refactor, DualModePolicy is a thin
+swap object: it holds two BasePolicy instances that share the
+Controller's hardware (interface, inputs) and flips
+``controller.policy`` between them on SWITCH_MODE. There is no
+separate run loop — Controller drives both.
+"""
 
 from __future__ import annotations
-
-import itertools
 
 from loguru import logger
 from termcolor import colored
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
+from holosoma_inference.inputs.api.commands import StateCommand
 
 
 def _select_policy_class(config: InferenceConfig):
-    """Determine policy class based on observation config and robot type.
-
-    Checks entry point groups ``holosoma.policies.locomotion`` and
-    ``holosoma.policies.wbt`` (keyed by ``robot_type``) so extensions can
-    register custom policy classes without monkey-patching.
-    """
+    """Determine policy class based on observation config and robot type."""
     from holosoma_inference.compat import entry_points
     from holosoma_inference.policies.locomotion import LocomotionPolicy
     from holosoma_inference.policies.wbt import WholeBodyTrackingPolicy
@@ -37,135 +38,102 @@ def _select_policy_class(config: InferenceConfig):
 
 
 class DualModePolicy:
-    """Wraps two policy instances (potentially different classes) with X-button switching.
+    """Holds two policies and swaps which one the Controller drives."""
 
-    The primary policy is fully initialized and owns the hardware (SDK, interface,
-    input handlers). The secondary policy reuses the primary's hardware via the
-    _shared_hardware_source guard pattern in BasePolicy.
-
-    Press X (joystick) or x (keyboard) to switch between policies at runtime.
-    The existing Select/1-9 multi-model switching still works within each policy.
-    """
-
-    def __init__(self, primary_config: InferenceConfig, secondary_config: InferenceConfig):
+    def __init__(
+        self,
+        primary_config: InferenceConfig,
+        secondary_config: InferenceConfig,
+        interface,
+    ):
         primary_cls = _select_policy_class(primary_config)
         secondary_cls = _select_policy_class(secondary_config)
 
         logger.info(
-            colored(f"Dual-mode: primary={primary_cls.__name__}, secondary={secondary_cls.__name__}", "magenta")
+            colored(
+                f"Dual-mode: primary={primary_cls.__name__}, secondary={secondary_cls.__name__}",
+                "magenta",
+            )
         )
 
-        # Fully init primary (owns hardware)
-        self.primary = primary_cls(config=primary_config)
-
-        # Init secondary with shared hardware
+        self.primary = primary_cls(config=primary_config, interface=interface)
         logger.info(colored("Initializing secondary policy (shared hardware)...", "magenta"))
-        secondary = object.__new__(secondary_cls)
-        secondary._shared_hardware_source = self.primary
-        secondary.__init__(config=secondary_config)
-        self.secondary = secondary
+        self.secondary = secondary_cls(config=secondary_config, interface=interface)
 
-        self.active = self.primary
+        self.controller = None
         self.active_label = "primary"
+        self._orig_dispatch: dict = {}
 
-        self._setup_command_intercept()
-        logger.info(colored("Dual-mode ready. Press X (joystick) or x (keyboard) to switch policies.", "magenta"))
+    @property
+    def active(self):
+        return self.primary if self.active_label == "primary" else self.secondary
 
-    def _setup_command_intercept(self):
-        """Inject SWITCH_MODE into mappings and patch dispatch for routing.
+    def bind_controller(self, controller) -> None:
+        """Wire the Controller; intercept SWITCH_MODE on its command provider."""
+        self.controller = controller
+        controller.set_policy(self.primary)
+        # Inject SWITCH_MODE into the shared command provider (joystick X / keyboard x)
+        mapping = getattr(controller.command_provider, "_mapping", None)
+        if mapping is not None:
+            mapping["X"] = StateCommand.SWITCH_MODE
+            mapping["x"] = StateCommand.SWITCH_MODE
 
-        Keyboard queue wiring is handled by the factory — the secondary's
-        ``KeyboardInput`` gets its own subscriber queue from the shared
-        ``_KeyboardListenerThread``.  Only ``_dispatch_command`` needs
-        patching to intercept SWITCH_MODE.
-        """
-        from holosoma_inference.inputs.api.commands import StateCommand
-
-        # Inject SWITCH_MODE into both command providers' mappings (joystick X, keyboard x)
-        for policy in (self.primary, self.secondary):
-            policy._command_provider._mapping["X"] = StateCommand.SWITCH_MODE
-            policy._command_provider._mapping["x"] = StateCommand.SWITCH_MODE
-
-        # Patch _dispatch_command to intercept SWITCH_MODE
+        # Each policy keeps its own dispatch table. The Controller calls
+        # the active policy's _dispatch_command. We intercept SWITCH_MODE
+        # by replacing each policy's dispatch with a wrapper that defers
+        # to the original.
         self._orig_dispatch = {
             id(self.primary): self.primary._dispatch_command,
             id(self.secondary): self.secondary._dispatch_command,
         }
 
-        def patched_dispatch(cmd):
+        def patched(policy, cmd):
             if cmd == StateCommand.SWITCH_MODE:
                 self._handle_mode_switch()
             else:
-                self._orig_dispatch[id(self.active)](cmd)
+                self._orig_dispatch[id(policy)](cmd)
 
-        self.primary._dispatch_command = patched_dispatch
-        self.secondary._dispatch_command = patched_dispatch
+        self.primary._dispatch_command = lambda cmd: patched(self.primary, cmd)
+        self.secondary._dispatch_command = lambda cmd: patched(self.secondary, cmd)
 
     def _handle_mode_switch(self):
-        """Switch from active to inactive policy."""
-        self.active._handle_stop_policy()
+        """Stop the active policy, swap in the inactive one."""
+        active = self.active
+        active._handle_stop_policy()
 
-        target = self.secondary if self.active is self.primary else self.primary
-        target_label = "secondary" if target is self.secondary else "primary"
+        target_label = "secondary" if self.active_label == "primary" else "primary"
+        target = self.secondary if target_label == "secondary" else self.primary
 
-        # Update KP/KD on the shared interface for the target policy
+        # Push the target policy's KP/KD onto the shared interface
         target._resolve_control_gains()
 
         # Carry over joystick key_states so edge detection doesn't see a false
         # rising edge on the X button (which is still physically held down).
         from holosoma_inference.inputs.impl.interface import InterfaceInput
 
-        active_dev = self.active._velocity_input
-        target_dev = target._velocity_input
-        if isinstance(active_dev, InterfaceInput) and isinstance(target_dev, InterfaceInput):
-            target_dev.key_states = active_dev.key_states.copy()
-            target_dev.last_key_states = active_dev.key_states.copy()
+        ctrl = self.controller
+        if ctrl is not None and isinstance(ctrl.velocity_input, InterfaceInput):
+            # Velocity input is shared between policies; nothing to copy.
+            pass
 
-        self.active = target
         self.active_label = target_label
+        if ctrl is not None:
+            ctrl.set_policy(target)
 
-        # Re-initialize phase and activate
-        self.active._init_phase_components()
-        self.active._handle_start_policy()
+        # Re-initialize phase and activate the new active policy.
+        target._init_phase_components()
+        target._handle_start_policy()
 
         logger.info(
             colored(
-                f"Switched to {self.active_label} policy ({type(self.active).__name__})",
+                f"Switched to {self.active_label} policy ({type(target).__name__})",
                 "magenta",
                 attrs=["bold"],
             )
         )
 
-    def run(self):
-        """Main run loop — delegates to the active policy."""
-        try:
-            for it in itertools.count():
-                self.active.latency_tracker.start_cycle()
-
-                vc = self.active._velocity_input.poll_velocity()
-                if vc is not None:
-                    self.active._apply_velocity(vc)
-                commands = self.active._command_provider.poll_commands()
-                for cmd in commands:
-                    self.active._dispatch_command(cmd)
-                if commands:
-                    self.active._print_control_status()
-                if self.active.use_phase:
-                    self.active.update_phase_time()
-
-                self.active.policy_action()
-
-                self.active.latency_tracker.end_cycle()
-
-                if it % 50 == 0 and self.active.use_policy_action:
-                    debug_str = (
-                        f"[{self.active_label}] "
-                        f"RL FPS: {self.active.latency_tracker.get_fps():.2f} | "
-                        f"{self.active.latency_tracker.get_stats_str()}"
-                    )
-                    self.active.logger.info(debug_str, flush=True)
-
-                self.active.rate.sleep()
-
-        except KeyboardInterrupt:
-            pass
+    def run(self) -> None:
+        """Run the controller. The active policy may change mid-loop."""
+        if self.controller is None:
+            raise RuntimeError("DualModePolicy.run() called before bind_controller()")
+        self.controller.run()

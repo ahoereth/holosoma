@@ -25,7 +25,7 @@ from holosoma_inference.utils.math.quat import (
 
 
 class WholeBodyTrackingPolicy(BasePolicy):
-    def __init__(self, config: InferenceConfig):
+    def __init__(self, config: InferenceConfig, interface=None):
         self.config = config
 
         # initialize motion state
@@ -54,7 +54,7 @@ class WholeBodyTrackingPolicy(BasePolicy):
         self.motion_yaw_offset = 0.0
         self.per_joint_policy_action_scale: np.ndarray | None = None
 
-        super().__init__(config)
+        super().__init__(config, interface=interface)
         self._configure_action_scales()
 
         # Load stiff startup parameters from robot config
@@ -87,9 +87,7 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 )
             )
 
-        if hasattr(self, "_shared_hardware_source"):
-            logger.info(colored("Skipping stiff hold prompt (secondary policy)", "yellow"))
-        elif sys.stdin.isatty():
+        if sys.stdin.isatty():
             logger.info(colored("\n⚠️  Ready to enter stiff hold mode", "yellow", attrs=["bold"]))
             logger.info(colored("Press Enter to continue...", "yellow"))
             try:

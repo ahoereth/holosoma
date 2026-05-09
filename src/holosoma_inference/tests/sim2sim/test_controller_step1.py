@@ -8,13 +8,12 @@ as the previous ``BasePolicy.run()`` body for one tick.
 
 from __future__ import annotations
 
-from holosoma_inference.controller import Controller, ControllerState
+from holosoma_inference.controller import ControllerState
 from tests.sim2sim.harness import build_policy_with_sim
 
 
 def test_controller_state_reflects_policy_flags():
-    policy, _ = build_policy_with_sim()
-    ctl = Controller(policy)
+    policy, ctl, _ = build_policy_with_sim()
     # Fresh policy: no flags set → IDLE
     assert ctl.state is ControllerState.IDLE
 
@@ -27,8 +26,7 @@ def test_controller_state_reflects_policy_flags():
 
 
 def test_controller_step_advances_one_cycle():
-    policy, sim_interface = build_policy_with_sim()
-    ctl = Controller(policy)
+    _, ctl, sim_interface = build_policy_with_sim()
     z_before = sim_interface.pelvis_height
     # Step with use_policy_action=False: policy_action just holds dof_pos.
     # We're verifying the loop body completes without raising.

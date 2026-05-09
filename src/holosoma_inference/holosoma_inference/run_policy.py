@@ -100,6 +100,8 @@ def _print_control_guide(policy_class, use_joystick: bool, dual_mode: bool = Fal
 
 def run_policy(config: InferenceConfig):
     """Run policy with Tyro configuration."""
+    from holosoma_inference.controller import Controller, build_default_hardware
+
     logger.info("🚀 Starting Policy with Tyro configuration...")
     logger.info(f"🤖 Robot: {config.robot.robot_type}")
     logger.info(f"📋 Observation groups: {list(config.observation.obs_dict.keys())}")
@@ -107,21 +109,53 @@ def run_policy(config: InferenceConfig):
     logger.info(f"📁 Model path: {config.task.model_path}")
 
     try:
-        # Determine policy class based on observation type
+        # Build hardware once. Controller owns everything past this point.
+        interface, vel_in, cmd_in, rate, use_joystick, use_keyboard = build_default_hardware(config)
+
         policy_class = _select_policy_class(config)
         dual_mode = config.secondary is not None
 
         if dual_mode:
             logger.info(f"Using {policy_class.__name__} (dual-mode enabled)")
-            policy = DualModePolicy(primary_config=config, secondary_config=config.secondary)
+            policy = DualModePolicy(
+                primary_config=config,
+                secondary_config=config.secondary,
+                interface=interface,
+            )
+            primary = policy.primary
         else:
             logger.info(f"Using {policy_class.__name__}")
-            policy = policy_class(config=config)
+            policy = policy_class(config=config, interface=interface)
+            primary = policy
+
+        controller = Controller(
+            policy=primary,
+            interface=interface,
+            velocity_input=vel_in,
+            command_provider=cmd_in,
+            rate=rate,
+            logger=logger,
+            use_joystick=use_joystick,
+            use_keyboard=use_keyboard,
+        )
+
+        if dual_mode:
+            policy.bind_controller(controller)
+
+        # If keyboard input was requested but no TTY is attached, the
+        # listener will not have started — fall through to policy actions
+        # so the robot is still drivable headlessly.
+        if "keyboard" in {config.task.velocity_input, config.task.state_input} and not use_keyboard:
+            logger.warning("No TTY — keyboard input disabled")
+            primary.use_policy_action = True
 
         logger.info("✅ Policy initialized successfully!")
-        use_joystick = bool({"joystick", "interface"} & {config.task.velocity_input, config.task.state_input})
         _print_control_guide(policy_class, use_joystick, dual_mode=dual_mode)
-        policy.run()
+
+        if dual_mode:
+            policy.run()
+        else:
+            controller.run()
         logger.info("✅ Policy execution completed!")
 
     except Exception as e:

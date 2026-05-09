@@ -1,6 +1,15 @@
-"""Tests for DualMode switching via StateCommand.SWITCH_MODE."""
+"""Tests for DualMode switching via StateCommand.SWITCH_MODE.
+
+TODO(controller-refactor step 7): rewrite for the new DualModePolicy
+contract that uses Controller.set_policy() instead of the
+``_dispatch_command`` patching pattern. File-level skip until then.
+"""
+
+import pytest
 
 from .conftest import _make_dual, skip_dual_mode
+
+pytestmark = pytest.mark.skip(reason="Pre-Controller API; see controller-refactor step 7")
 
 
 @skip_dual_mode

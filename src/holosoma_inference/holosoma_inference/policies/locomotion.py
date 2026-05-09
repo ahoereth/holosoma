@@ -7,8 +7,8 @@ from .base import BasePolicy
 
 
 class LocomotionPolicy(BasePolicy):
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, interface=None):
+        super().__init__(config, interface=interface)
         self.is_standing = False
 
     def _apply_velocity(self, vc: VelCmd) -> None:
@@ -85,7 +85,7 @@ class LocomotionPolicy(BasePolicy):
         """Handle stand command toggle."""
         self.stand_command[0, 0] = 1 - self.stand_command[0, 0]
         if self.stand_command[0, 0] == 0:
-            self._velocity_input.zero()
+            self.controller.velocity_input.zero()
             self.ang_vel_command[0, 0] = 0.0
             self.lin_vel_command[0, 0] = 0.0
             self.lin_vel_command[0, 1] = 0.0
@@ -96,7 +96,7 @@ class LocomotionPolicy(BasePolicy):
 
     def _handle_zero_velocity(self):
         """Handle zero velocity command."""
-        self._velocity_input.zero()
+        self.controller.velocity_input.zero()
         self.ang_vel_command[0, 0] = 0.0
         self.lin_vel_command[0, 0] = 0.0
         self.lin_vel_command[0, 1] = 0.0

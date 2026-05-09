@@ -7,7 +7,6 @@ from collections import deque
 from dataclasses import replace
 from pathlib import Path
 
-import netifaces as ni
 import numpy as np
 import onnx
 import onnxruntime
@@ -16,13 +15,9 @@ from termcolor import colored
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
 from holosoma_inference.config.config_types.robot import RobotConfig
-from holosoma_inference.inputs import create_input
-from holosoma_inference.inputs.api.base import StateCommandProvider, VelCmdProvider
 from holosoma_inference.inputs.api.commands import StateCommand, VelCmd
-from holosoma_inference.sdk import create_interface
 from holosoma_inference.utils.latency import LatencyTracker
 from holosoma_inference.utils.math.quat import quat_rotate_inverse
-from holosoma_inference.utils.rate import RateLimiter
 from holosoma_inference.utils.wandb import load_checkpoint
 
 # Maps SWITCH_POLICY_N commands to 0-based policy indices.
@@ -38,28 +33,52 @@ class BasePolicy:
     Supports both simulation and real robot deployment with keyboard/joystick controls.
     """
 
-    def __init__(self, config: InferenceConfig):
-        """Initialize the base policy with configuration and model."""
+    def __init__(self, config: InferenceConfig, interface=None):
+        """Initialize the policy with configuration, model, and a robot interface.
+
+        The interface is owned by the Controller; the policy keeps a back
+        reference for its inner per-tick path (read state, send command,
+        KP/KD resolution). If *interface* is None, it is built from config
+        — supports legacy direct-instantiation paths and the sim2sim
+        harness during the refactor.
+        """
         self.config = config
-        # Initialize robot config
+        self.controller = None  # set by Controller.__init__ when constructed externally
+        self.logger = logger
+        self.rl_rate = self.config.task.rl_rate
+
         self._init_robot_config(self.config.robot)
-        # Initialize SDK components
-        self._init_sdk_components()
-        # Initialize observation config
         self._init_obs_config()
-        # Initialize communication components
-        self._init_communication_components()
-        # Initialize policy components
+
+        # Hardware: provided by Controller, or built from config for legacy paths.
+        if interface is None:
+            from holosoma_inference.sdk import create_interface
+
+            need_joystick = bool(
+                {"interface", "joystick"} & {self.config.task.velocity_input, self.config.task.state_input}
+            )
+            self._init_sdk_channels()
+            interface = create_interface(
+                self.robot_config,
+                self.config.task.domain_id,
+                self.config.task.interface,
+                need_joystick,
+            )
+        self.interface = interface
+
+        # use_joystick / use_keyboard are projection flags read by some
+        # subclass dispatch handlers and the input factory. Default to off;
+        # Controller updates them when it wires real input devices.
+        self.use_joystick = False
+        self.use_keyboard = False
+
         self._init_policy_components(
-            self.config.task.model_path, self.config.task.policy_action_scale, self.config.task.rl_rate
+            self.config.task.model_path,
+            self.config.task.policy_action_scale,
+            self.config.task.rl_rate,
         )
-        # Initialize command components
         self._init_command_components()
-        # Initialize input handlers
-        self._init_input_handlers()
-        # Initialize phase components
         self._init_phase_components()
-        # Initialize latency tracking
         self._init_latency_tracking()
 
     # ============================================================================
@@ -98,19 +117,21 @@ class BasePolicy:
         else:
             self.lower_dof_indices = []
 
-    def _init_sdk_components(self):
-        """Additional SDK components initialization based on robot type."""
-        if hasattr(self, "_shared_hardware_source"):
-            self.sdk_type = self._shared_hardware_source.sdk_type
-            return
+    def _init_sdk_channels(self):
+        """Initialize SDK-level channels (e.g., booster ChannelFactory).
+
+        Only invoked from the legacy direct-instantiation path of
+        ``__init__`` when no interface is supplied. ``run_policy.py``
+        performs equivalent setup itself before constructing the
+        interface.
+        """
         self.sdk_type = self.robot_config.sdk_type
         if self.sdk_type == "booster":
+            import netifaces as ni
             from booster_robotics_sdk import ChannelFactory
 
             ip = ni.ifaddresses(self.config.task.interface)[ni.AF_INET][0]["addr"]
             ChannelFactory.Instance().Init(self.config.task.domain_id, ip)
-        else:
-            pass  # No channel initialization needed for Unitree binding / other robots
 
     def _init_obs_config(self):
         """Initialize observation metadata and history buffers."""
@@ -142,22 +163,6 @@ class BasePolicy:
                 flattened_terms.append(np.zeros((1, term_dim * history_len), dtype=np.float32))
 
             self.obs_buf_dict[group] = np.concatenate(flattened_terms, axis=1) if flattened_terms else np.zeros((1, 0))
-
-    def _init_communication_components(self):
-        """Initialize appropriate robot interface."""
-        if hasattr(self, "_shared_hardware_source"):
-            self.interface = self._shared_hardware_source.interface
-            return
-        # Derive use_joystick for SDK: True if interface/joystick is used for either channel
-        vel = self.config.task.velocity_input
-        other = self.config.task.state_input
-        need_joystick = bool({"interface", "joystick"} & {vel, other})
-        self.interface = create_interface(
-            self.robot_config,
-            self.config.task.domain_id,
-            self.config.task.interface,
-            need_joystick,
-        )
 
     def _init_policy_components(self, model_path, policy_action_scale, rl_rate):
         """Initialize policy-related components."""
@@ -289,94 +294,6 @@ class BasePolicy:
     def _init_latency_tracking(self):
         """Initialize latency tracking components."""
         self.latency_tracker = LatencyTracker(window_size=int(self.rl_rate))
-
-    def _init_input_handlers(self):
-        """Initialize input handlers (ROS, joystick, keyboard)."""
-        if hasattr(self, "_shared_hardware_source"):
-            self.logger = self._shared_hardware_source.logger
-            self.rate = self._shared_hardware_source.rate
-            self.rl_rate = self._shared_hardware_source.rl_rate
-            self.use_joystick = self._shared_hardware_source.use_joystick
-            self.use_keyboard = self._shared_hardware_source.use_keyboard
-            # Share input providers — one queue, active policy drains it each cycle.
-            self._velocity_input: VelCmdProvider = self._shared_hardware_source._velocity_input
-            self._command_provider: StateCommandProvider = self._shared_hardware_source._command_provider
-            return
-        self._init_rate_handler()
-        self._init_input_device()
-
-    def _init_rate_handler(self):
-        """Initialize rate limiter and logger."""
-        self.rl_rate = self.config.task.rl_rate
-        self.logger = logger
-        self.rate = RateLimiter(self.rl_rate)
-
-    def _init_input_device(self):
-        """Initialize input hardware and create input providers.
-
-        Each channel independently selects from InputSource enum values.
-        Hardware is initialized based on the union of both channels' requirements,
-        then providers are created via factory methods (overridden by subclasses).
-        """
-        vel = self.config.task.velocity_input
-        other = self.config.task.state_input
-        sources = {vel, other}
-
-        # Joystick hardware (needed if either channel uses interface or joystick)
-        if {"interface", "joystick"} & sources:
-            self._init_joystick_handler()
-        else:
-            self.use_joystick = False
-
-        # use_keyboard is set by KeyboardListener when providers start
-        self.use_keyboard = False
-
-        self._create_input_providers()
-
-    def _init_joystick_handler(self):
-        """Initialize joystick handler."""
-        if sys.platform == "darwin":
-            self.logger.warning("Joystick is not supported on Windows or Mac.")
-            self.logger.warning("Falling back to keyboard for joystick channel")
-            self.use_joystick = False
-        else:
-            self.logger.info("Using joystick")
-            self.use_joystick = True
-
-    def _create_input_providers(self):
-        """Create and start input providers based on config.
-
-        When both channels use the same source, a single provider is shared
-        (important for KeyboardInput which pops from a shared queue).
-        """
-        self._setup_keyboard_listener()
-
-        self._velocity_input: VelCmdProvider = create_input(self, self.config.task.velocity_input, "velocity")
-
-        if self.config.task.velocity_input == self.config.task.state_input:
-            self._command_provider: StateCommandProvider = self._velocity_input
-        else:
-            self._command_provider: StateCommandProvider = create_input(self, self.config.task.state_input, "command")
-
-        self._velocity_input.start()
-        if self._command_provider is not self._velocity_input:
-            self._command_provider.start()
-
-    def _setup_keyboard_listener(self):
-        """Start the shared keyboard listener if any channel uses keyboard input."""
-        if hasattr(self, "_shared_hardware_source"):
-            return
-        sources = {self.config.task.velocity_input, self.config.task.state_input}
-        if "keyboard" not in sources:
-            return
-        from holosoma_inference.inputs.impl.keyboard import get_keyboard_listener
-
-        listener = get_keyboard_listener()
-        active = listener.start()
-        self.use_keyboard = active
-        if not active:
-            self.logger.warning("No TTY — keyboard input disabled")
-            self.use_policy_action = True
 
     # ============================================================================
     # Policy Methods
@@ -816,9 +733,3 @@ class BasePolicy:
     # ============================================================================
     # Main Run Method
     # ============================================================================
-
-    def run(self):
-        """Main run loop — delegates to Controller."""
-        from holosoma_inference.controller import Controller
-
-        Controller(self).run()

@@ -1,14 +1,13 @@
 """Controller — orchestrates a BasePolicy with hardware and inputs.
 
-This is Step 1 of the Controller refactor described in
-``docs/controller-design.md``. At this step the Controller owns the run
-loop only — hardware (``interface``, ``_velocity_input``,
-``_command_provider``, ``rate``, ``latency_tracker``) still lives on the
-Policy. Subsequent steps move ownership.
+Step 2 of the Controller refactor (see ``docs/controller-design.md``):
+the Controller now owns hardware. It is constructed with an interface,
+velocity/command input providers, and a rate limiter. The Policy keeps
+``self.interface`` as a back-reference for the inner policy_action loop
+but no longer creates or owns the hardware lifecycle.
 
-ControllerState is exported here so call sites in tests and (eventually)
-``run_policy.py`` can target the new API even before later steps move
-the underlying flags.
+ControllerState is still a read-only projection of the existing flags;
+Step 3 makes it load-bearing.
 """
 
 from __future__ import annotations
@@ -17,8 +16,13 @@ import itertools
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from loguru import logger as _default_logger
+
 if TYPE_CHECKING:
+    from holosoma_inference.inputs.api.base import StateCommandProvider, VelCmdProvider
     from holosoma_inference.policies.base import BasePolicy
+    from holosoma_inference.sdk.base.base_interface import BaseInterface
+    from holosoma_inference.utils.rate import RateLimiter
 
 
 class ControllerState(Enum):
@@ -39,21 +43,43 @@ class ControllerState(Enum):
 class Controller:
     """Drives a BasePolicy through its rl_rate loop.
 
-    Step 1 contract: hardware ownership remains on the policy. The
-    Controller is a thin wrapper around the loop body that previously
-    lived in ``BasePolicy.run()``. Behavior must match the previous
-    implementation exactly.
+    Owns hardware (interface, inputs, rate). Holds a reference to the
+    policy and exposes itself back to the policy so subclass dispatch
+    handlers can reach the velocity input (e.g. ``zero()`` in
+    LocomotionPolicy).
     """
 
-    def __init__(self, policy: BasePolicy):
+    def __init__(
+        self,
+        policy: BasePolicy,
+        interface: BaseInterface,
+        velocity_input: VelCmdProvider,
+        command_provider: StateCommandProvider,
+        rate: RateLimiter,
+        logger=None,
+        use_joystick: bool = False,
+        use_keyboard: bool = False,
+    ):
         self.policy = policy
+        self.interface = interface
+        self.velocity_input = velocity_input
+        self.command_provider = command_provider
+        self.rate = rate
+        self.logger = logger if logger is not None else _default_logger
+        self.use_joystick = use_joystick
+        self.use_keyboard = use_keyboard
+
+        # Two-way wiring: policy can call back into the controller for
+        # operations like velocity_input.zero() that live on hardware.
+        policy.controller = self
+        # Policy keeps a reference to interface for its inner per-tick path
+        # (read state, send command, KP/KD resolution).
+        if not hasattr(policy, "interface") or policy.interface is None:
+            policy.interface = interface
 
     @property
     def state(self) -> ControllerState:
-        """Best-effort projection of policy flags onto ControllerState.
-
-        Read-only at Step 1. Reflects the existing flag-based FSM.
-        """
+        """Best-effort projection of policy flags onto ControllerState."""
         if getattr(self.policy, "get_ready_state", False):
             return ControllerState.INIT
         if getattr(self.policy, "use_policy_action", False):
@@ -62,20 +88,27 @@ class Controller:
             return ControllerState.STIFF_HOLD
         return ControllerState.IDLE
 
+    def set_policy(self, policy: BasePolicy) -> None:
+        """Swap the active policy. Used by dual-mode SWITCH_MODE in Step 5."""
+        self.policy = policy
+        policy.controller = self
+        if not hasattr(policy, "interface") or policy.interface is None:
+            policy.interface = self.interface
+
     def step(self) -> None:
         """Execute one rl_rate tick of the run loop body.
 
-        Equivalent to the per-iteration body of ``BasePolicy.run()``,
-        minus iteration counting and FPS logging.
+        Equivalent to the per-iteration body of the previous
+        ``BasePolicy.run()``, minus iteration counting and FPS logging.
         """
         policy = self.policy
         policy.latency_tracker.start_cycle()
 
-        vc = policy._velocity_input.poll_velocity()
+        vc = self.velocity_input.poll_velocity()
         if vc is not None:
             policy._apply_velocity(vc)
 
-        commands = policy._command_provider.poll_commands()
+        commands = self.command_provider.poll_commands()
         for cmd in commands:
             policy._dispatch_command(cmd)
         if commands:
@@ -90,15 +123,61 @@ class Controller:
 
     def run(self) -> None:
         """Run until KeyboardInterrupt."""
-        policy = self.policy
         try:
             for it in itertools.count():
                 self.step()
-                if it % 50 == 0 and policy.use_policy_action:
-                    debug_str = (
-                        f"RL FPS: {policy.latency_tracker.get_fps():.2f} | {policy.latency_tracker.get_stats_str()}"
-                    )
-                    policy.logger.info(debug_str, flush=True)
-                policy.rate.sleep()
+                if it % 50 == 0 and self.policy.use_policy_action:
+                    lt = self.policy.latency_tracker
+                    debug_str = f"RL FPS: {lt.get_fps():.2f} | {lt.get_stats_str()}"
+                    self.logger.info(debug_str, flush=True)
+                self.rate.sleep()
         except KeyboardInterrupt:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Builder helpers
+# ---------------------------------------------------------------------------
+def build_default_hardware(config) -> tuple:
+    """Build a real interface + input providers + rate from *config*.
+
+    Used by ``run_policy.py``. Returns
+    ``(interface, velocity_input, command_provider, rate, use_joystick, use_keyboard)``.
+    Side-effect: starts each input provider.
+    """
+    import sys
+
+    from holosoma_inference.inputs import create_input
+    from holosoma_inference.sdk import create_interface
+    from holosoma_inference.utils.rate import RateLimiter
+
+    sources = {config.task.velocity_input, config.task.state_input}
+    need_joystick_hw = bool({"interface", "joystick"} & sources)
+
+    interface = create_interface(
+        config.robot,
+        config.task.domain_id,
+        config.task.interface,
+        need_joystick_hw,
+    )
+
+    use_joystick = need_joystick_hw and sys.platform != "darwin"
+    use_keyboard = "keyboard" in sources
+    if use_keyboard:
+        from holosoma_inference.inputs.impl.keyboard import get_keyboard_listener
+
+        listener = get_keyboard_listener()
+        use_keyboard = listener.start()
+
+    velocity_input = create_input(config.task.velocity_input, "velocity", interface, config, use_joystick)
+    if config.task.velocity_input == config.task.state_input:
+        command_provider = velocity_input
+    else:
+        command_provider = create_input(config.task.state_input, "command", interface, config, use_joystick)
+
+    velocity_input.start()
+    if command_provider is not velocity_input:
+        command_provider.start()
+
+    rate = RateLimiter(config.task.rl_rate)
+    return interface, velocity_input, command_provider, rate, use_joystick, use_keyboard
