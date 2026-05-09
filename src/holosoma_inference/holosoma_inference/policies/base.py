@@ -30,8 +30,12 @@ class BasePolicy:
     """
     Base policy class for Holosoma deployment on humanoid robots.
 
-    Supports both simulation and real robot deployment with keyboard/joystick controls.
+    Conforms to ``holosoma_inference.controllers.PolicyProtocol`` so a
+    Controller can drive instances directly. Subclasses pick a sensible
+    ``name`` (``"locomotion"`` / ``"wbt"``) at construction time.
     """
+
+    name: str = "policy"
 
     def __init__(self, config: InferenceConfig, interface=None):
         """Initialize the policy with configuration, model, and a robot interface.
@@ -562,7 +566,83 @@ class BasePolicy:
         return dof_pos
 
     def policy_action(self):
-        """Execute policy action and send commands to robot."""
+        """Execute policy action and send commands to robot.
+
+        Backward-compatible wrapper: calls ``act()`` to compute the
+        command, then publishes it via the interface. New code should
+        let the Controller call ``act()`` directly and own the
+        ``send_low_command()``.
+        """
+        with self.latency_tracker.measure("read_state"):
+            robot_state_data = self.interface.get_low_state()
+
+        from holosoma_inference.controllers.protocol import Command
+
+        cmd = self._compute_action(robot_state_data)
+
+        with self.latency_tracker.measure("action_pub"):
+            self.interface.send_low_command(
+                cmd.q,
+                cmd.dq if cmd.dq is not None else self.cmd_dq,
+                cmd.tau if cmd.tau is not None else self.cmd_tau,
+                cmd.dof_pos_latest,
+                kp_override=cmd.kp_override,
+                kd_override=cmd.kd_override,
+            )
+        # Reuse not strictly necessary at this layer — kept for clarity.
+        _ = Command
+
+    # ------------------------------------------------------------------
+    # PolicyProtocol surface
+    # ------------------------------------------------------------------
+    def act(self, ctx, state):
+        """PolicyProtocol.act — return a Command for one tick.
+
+        ``state`` is the ``(N+13,)`` flattened low-state row from
+        ``interface.get_low_state()[0]``. Reshape back to ``(1, N+13)``
+        internally to match the existing helpers.
+        """
+        robot_state_data = state.reshape(1, -1)
+        return self._compute_action(robot_state_data)
+
+    def on_activate(self, ctx) -> None:
+        """PolicyProtocol.on_activate — default no-op."""
+
+    def on_deactivate(self, ctx) -> None:
+        """PolicyProtocol.on_deactivate — default no-op."""
+
+    def apply_velocity(self, vc: VelCmd) -> None:
+        """PolicyProtocol.apply_velocity — delegates to subclass hook."""
+        self._apply_velocity(vc)
+
+    def apply_command(self, cmd) -> bool:
+        """PolicyProtocol.apply_command — delegates to legacy dispatch.
+
+        Today this returns True for any command in the legacy dispatch
+        table and False for anything outside it. Step 8c narrows this
+        so that built-in transitions (START, STOP, INIT, DAMP, KILL)
+        are *not* claimed by the policy and are handled by the
+        Controller's builtin dispatch instead.
+        """
+        before_state = self._dispatch_snapshot()
+        self._dispatch_command(cmd)
+        return self._dispatch_snapshot() != before_state
+
+    def _dispatch_snapshot(self):
+        """Coarse snapshot used by ``apply_command`` to detect handling."""
+        return (
+            getattr(self, "use_policy_action", None),
+            getattr(self, "get_ready_state", None),
+            getattr(self, "_stiff_hold_active", None),
+            self.active_policy_index,
+            float(self.interface.kp_level) if hasattr(self.interface, "kp_level") else None,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal: extracted body of policy_action (state -> Command).
+    # ------------------------------------------------------------------
+    def _compute_action(self, robot_state_data):
+        from holosoma_inference.controllers.protocol import Command
 
         # Snapshot flags to prevent race with mode-switch handler thread
         use_policy = self.use_policy_action
@@ -571,13 +651,7 @@ class BasePolicy:
         kp_override = None
         kd_override = None
 
-        # Stage 1: Read State
-        with self.latency_tracker.measure("read_state"):
-            robot_state_data = self.interface.get_low_state()
-
-        # Stage 2: Pre-processing
         with self.latency_tracker.measure("preprocessing"):
-            # Determine target joint positions
             if get_ready:
                 q_target = self.get_init_target(robot_state_data)
                 self.init_count = min(self.init_count, 500)
@@ -590,39 +664,34 @@ class BasePolicy:
                 else:
                     q_target = robot_state_data[:, 7 : 7 + self.num_dofs]
             else:
-                # Prepare for inference - any preprocessing before RL inference
                 pass
 
-        # Stage 3: Inference
         if use_policy and not get_ready:
             with self.latency_tracker.measure("inference"):
                 scaled_policy_action = self.rl_inference(robot_state_data)
 
-        # Stage 4: Post-processing
         with self.latency_tracker.measure("postprocessing"):
             if use_policy and not get_ready:
                 if scaled_policy_action.shape[1] != self.num_dofs:
                     if not self.upper_body_controller:
                         scaled_policy_action = np.concatenate(
-                            [np.zeros((1, self.num_dofs - scaled_policy_action.shape[1])), scaled_policy_action], axis=1
+                            [np.zeros((1, self.num_dofs - scaled_policy_action.shape[1])), scaled_policy_action],
+                            axis=1,
                         )
                     else:
                         raise NotImplementedError("Upper body controller not implemented")
                 q_target = scaled_policy_action + self.default_dof_angles
 
-            # Prepare command (reuse pre-allocated arrays)
             self.cmd_q[:] = q_target[0] + self.joint_offsets
 
-        # Stage 5: Action Pub
-        with self.latency_tracker.measure("action_pub"):
-            self.interface.send_low_command(
-                self.cmd_q,
-                self.cmd_dq,
-                self.cmd_tau,
-                robot_state_data[0, 7 : 7 + self.num_dofs],
-                kp_override=kp_override,
-                kd_override=kd_override,
-            )
+        return Command(
+            q=self.cmd_q.copy(),
+            dq=self.cmd_dq,
+            tau=self.cmd_tau,
+            kp_override=kp_override,
+            kd_override=kd_override,
+            dof_pos_latest=robot_state_data[0, 7 : 7 + self.num_dofs],
+        )
 
     def _get_manual_command(self, robot_state_data):
         """Optional manual command when policy control is disabled."""

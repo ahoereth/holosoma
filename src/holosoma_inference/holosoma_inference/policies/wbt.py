@@ -25,6 +25,8 @@ from holosoma_inference.utils.math.quat import (
 
 
 class WholeBodyTrackingPolicy(BasePolicy):
+    name = "wbt"
+
     def __init__(self, config: InferenceConfig, interface=None):
         self.config = config
 

@@ -7,6 +7,8 @@ from .base import BasePolicy
 
 
 class LocomotionPolicy(BasePolicy):
+    name = "locomotion"
+
     def __init__(self, config, interface=None):
         super().__init__(config, interface=interface)
         self.is_standing = False
