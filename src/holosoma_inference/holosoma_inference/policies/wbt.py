@@ -376,10 +376,6 @@ class WholeBodyTrackingPolicy(BasePolicy):
         self.motion_yaw_offset = 0.0
         self._stiff_hold_active = True
 
-    def _handle_start_policy(self):
-        # Legacy entry point; routes through Controller.transition_to.
-        super()._handle_start_policy()
-
     def _set_motion_timestep(self):
         if self.motion_clip_progressing:
             prev = self.curr_motion_timestep
@@ -397,23 +393,6 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 self.logger.info(colored(f"Reached end timestep {end}, stopping motion clip", "yellow"))
                 self.motion_clip_progressing = False
                 self.curr_motion_timestep = end
-
-    def _handle_stop_policy(self):
-        """Handle stop policy action."""
-        self.use_policy_action = False
-        self.get_ready_state = False
-        self._stiff_hold_active = True
-        self.logger.info("Actions set to stiff startup command")
-        if hasattr(self.interface, "no_action"):
-            self.interface.no_action = 0
-
-        self.motion_clip_progressing = False
-        self.timestep_util.reset(start_timestep=0)
-        self.curr_motion_timestep = self.timestep_util.timestep
-        self.ref_quat_xyzw_t = self.ref_quat_xyzw_0.copy()
-        self.motion_command_t = self.motion_command_0.copy()
-        self.robot_yaw_offset = 0.0
-        self.motion_yaw_offset = 0.0
 
     def _handle_start_motion_clip(self):
         """Handle start motion clip action."""

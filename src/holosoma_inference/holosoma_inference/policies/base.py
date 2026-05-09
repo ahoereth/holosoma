@@ -740,55 +740,6 @@ class BasePolicy:
     # Control Action Methods
     # ============================================================================
 
-    def _handle_start_policy(self):
-        """Transition this policy to active. Resets gait phase.
-
-        Kept for legacy callers and the WBT subclass which extends it.
-        New code prefers ``controller.transition_to(policy_name)``.
-        """
-        if self.controller is not None:
-            self.controller.transition_to(self.name)
-        else:
-            self.use_policy_action = True
-            self.get_ready_state = False
-        self.logger.info(colored("Using policy actions", "blue"))
-        self.phase = np.array([[0.0, np.pi]])
-        if hasattr(self.interface, "no_action"):
-            self.interface.no_action = 0
-
-    def _handle_stop_policy(self):
-        """Transition to damping (idle, energized hold)."""
-        if self.controller is not None and "damping" in self.controller.policies:
-            self.controller.transition_to("damping")
-        else:
-            self.use_policy_action = False
-            self.get_ready_state = False
-        self.logger.info("Actions set to zero")
-        if hasattr(self.interface, "no_action"):
-            self.interface.no_action = 1
-
-    def _handle_init_state(self):
-        """Transition to the init ramp policy."""
-        if self.controller is not None and "init" in self.controller.policies:
-            self.controller.transition_to("init")
-        else:
-            self.get_ready_state = True
-            self.init_count = 0
-        self.logger.info("Setting to init state")
-        if hasattr(self.interface, "no_action"):
-            self.interface.no_action = 0
-
-    def _handle_damp_state(self):
-        """Transition to the damping policy."""
-        if self.controller is None:
-            self.logger.warning("DAMP requested but no Controller is bound; ignoring")
-            return
-        if "damping" not in self.controller.policies:
-            self.logger.warning("DAMP requested but no 'damping' policy registered")
-            return
-        self.controller.transition_to("damping")
-        self.logger.info(colored("Entering damping mode (hold last pose)", "yellow"))
-
     def _print_control_status(self):
         """Print current control status."""
         self.logger.info("------------ Control Status ------------")

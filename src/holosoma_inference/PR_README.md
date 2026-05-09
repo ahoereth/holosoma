@@ -10,7 +10,11 @@ Branch: `dev/tomasz/controller`
 | 1 — Extract `Controller` (run loop only, no behavior change) | `5983b6c` | done |
 | — `--render` flag for visual sanity | `1507af1` | done |
 | 2+5 — Hardware ownership to Controller, dual-mode collapse | `aa92a3f` | done |
-| 3+4 — Formalize FSM, add DAMP state | next | done |
+| 3+4 — Formalize FSM, add DAMP state | `f80806a` | done |
+| 8a — `controllers/` submodule + `PolicyProtocol` | `39f3f36` | done |
+| 8b — `BasePolicy` conforms to `PolicyProtocol` | `36760ad` | done |
+| 8c — `DAMP/INIT/STIFF_HOLD` are policies; rewrite Controller | `5c4dda7` | done |
+| 8d — Delete legacy handlers and flags | next | done |
 | 7 — Update FAR-pi extensions and rewrite skipped input tests | future PR | not started |
 
 ## Design
