@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
 from collections import deque
 from dataclasses import replace
@@ -616,27 +615,18 @@ class BasePolicy:
         self._apply_velocity(vc)
 
     def apply_command(self, cmd) -> bool:
-        """PolicyProtocol.apply_command — delegates to legacy dispatch.
+        """PolicyProtocol.apply_command — handle policy-specific commands.
 
-        Today this returns True for any command in the legacy dispatch
-        table and False for anything outside it. Step 8c narrows this
-        so that built-in transitions (START, STOP, INIT, DAMP, KILL)
-        are *not* claimed by the policy and are handled by the
-        Controller's builtin dispatch instead.
+        Built-in transitions (START/STOP/INIT/DAMP/KILL/SWITCH_MODE) and
+        global actions (KP_*) are *not* claimed here; they fall through
+        to the Controller. Multi-model select and subclass-specific
+        commands (STAND_TOGGLE for locomotion, START_MOTION_CLIP for
+        WBT) return True.
         """
-        before_state = self._dispatch_snapshot()
-        self._dispatch_command(cmd)
-        return self._dispatch_snapshot() != before_state
-
-    def _dispatch_snapshot(self):
-        """Coarse snapshot used by ``apply_command`` to detect handling."""
-        return (
-            getattr(self, "use_policy_action", None),
-            getattr(self, "get_ready_state", None),
-            getattr(self, "_stiff_hold_active", None),
-            self.active_policy_index,
-            float(self.interface.kp_level) if hasattr(self.interface, "kp_level") else None,
-        )
+        if cmd == StateCommand.NEXT_POLICY or cmd in STATE_COMMAND_TO_POLICY_INDEX:
+            self._dispatch_command(cmd)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Internal: extracted body of policy_action (state -> Command).
@@ -727,52 +717,38 @@ class BasePolicy:
     # ============================================================================
 
     def _dispatch_command(self, cmd):
-        """Dispatch a command enum to the appropriate handler.
+        """Policy-specific command dispatch.
 
-        Subclasses override this to handle policy-specific commands,
-        calling ``super()._dispatch_command(cmd)`` for unhandled ones.
+        Built-in transitions (START/STOP/INIT/DAMP/KILL) and global
+        actions (KP_*, SWITCH_MODE) are handled by the Controller.
+        Multi-model select (NEXT_POLICY, SWITCH_POLICY_N) is handled
+        here because it manipulates *this* policy's state.
+
+        Subclasses override this to handle their own command bindings,
+        calling ``super()._dispatch_command(cmd)`` for the multi-model
+        commands.
         """
-        if cmd == StateCommand.START:
-            self._handle_start_policy()
-        elif cmd == StateCommand.STOP:
-            self._handle_stop_policy()
-        elif cmd == StateCommand.INIT:
-            self._handle_init_state()
-        elif cmd == StateCommand.DAMP:
-            self._handle_damp_state()
-        elif cmd == StateCommand.KILL:
-            self.logger.info(colored("Killing program via command", "red"))
-            sys.exit(0)
-        elif cmd == StateCommand.NEXT_POLICY:
+        if cmd == StateCommand.NEXT_POLICY:
             next_index = (self.active_policy_index + 1) % len(self.model_paths)
             self._activate_policy(next_index)
         elif cmd in STATE_COMMAND_TO_POLICY_INDEX:
             index = STATE_COMMAND_TO_POLICY_INDEX[cmd]
             if index != self.active_policy_index and 0 <= index < len(self.model_paths):
                 self._activate_policy(index)
-        elif cmd == StateCommand.KP_UP:
-            self.interface.kp_level += 0.1
-        elif cmd == StateCommand.KP_DOWN:
-            self.interface.kp_level -= 0.1
-        elif cmd == StateCommand.KP_UP_FINE:
-            self.interface.kp_level += 0.01
-        elif cmd == StateCommand.KP_DOWN_FINE:
-            self.interface.kp_level -= 0.01
-        elif cmd == StateCommand.KP_RESET:
-            self.interface.kp_level = 1.0
 
     # ============================================================================
     # Control Action Methods
     # ============================================================================
 
     def _handle_start_policy(self):
-        """Transition to RUN_POLICY. Resets gait phase."""
-        from holosoma_inference.controller import ControllerState
+        """Transition this policy to active. Resets gait phase.
 
+        Kept for legacy callers and the WBT subclass which extends it.
+        New code prefers ``controller.transition_to(policy_name)``.
+        """
         if self.controller is not None:
-            self.controller.set_state(ControllerState.RUN_POLICY)
+            self.controller.transition_to(self.name)
         else:
-            # Legacy path used by tests that build the policy without a Controller.
             self.use_policy_action = True
             self.get_ready_state = False
         self.logger.info(colored("Using policy actions", "blue"))
@@ -781,11 +757,9 @@ class BasePolicy:
             self.interface.no_action = 0
 
     def _handle_stop_policy(self):
-        """Transition to IDLE — actions zero."""
-        from holosoma_inference.controller import ControllerState
-
-        if self.controller is not None:
-            self.controller.set_state(ControllerState.IDLE)
+        """Transition to damping (idle, energized hold)."""
+        if self.controller is not None and "damping" in self.controller.policies:
+            self.controller.transition_to("damping")
         else:
             self.use_policy_action = False
             self.get_ready_state = False
@@ -794,11 +768,9 @@ class BasePolicy:
             self.interface.no_action = 1
 
     def _handle_init_state(self):
-        """Transition to INIT — interpolate to default pose."""
-        from holosoma_inference.controller import ControllerState
-
-        if self.controller is not None:
-            self.controller.set_state(ControllerState.INIT)
+        """Transition to the init ramp policy."""
+        if self.controller is not None and "init" in self.controller.policies:
+            self.controller.transition_to("init")
         else:
             self.get_ready_state = True
             self.init_count = 0
@@ -807,13 +779,14 @@ class BasePolicy:
             self.interface.no_action = 0
 
     def _handle_damp_state(self):
-        """Transition to DAMP — hold last observed pose with low gains."""
-        from holosoma_inference.controller import ControllerState
-
+        """Transition to the damping policy."""
         if self.controller is None:
             self.logger.warning("DAMP requested but no Controller is bound; ignoring")
             return
-        self.controller.set_state(ControllerState.DAMP)
+        if "damping" not in self.controller.policies:
+            self.logger.warning("DAMP requested but no 'damping' policy registered")
+            return
+        self.controller.transition_to("damping")
         self.logger.info(colored("Entering damping mode (hold last pose)", "yellow"))
 
     def _print_control_status(self):

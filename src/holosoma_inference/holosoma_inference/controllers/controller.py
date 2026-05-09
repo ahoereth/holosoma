@@ -1,218 +1,338 @@
-"""Controller — orchestrates a BasePolicy with hardware and inputs.
+"""Controller — orchestrates one or more policies sharing hardware.
 
-Step 2 of the Controller refactor (see ``docs/controller-design.md``):
-the Controller now owns hardware. It is constructed with an interface,
-velocity/command input providers, and a rate limiter. The Policy keeps
-``self.interface`` as a back-reference for the inner policy_action loop
-but no longer creates or owns the hardware lifecycle.
+After Step 8, the Controller holds a dict of policies (each conforming
+to ``PolicyProtocol``) and one is "active" at a time. ``step()`` calls
+the active policy's ``act(ctx, state)`` to get a ``Command`` and
+publishes it via the SDK interface. ``transition_to(name)`` switches
+the active policy.
 
-ControllerState is still a read-only projection of the existing flags;
-Step 3 makes it load-bearing.
+The 5-state FSM (``IDLE / INIT / DAMP / STIFF_HOLD / RUN_POLICY``) is
+no longer modelled as an enum — each former state is a concrete
+policy:
+
+  IDLE / DAMP   -> DampingPolicy
+  INIT          -> InitPolicy
+  STIFF_HOLD    -> StiffHoldPolicy
+  RUN_POLICY    -> OnnxLocomotionPolicy / OnnxWBTPolicy / extension policies
+
+``ControllerState`` remains as a legacy alias mapping enum members back
+to the canonical policy names; nothing in the new code path uses it.
 """
 
 from __future__ import annotations
 
 import itertools
+import sys
 from enum import Enum
 from typing import TYPE_CHECKING
 
+import numpy as np
 from loguru import logger as _default_logger
 
+from holosoma_inference.controllers.protocol import Command, PolicyProtocol
+from holosoma_inference.inputs.api.commands import StateCommand
+
 if TYPE_CHECKING:
+    from holosoma_inference.config.config_types.inference import InferenceConfig
     from holosoma_inference.inputs.api.base import StateCommandProvider, VelCmdProvider
-    from holosoma_inference.policies.base import BasePolicy
     from holosoma_inference.sdk.base.base_interface import BaseInterface
     from holosoma_inference.utils.rate import RateLimiter
 
 
+# ---------------------------------------------------------------------------
+# Legacy state enum — kept for one release cycle for callers that still
+# reference ControllerState.RUN_POLICY etc. New code uses policy names.
+# ---------------------------------------------------------------------------
 class ControllerState(Enum):
-    """High-level Controller FSM states.
-
-    Today these are read-only labels — the underlying flags
-    (``use_policy_action``, ``get_ready_state``, etc.) still drive
-    behavior. They become load-bearing in Step 3.
-    """
-
     IDLE = "idle"
     INIT = "init"
-    DAMP = "damp"
+    DAMP = "damping"
     STIFF_HOLD = "stiff_hold"
     RUN_POLICY = "run_policy"
 
+    @property
+    def policy_name(self) -> str:
+        # IDLE collapses to damping; the others map 1:1 to policy keys.
+        return "damping" if self is ControllerState.IDLE else self.value
+
 
 class Controller:
-    """Drives a BasePolicy through its rl_rate loop.
-
-    Owns hardware (interface, inputs, rate). Holds a reference to the
-    policy and exposes itself back to the policy so subclass dispatch
-    handlers can reach the velocity input (e.g. ``zero()`` in
-    LocomotionPolicy).
-    """
+    """Drives one of N policies through the rl_rate loop."""
 
     def __init__(
         self,
-        policy: BasePolicy,
+        policies: dict[str, PolicyProtocol],
+        initial: str,
+        *,
         interface: BaseInterface,
         velocity_input: VelCmdProvider,
         command_provider: StateCommandProvider,
         rate: RateLimiter,
+        robot_config,
+        joint_offsets: np.ndarray,
+        latency_tracker=None,
         logger=None,
         use_joystick: bool = False,
         use_keyboard: bool = False,
+        default_run_policy: str | None = None,
     ):
-        self.policy = policy
+        if initial not in policies:
+            raise ValueError(f"initial policy {initial!r} not in policies dict {list(policies)}")
+
+        self.policies: dict[str, PolicyProtocol] = dict(policies)
+        self._active_name = initial
         self.interface = interface
         self.velocity_input = velocity_input
         self.command_provider = command_provider
         self.rate = rate
+        self._robot_config = robot_config
+        self._joint_offsets = np.asarray(joint_offsets, dtype=np.float64)
+        self.latency_tracker = latency_tracker
         self.logger = logger if logger is not None else _default_logger
         self.use_joystick = use_joystick
         self.use_keyboard = use_keyboard
 
-        # DAMP state holds last-observed joint positions with the policy's
-        # KP/KD gains. The intent is "robot stays energized at the pose it
-        # was at when teleop released the handle" — not low gains, full
-        # gains tracking a stationary target.
-        self._damp_active = False
-        self._damp_q = None
-        self.damp_kp_scale = 1.0
-        self.damp_kd_scale = 1.0
+        # Which policy START maps to. Defaults to the first registered
+        # policy that isn't damping/init/stiff_hold.
+        self._default_run_policy = default_run_policy or self._infer_default_run_policy()
 
-        # Two-way wiring: policy can call back into the controller for
-        # operations like velocity_input.zero() that live on hardware.
-        policy.controller = self
-        # Policy keeps a reference to interface for its inner per-tick path
-        # (read state, send command, KP/KD resolution).
-        if not hasattr(policy, "interface") or policy.interface is None:
-            policy.interface = interface
+        # Two-way wiring so policy.controller works for legacy code.
+        for p in self.policies.values():
+            if hasattr(p, "controller"):
+                p.controller = self
+
+        self.active.on_activate(self)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    @property
+    def active(self) -> PolicyProtocol:
+        return self.policies[self._active_name]
 
     @property
-    def state(self) -> ControllerState:
-        """Current Controller FSM state.
+    def active_name(self) -> str:
+        return self._active_name
 
-        Backed by the legacy flags on the policy
-        (``use_policy_action`` / ``get_ready_state`` / ``_stiff_hold_active``)
-        plus a DAMP override on the controller itself. Reads project the
-        flag set onto a single state.
-        """
-        if self._damp_active:
-            return ControllerState.DAMP
-        if getattr(self.policy, "get_ready_state", False):
-            return ControllerState.INIT
-        if getattr(self.policy, "use_policy_action", False):
-            return ControllerState.RUN_POLICY
-        if getattr(self.policy, "_stiff_hold_active", False):
-            return ControllerState.STIFF_HOLD
-        return ControllerState.IDLE
+    def transition_to(self, name: str) -> None:
+        if name == self._active_name:
+            return
+        if name not in self.policies:
+            raise KeyError(f"unknown policy {name!r}; have {list(self.policies)}")
+        self.active.on_deactivate(self)
+        self._active_name = name
+        self.active.on_activate(self)
+        self.logger.info("Active policy: {}", name)
 
-    def set_state(self, new_state: ControllerState) -> None:
-        """Transition the FSM. Updates the legacy flags atomically.
+    @property
+    def num_dofs(self) -> int:
+        return int(self._robot_config.num_joints)
 
-        ``DAMP`` is held by a controller-side flag; on entry, the current
-        joint positions are captured for the hold target. Other states
-        clear the damp flag.
-        """
-        policy = self.policy
-        # Clear all flags first so transitions are idempotent.
-        policy.use_policy_action = False
-        policy.get_ready_state = False
-        if hasattr(policy, "_stiff_hold_active"):
-            policy._stiff_hold_active = False
-        self._damp_active = False
-        self._damp_q = None
+    @property
+    def motor_kp(self) -> np.ndarray:
+        return np.asarray(self._robot_config.motor_kp, dtype=np.float64)
 
-        if new_state is ControllerState.RUN_POLICY:
-            policy.use_policy_action = True
-        elif new_state is ControllerState.INIT:
-            policy.get_ready_state = True
-            policy.init_count = 0
-        elif new_state is ControllerState.STIFF_HOLD:
-            if hasattr(policy, "_stiff_hold_active"):
-                policy._stiff_hold_active = True
-        elif new_state is ControllerState.DAMP:
-            self._damp_active = True
-            try:
-                state = self.interface.get_low_state()
-                self._damp_q = state[0, 7 : 7 + policy.num_dofs].copy()
-            except Exception:
-                self.logger.warning("DAMP entry: get_low_state() failed; will capture on first tick")
+    @property
+    def motor_kd(self) -> np.ndarray:
+        return np.asarray(self._robot_config.motor_kd, dtype=np.float64)
 
-    def set_policy(self, policy: BasePolicy) -> None:
-        """Swap the active policy. Used by dual-mode SWITCH_MODE in Step 5."""
-        self.policy = policy
-        policy.controller = self
-        if not hasattr(policy, "interface") or policy.interface is None:
-            policy.interface = self.interface
+    @property
+    def joint_offsets(self) -> np.ndarray:
+        return self._joint_offsets
 
+    # ------------------------------------------------------------------
+    # Per-tick driver
+    # ------------------------------------------------------------------
     def step(self) -> None:
-        """Execute one rl_rate tick of the run loop body."""
-        policy = self.policy
-        policy.latency_tracker.start_cycle()
+        if self.latency_tracker is not None:
+            self.latency_tracker.start_cycle()
 
         vc = self.velocity_input.poll_velocity()
         if vc is not None:
-            policy._apply_velocity(vc)
+            self.active.apply_velocity(vc)
 
         commands = self.command_provider.poll_commands()
         for cmd in commands:
-            policy._dispatch_command(cmd)
+            self.dispatch(cmd)
         if commands:
-            policy._print_control_status()
+            self._print_status()
 
-        if self._damp_active:
-            self._publish_damp_command()
-        else:
-            if policy.use_phase:
-                policy.update_phase_time()
-            policy.policy_action()
+        state = self.interface.get_low_state()[0]
+        command = self.active.act(self, state)
+        self._send(command)
 
-        policy.latency_tracker.end_cycle()
+        if self.latency_tracker is not None:
+            self.latency_tracker.end_cycle()
 
-    def _publish_damp_command(self) -> None:
-        """Hold last-observed joint positions with low KP/KD."""
-        import numpy as np
-
-        policy = self.policy
-        state = self.interface.get_low_state()
-        if self._damp_q is None:
-            self._damp_q = state[0, 7 : 7 + policy.num_dofs].copy()
-        kp_full = np.asarray(policy.robot_config.motor_kp, dtype=np.float64) * self.damp_kp_scale
-        kd_full = np.asarray(policy.robot_config.motor_kd, dtype=np.float64) * self.damp_kd_scale
-        zeros = np.zeros(policy.num_dofs)
-        self.interface.send_low_command(
-            self._damp_q + policy.joint_offsets,
-            zeros,
-            zeros,
-            state[0, 7 : 7 + policy.num_dofs],
-            kp_override=kp_full,
-            kd_override=kd_full,
-        )
+    def dispatch(self, cmd: StateCommand) -> None:
+        """Route a StateCommand to the active policy then to builtin handlers."""
+        if self.active.apply_command(cmd):
+            return
+        self._builtin_dispatch(cmd)
 
     def run(self) -> None:
-        """Run until KeyboardInterrupt."""
         try:
             for it in itertools.count():
                 self.step()
-                if it % 50 == 0 and self.policy.use_policy_action:
-                    lt = self.policy.latency_tracker
-                    debug_str = f"RL FPS: {lt.get_fps():.2f} | {lt.get_stats_str()}"
-                    self.logger.info(debug_str, flush=True)
+                if self.latency_tracker is not None and it % 50 == 0:
+                    fps = self.latency_tracker.get_fps()
+                    if fps > 0:
+                        debug_str = f"RL FPS: {fps:.2f} | {self.latency_tracker.get_stats_str()}"
+                        self.logger.info(debug_str)
                 self.rate.sleep()
         except KeyboardInterrupt:
             pass
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+    def _builtin_dispatch(self, cmd: StateCommand) -> None:
+        if cmd is StateCommand.START:
+            self.transition_to(self._default_run_policy)
+        elif cmd is StateCommand.STOP:
+            if "damping" in self.policies:
+                self.transition_to("damping")
+            else:
+                self.logger.warning("STOP requested but no 'damping' policy registered")
+        elif cmd is StateCommand.INIT:
+            if "init" in self.policies:
+                self.transition_to("init")
+            else:
+                self.logger.warning("INIT requested but no 'init' policy registered")
+        elif cmd is StateCommand.DAMP:
+            if "damping" in self.policies:
+                self.transition_to("damping")
+            else:
+                self.logger.warning("DAMP requested but no 'damping' policy registered")
+        elif cmd is StateCommand.KILL:
+            self.logger.info("Kill command received")
+            sys.exit(0)
+        elif cmd is StateCommand.SWITCH_MODE:
+            self._cycle_run_policies()
+        elif cmd is StateCommand.NEXT_POLICY or cmd in _MULTI_MODEL_COMMANDS:
+            # Multi-model select on the active policy.
+            if hasattr(self.active, "_dispatch_command"):
+                self.active._dispatch_command(cmd)
+        elif cmd in (
+            StateCommand.KP_UP,
+            StateCommand.KP_DOWN,
+            StateCommand.KP_UP_FINE,
+            StateCommand.KP_DOWN_FINE,
+            StateCommand.KP_RESET,
+        ):
+            self._adjust_kp(cmd)
+
+    def _cycle_run_policies(self) -> None:
+        """SWITCH_MODE: cycle between the non-utility policies."""
+        run_policies = [n for n in self.policies if n not in {"damping", "init", "stiff_hold"}]
+        if len(run_policies) < 2:
+            return
+        if self._active_name in run_policies:
+            i = (run_policies.index(self._active_name) + 1) % len(run_policies)
+        else:
+            i = 0
+        self.transition_to(run_policies[i])
+
+    def _adjust_kp(self, cmd: StateCommand) -> None:
+        if not hasattr(self.interface, "kp_level"):
+            return
+        delta = {
+            StateCommand.KP_UP: 0.1,
+            StateCommand.KP_DOWN: -0.1,
+            StateCommand.KP_UP_FINE: 0.01,
+            StateCommand.KP_DOWN_FINE: -0.01,
+        }
+        if cmd is StateCommand.KP_RESET:
+            self.interface.kp_level = 1.0
+        else:
+            self.interface.kp_level += delta[cmd]
+
+    def _print_status(self) -> None:
+        if hasattr(self.active, "_print_control_status"):
+            self.active._print_control_status()
+
+    def _send(self, c: Command) -> None:
+        n = self.num_dofs
+        zeros = np.zeros(n)
+        self.interface.send_low_command(
+            c.q,
+            c.dq if c.dq is not None else zeros,
+            c.tau if c.tau is not None else zeros,
+            c.dof_pos_latest,
+            kp_override=c.kp_override,
+            kd_override=c.kd_override,
+        )
+
+    def _infer_default_run_policy(self) -> str:
+        for name in self.policies:
+            if name not in {"damping", "init", "stiff_hold"}:
+                return name
+        return next(iter(self.policies))
+
+    # ------------------------------------------------------------------
+    # Legacy single-policy compatibility
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_single_policy(
+        cls,
+        policy: PolicyProtocol,
+        *,
+        interface,
+        velocity_input,
+        command_provider,
+        rate,
+        latency_tracker=None,
+        logger=None,
+        use_joystick: bool = False,
+        use_keyboard: bool = False,
+    ) -> Controller:
+        """Build a Controller from a single OnnxBasePolicy plus default
+        damping/init policies. Used by run_policy.py and the harness.
+        """
+        from holosoma_inference.policies.damping import DampingPolicy
+        from holosoma_inference.policies.init_ramp import InitPolicy
+
+        policies: dict[str, PolicyProtocol] = {
+            policy.name: policy,
+            "damping": DampingPolicy(),
+            "init": InitPolicy(target_q=policy.default_dof_angles),
+        }
+        return cls(
+            policies=policies,
+            initial=policy.name,
+            interface=interface,
+            velocity_input=velocity_input,
+            command_provider=command_provider,
+            rate=rate,
+            robot_config=policy.robot_config,
+            joint_offsets=policy.joint_offsets,
+            latency_tracker=latency_tracker if latency_tracker is not None else policy.latency_tracker,
+            logger=logger,
+            use_joystick=use_joystick,
+            use_keyboard=use_keyboard,
+            default_run_policy=policy.name,
+        )
+
+    @property
+    def policy(self) -> PolicyProtocol:
+        """Legacy alias for ``active``. New code uses ``controller.active``."""
+        return self.active
+
+
+# Module-level set of multi-model select commands.
+_MULTI_MODEL_COMMANDS = frozenset(StateCommand[f"SWITCH_POLICY_{n}"] for n in range(1, 10))
 
 
 # ---------------------------------------------------------------------------
 # Builder helpers
 # ---------------------------------------------------------------------------
-def build_default_hardware(config) -> tuple:
+def build_default_hardware(config: InferenceConfig) -> tuple:
     """Build a real interface + input providers + rate from *config*.
 
-    Used by ``run_policy.py``. Returns
-    ``(interface, velocity_input, command_provider, rate, use_joystick, use_keyboard)``.
+    Returns ``(interface, velocity_input, command_provider, rate, use_joystick, use_keyboard)``.
     Side-effect: starts each input provider.
     """
-    import sys
+    import sys as _sys
 
     from holosoma_inference.inputs import create_input
     from holosoma_inference.sdk import create_interface
@@ -228,7 +348,7 @@ def build_default_hardware(config) -> tuple:
         need_joystick_hw,
     )
 
-    use_joystick = need_joystick_hw and sys.platform != "darwin"
+    use_joystick = need_joystick_hw and _sys.platform != "darwin"
     use_keyboard = "keyboard" in sources
     if use_keyboard:
         from holosoma_inference.inputs.impl.keyboard import get_keyboard_listener

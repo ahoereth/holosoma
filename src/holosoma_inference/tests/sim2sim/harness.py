@@ -90,7 +90,7 @@ def build_policy_with_sim(
 
     Returns ``(policy, controller, sim_interface)``.
     """
-    from holosoma_inference.controller import Controller
+    from holosoma_inference.controllers import Controller
     from holosoma_inference.policies.locomotion import LocomotionPolicy
 
     config = config if config is not None else replace(g1_29dof_loco, secondary=None)
@@ -118,8 +118,8 @@ def build_policy_with_sim(
 
     policy = LocomotionPolicy(config=config, interface=sim_interface)
 
-    controller = Controller(
-        policy=policy,
+    controller = Controller.from_single_policy(
+        policy,
         interface=sim_interface,
         velocity_input=_StubVelInput(),
         command_provider=_StubCmdProvider(),

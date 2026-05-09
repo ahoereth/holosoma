@@ -353,11 +353,32 @@ class WholeBodyTrackingPolicy(BasePolicy):
             "kd": self._stiff_hold_kd,
         }
 
-    def _handle_start_policy(self):
-        super()._handle_start_policy()
+    def on_activate(self, ctx) -> None:
+        """Resolve KP/KD, capture yaw offsets, exit stiff-hold."""
+        self._resolve_control_gains()
+        self.use_policy_action = True
+        self.get_ready_state = False
         self._stiff_hold_active = False
+        if hasattr(self.interface, "no_action"):
+            self.interface.no_action = 0
         self._capture_robot_yaw_offset()
         self._capture_motion_yaw_offset(self.ref_quat_xyzw_0)
+
+    def on_deactivate(self, ctx) -> None:
+        """Reset motion state on swap-out."""
+        self.use_policy_action = False
+        self.motion_clip_progressing = False
+        self.timestep_util.reset(start_timestep=0)
+        self.curr_motion_timestep = self.timestep_util.timestep
+        self.ref_quat_xyzw_t = self.ref_quat_xyzw_0.copy()
+        self.motion_command_t = self.motion_command_0.copy()
+        self.robot_yaw_offset = 0.0
+        self.motion_yaw_offset = 0.0
+        self._stiff_hold_active = True
+
+    def _handle_start_policy(self):
+        # Legacy entry point; routes through Controller.transition_to.
+        super()._handle_start_policy()
 
     def _set_motion_timestep(self):
         if self.motion_clip_progressing:
@@ -407,12 +428,16 @@ class WholeBodyTrackingPolicy(BasePolicy):
         else:
             self.logger.info(colored("Starting motion clip", "blue"))
 
-    def _dispatch_command(self, cmd):
+    def apply_command(self, cmd) -> bool:
         from holosoma_inference.inputs.api.commands import StateCommand
 
         if cmd == StateCommand.START_MOTION_CLIP:
             self._handle_start_motion_clip()
-        else:
+            return True
+        return super().apply_command(cmd)
+
+    def _dispatch_command(self, cmd):
+        if not self.apply_command(cmd):
             super()._dispatch_command(cmd)
 
     def _capture_robot_yaw_offset(self):

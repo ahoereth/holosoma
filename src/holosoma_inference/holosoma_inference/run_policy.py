@@ -21,7 +21,7 @@ from loguru import logger
 from holosoma_inference.config.config_types.inference import InferenceConfig
 from holosoma_inference.config.config_values.inference import get_annotated_inference_config
 from holosoma_inference.config.utils import TYRO_CONFIG
-from holosoma_inference.policies.dual_mode import DualModePolicy, _select_policy_class
+from holosoma_inference.policies.dual_mode import _select_policy_class
 from holosoma_inference.utils.misc import restore_terminal_settings
 
 
@@ -100,7 +100,9 @@ def _print_control_guide(policy_class, use_joystick: bool, dual_mode: bool = Fal
 
 def run_policy(config: InferenceConfig):
     """Run policy with Tyro configuration."""
-    from holosoma_inference.controller import Controller, build_default_hardware
+    from holosoma_inference.controllers import Controller, build_default_hardware
+    from holosoma_inference.policies.damping import DampingPolicy
+    from holosoma_inference.policies.init_ramp import InitPolicy
 
     logger.info("🚀 Starting Policy with Tyro configuration...")
     logger.info(f"🤖 Robot: {config.robot.robot_type}")
@@ -112,50 +114,52 @@ def run_policy(config: InferenceConfig):
         # Build hardware once. Controller owns everything past this point.
         interface, vel_in, cmd_in, rate, use_joystick, use_keyboard = build_default_hardware(config)
 
-        policy_class = _select_policy_class(config)
+        primary_class = _select_policy_class(config)
         dual_mode = config.secondary is not None
+        logger.info(f"Using {primary_class.__name__}" + (" (dual-mode enabled)" if dual_mode else ""))
+
+        primary = primary_class(config=config, interface=interface)
+        policies: dict = {primary.name: primary}
 
         if dual_mode:
-            logger.info(f"Using {policy_class.__name__} (dual-mode enabled)")
-            policy = DualModePolicy(
-                primary_config=config,
-                secondary_config=config.secondary,
-                interface=interface,
-            )
-            primary = policy.primary
-        else:
-            logger.info(f"Using {policy_class.__name__}")
-            policy = policy_class(config=config, interface=interface)
-            primary = policy
+            secondary_class = _select_policy_class(config.secondary)
+            secondary = secondary_class(config=config.secondary, interface=interface)
+            # Two policies share the "locomotion" / "wbt" name space; rename
+            # the secondary so both can coexist in the dict.
+            secondary_key = "secondary" if secondary.name == primary.name else secondary.name
+            secondary.name = secondary_key
+            policies[secondary_key] = secondary
+
+        policies["damping"] = DampingPolicy()
+        policies["init"] = InitPolicy(target_q=primary.default_dof_angles)
 
         controller = Controller(
-            policy=primary,
+            policies=policies,
+            initial=primary.name,
             interface=interface,
             velocity_input=vel_in,
             command_provider=cmd_in,
             rate=rate,
+            robot_config=primary.robot_config,
+            joint_offsets=primary.joint_offsets,
+            latency_tracker=primary.latency_tracker,
             logger=logger,
             use_joystick=use_joystick,
             use_keyboard=use_keyboard,
+            default_run_policy=primary.name,
         )
 
-        if dual_mode:
-            policy.bind_controller(controller)
-
         # If keyboard input was requested but no TTY is attached, the
-        # listener will not have started — fall through to policy actions
+        # listener will not have started — start the policy automatically
         # so the robot is still drivable headlessly.
         if "keyboard" in {config.task.velocity_input, config.task.state_input} and not use_keyboard:
             logger.warning("No TTY — keyboard input disabled")
             primary.use_policy_action = True
 
         logger.info("✅ Policy initialized successfully!")
-        _print_control_guide(policy_class, use_joystick, dual_mode=dual_mode)
+        _print_control_guide(primary_class, use_joystick, dual_mode=dual_mode)
 
-        if dual_mode:
-            policy.run()
-        else:
-            controller.run()
+        controller.run()
         logger.info("✅ Policy execution completed!")
 
     except Exception as e:

@@ -13,6 +13,18 @@ class LocomotionPolicy(BasePolicy):
         super().__init__(config, interface=interface)
         self.is_standing = False
 
+    def on_activate(self, ctx) -> None:
+        """Resolve KP/KD on the shared interface, reset gait phase, run."""
+        self._resolve_control_gains()
+        self.use_policy_action = True
+        self.get_ready_state = False
+        self.phase = np.array([[0.0, np.pi]])
+        if hasattr(self.interface, "no_action"):
+            self.interface.no_action = 0
+
+    def on_deactivate(self, ctx) -> None:
+        self.use_policy_action = False
+
     def _apply_velocity(self, vc: VelCmd) -> None:
         """Gate velocity by stand_command — zero when standing."""
         self._maybe_switch_to_walk_mode(vc)
@@ -68,19 +80,27 @@ class LocomotionPolicy(BasePolicy):
             self.phase = np.array([[0.0, np.pi]])
             self.is_standing = False
 
-    def _dispatch_command(self, cmd):
+    def apply_command(self, cmd) -> bool:
         if cmd == StateCommand.STAND_TOGGLE:
             self._handle_stand_command()
-        elif cmd == StateCommand.ZERO_VELOCITY:
+            return True
+        if cmd == StateCommand.ZERO_VELOCITY:
             self._handle_zero_velocity()
-        elif cmd == StateCommand.WALK:
+            return True
+        if cmd == StateCommand.WALK:
             self.stand_command[0, 0] = 1
             self.base_height_command[0, 0] = self.desired_base_height
             self.logger.info("ROS2 command: walk")
-        elif cmd == StateCommand.STAND:
+            return True
+        if cmd == StateCommand.STAND:
             self.stand_command[0, 0] = 0
             self.logger.info("ROS2 command: stand")
-        else:
+            return True
+        return super().apply_command(cmd)
+
+    def _dispatch_command(self, cmd):
+        # Kept for legacy callers (e.g. ROS2 bridge tests).
+        if not self.apply_command(cmd):
             super()._dispatch_command(cmd)
 
     def _handle_stand_command(self):
