@@ -141,30 +141,60 @@ def run_harness(
     duration_s: float = 10.0,
     initial_pelvis_height: float = 0.78,
     fall_threshold: float = 0.3,
+    render: bool = False,
 ) -> HarnessResult:
-    """Drive policy.policy_action() for *duration_s* seconds of sim time."""
+    """Drive policy.policy_action() for *duration_s* seconds of sim time.
+
+    When *render* is True, opens a passive MuJoCo viewer and paces the loop
+    at real-time (sleeps between control ticks). The viewer requires a
+    DISPLAY; on a headless host this raises at viewer construction.
+    """
+    import time
+
     policy, sim_interface = build_policy_with_sim(initial_pelvis_height=initial_pelvis_height)
 
     n_steps = int(duration_s * policy.config.task.rl_rate)
     min_z = sim_interface.pelvis_height
+    control_dt = 1.0 / policy.config.task.rl_rate
 
-    # Drain the scripted command queue once to enter walking mode.
-    for cmd in policy._command_provider.poll_commands():
-        policy._dispatch_command(cmd)
+    viewer = None
+    if render:
+        import mujoco.viewer
 
-    # Apply velocity once.
-    vc = policy._velocity_input.poll_velocity()
-    if vc is not None:
-        policy._apply_velocity(vc)
+        viewer = mujoco.viewer.launch_passive(sim_interface.model, sim_interface.data)
 
-    for _ in range(n_steps):
-        if policy.use_phase:
-            policy.update_phase_time()
-        policy.policy_action()
-        z = sim_interface.pelvis_height
-        min_z = min(min_z, z)
-        if min_z < fall_threshold:
-            break
+    try:
+        # Drain the scripted command queue once to enter walking mode.
+        for cmd in policy._command_provider.poll_commands():
+            policy._dispatch_command(cmd)
+
+        # Apply velocity once.
+        vc = policy._velocity_input.poll_velocity()
+        if vc is not None:
+            policy._apply_velocity(vc)
+
+        for _ in range(n_steps):
+            tick_start = time.perf_counter()
+            if policy.use_phase:
+                policy.update_phase_time()
+            policy.policy_action()
+            z = sim_interface.pelvis_height
+            min_z = min(min_z, z)
+            if min_z < fall_threshold:
+                break
+            if viewer is not None:
+                viewer.sync()
+                # Pace at real-time so the viewer is watchable
+                elapsed = time.perf_counter() - tick_start
+                remaining = control_dt - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+    finally:
+        # Intentionally do not call viewer.close(). The passive viewer
+        # races with the GL context teardown at interpreter shutdown and
+        # prints GLXBadWindow to stderr from libX11. Letting Python's
+        # normal cleanup handle it produces a quiet exit.
+        pass
 
     final_z = sim_interface.pelvis_height
     return HarnessResult(
@@ -210,6 +240,13 @@ class _NullRate:
 
 
 if __name__ == "__main__":
-    result = run_harness()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--render", action="store_true", help="Open a passive MuJoCo viewer (requires DISPLAY).")
+    parser.add_argument("--duration", type=float, default=10.0, help="Sim time in seconds.")
+    args = parser.parse_args()
+
+    result = run_harness(duration_s=args.duration, render=args.render)
     print(result.summary())
     raise SystemExit(0 if not result.fell else 1)
