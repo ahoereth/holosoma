@@ -151,12 +151,10 @@ def which_motion(env: WholeBodyTrackingManager) -> torch.Tensor:
     """Per-env current motion index (shape [num_envs, 1]).
 
     Used as the leading column of ``teacher_obs`` to route samples to the
-    matching teacher in ``StudentTeacher.teacher_act``. Mirrors
-    far-tracking's ``which_motion`` (tracking/mdp/observations.py). When the
-    motion file lacks a ``motion_idxs`` field, ``MotionLoader`` already
-    zero-fills (terms/wbt.py:157) so this term is always safe to read and
-    returns 0 for single-motion files (which collapses to a single-teacher
-    forward inside ``teacher_act``).
+    matching teacher in ``StudentTeacher.teacher_act``. When the motion file
+    lacks a ``motion_idxs`` field, ``MotionLoader`` already zero-fills
+    (command/terms/wbt.py:157) so single-motion runs collapse to
+    ``teachers[0]`` automatically.
     """
     cmd = _get_motion_command_and_assert_type(env)
     idx = cmd.motion.motion_idxs[cmd.time_steps]
