@@ -55,8 +55,8 @@ class TestExplicitInputSelection:
 class TestUseJoystickShortcut:
     def test_sets_both_channels(self):
         tc = TaskConfig(model_path="test.onnx", use_joystick=True)
-        assert tc.velocity_input == "interface"
-        assert tc.state_input == "interface"
+        assert tc.velocity_input == "joystick"
+        assert tc.state_input == "joystick"
 
     def test_conflicts_with_velocity_input(self):
         with pytest.raises(Exception, match="Cannot combine"):

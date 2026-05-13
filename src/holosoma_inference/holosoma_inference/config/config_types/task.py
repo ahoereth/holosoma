@@ -123,7 +123,7 @@ class TaskConfig:
         shortcut: InputSource | None = None
         flag_name: str | None = None
         if self.use_joystick:
-            shortcut = "interface"
+            shortcut = "joystick"
             flag_name = "joystick"
         elif self.use_keyboard:
             shortcut = "keyboard"
