@@ -8,16 +8,22 @@ The proxy implements the same BaseInterface API via RPC-over-queues.
 from __future__ import annotations
 
 import multiprocessing as mp
-from collections import namedtuple
-from typing import Any, Optional
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from holosoma_inference.config.config_types import RobotConfig
 from holosoma_inference.sdk.base.base_interface import BaseInterface
 
-# Picklable stand-in for the C++ wireless-controller message.
-JoystickMsg = namedtuple("JoystickMsg", ["lx", "ly", "rx", "keys"])
+
+class JoystickMsg(NamedTuple):
+    """Picklable stand-in for the C++ wireless-controller message."""
+
+    lx: float
+    ly: float
+    rx: float
+    keys: int
+
 
 # Sentinel that tells the worker to shut down.
 _STOP = None
@@ -29,7 +35,7 @@ _STOP = None
 def _worker(
     robot_config: RobotConfig,
     domain_id: int,
-    interface_str: Optional[str],
+    interface_str: str | None,
     use_joystick: bool,
     req_q: mp.Queue,
     res_q: mp.Queue,
@@ -38,16 +44,17 @@ def _worker(
     import ctypes
     import importlib.util
     import os
+    from pathlib import Path
 
     # Preload unitree's bundled CycloneDDS before import to prevent
     # ROS2's version from being picked up via LD_LIBRARY_PATH.
     spec = importlib.util.find_spec("unitree_interface")
     if spec and spec.submodule_search_locations:
-        ui_dir = str(spec.submodule_search_locations[0])
+        ui_dir = Path(spec.submodule_search_locations[0])
         for lib in ["libddsc.so.0", "libddscxx.so.0"]:
-            lib_path = os.path.join(ui_dir, lib)
-            if os.path.exists(lib_path):
-                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+            lib_path = ui_dir / lib
+            if lib_path.exists():
+                ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_GLOBAL)
 
     from holosoma_inference.sdk.unitree.unitree_interface import UnitreeInterface
 
@@ -128,7 +135,7 @@ def _worker(
 class UnitreeInterfaceMP(BaseInterface):
     """Drop-in replacement for UnitreeInterface that runs in a child process."""
 
-    def __init__(self, robot_config: RobotConfig, domain_id=0, interface_str: Optional[str] = None, use_joystick=True):
+    def __init__(self, robot_config: RobotConfig, domain_id=0, interface_str: str | None = None, use_joystick=True):
         super().__init__(robot_config, domain_id, interface_str, use_joystick)
 
         ctx = mp.get_context("spawn")
