@@ -3,8 +3,7 @@
 Reads a USB gamepad (Xbox / Logitech / similar) directly from
 ``/dev/input/event*`` via ``python-evdev``.  Bypasses the SDK
 :class:`InterfaceInput` path so that SDKs without a built-in wireless
-controller (e.g. BXI ELF3) can still drive policies from a host-side
-controller.
+controller can still drive policies from a host-side controller.
 
 Implements both :class:`VelCmdProvider` and :class:`StateCommandProvider`
 in a single class — the policy factory assigns the same instance to both
@@ -16,13 +15,14 @@ from __future__ import annotations
 import threading
 
 import evdev
+from loguru import logger
 
 from holosoma_inference.inputs.api.base import InputProvider
 from holosoma_inference.inputs.api.commands import StateCommand, VelCmd
 from holosoma_inference.inputs.impl.joystick import JOYSTICK_COMMANDS
 
 STICK_DEADZONE = 0.1
-TRIGGER_THRESHOLD = 128  # 0–255 typical for analog triggers; >threshold counts as pressed.
+TRIGGER_THRESHOLD = 128  # 0-255 typical for analog triggers; >threshold counts as pressed.
 
 # Match interface_wrapper.py's _default_wc_key_map bit layout so policies that
 # inspect raw key codes still see consistent values.
@@ -158,8 +158,8 @@ class UsbJoystickInput(InputProvider):
         self._stop.set()
         try:
             self._device.close()
-        except Exception:
-            pass
+        except OSError as e:
+            logger.debug(f"evdev close raised {type(e).__name__}: {e}")
 
     # -- VelCmdProvider protocol -----------------------------------------
 
