@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "holosoma-drivers"
+version = "0.1.0"
+description = "holosoma-drivers: robot SDK interfaces (unitree, booster) for holosoma_inference"
+requires-python = ">=3.8"
+authors = [
+    { name = "Amazon FAR Team" },
+]
+dependencies = [
+    "loguru",
+    "numpy",
+    "termcolor",
+    "evdev",
+]
+
+[project.entry-points."holosoma.sdk"]
+unitree = "holosoma_inference.sdk.unitree.unitree_interface:UnitreeInterface"
+unitree_mp = "holosoma_inference.sdk.unitree.unitree_interface_mp:UnitreeInterfaceMP"
+booster = "holosoma_inference.sdk.booster.booster_interface:BoosterInterface"
+
+[tool.setuptools]
+packages = [
+    "holosoma_inference.sdk",
+    "holosoma_inference.sdk.base",
+    "holosoma_inference.sdk.unitree",
+    "holosoma_inference.sdk.booster",
+    "holosoma_inference.sdk.booster.command_sender",
+    "holosoma_inference.sdk.booster.command_sender.base",
+    "holosoma_inference.sdk.booster.command_sender.booster",
+    "holosoma_inference.sdk.booster.state_processor",
+    "holosoma_inference.sdk.booster.state_processor.base",
+    "holosoma_inference.sdk.booster.state_processor.booster",
+]
+
+[tool.setuptools.package-dir]
+"holosoma_inference.sdk" = "."
