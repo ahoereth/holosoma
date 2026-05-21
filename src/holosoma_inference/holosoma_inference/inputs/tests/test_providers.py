@@ -759,6 +759,7 @@ class TestCreateInputFactory:
         assert result._mapping == JOYSTICK_COMMANDS
 
     def test_joystick_maps_to_usb_joystick(self, monkeypatch):
+        pytest.importorskip("evdev")
         from holosoma_inference.inputs.impl import usb_joystick
 
         sentinel = MagicMock()
@@ -1139,9 +1140,16 @@ class TestVelocityCommand:
 
 
 class TestInputSource:
-    def test_use_joystick_maps_to_joystick(self):
+    def test_use_joystick_maps_to_interface(self):
         from holosoma_inference.config.config_types.task import TaskConfig
 
         tc = TaskConfig(model_path="test.onnx", use_joystick=True)
+        assert tc.velocity_input == "interface"
+        assert tc.state_input == "interface"
+
+    def test_use_usb_joystick_maps_to_joystick(self):
+        from holosoma_inference.config.config_types.task import TaskConfig
+
+        tc = TaskConfig(model_path="test.onnx", use_usb_joystick=True)
         assert tc.velocity_input == "joystick"
         assert tc.state_input == "joystick"

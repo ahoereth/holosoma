@@ -110,6 +110,9 @@ class UsbJoystickInput(InputProvider):
     """
 
     def __init__(self, device_index: int = 0):
+        if device_index < 0:
+            raise ValueError(f"joystick_device must be >= 0, got {device_index}")
+
         self._mapping = dict(JOYSTICK_COMMANDS)
 
         gamepads = _list_gamepads()

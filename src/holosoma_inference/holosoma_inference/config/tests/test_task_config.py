@@ -55,8 +55,8 @@ class TestExplicitInputSelection:
 class TestUseJoystickShortcut:
     def test_sets_both_channels(self):
         tc = TaskConfig(model_path="test.onnx", use_joystick=True)
-        assert tc.velocity_input == "joystick"
-        assert tc.state_input == "joystick"
+        assert tc.velocity_input == "interface"
+        assert tc.state_input == "interface"
 
     def test_conflicts_with_velocity_input(self):
         with pytest.raises(Exception, match="Cannot combine"):
@@ -69,6 +69,21 @@ class TestUseJoystickShortcut:
     def test_conflicts_with_both_inputs(self):
         with pytest.raises(Exception, match="Cannot combine"):
             TaskConfig(model_path="test.onnx", use_joystick=True, velocity_input="ros2", state_input="ros2")
+
+
+class TestUseUsbJoystickShortcut:
+    def test_sets_both_channels(self):
+        tc = TaskConfig(model_path="test.onnx", use_usb_joystick=True)
+        assert tc.velocity_input == "joystick"
+        assert tc.state_input == "joystick"
+
+    def test_conflicts_with_velocity_input(self):
+        with pytest.raises(Exception, match="Cannot combine"):
+            TaskConfig(model_path="test.onnx", use_usb_joystick=True, velocity_input="ros2")
+
+    def test_conflicts_with_use_joystick(self):
+        with pytest.raises(Exception, match="Cannot combine multiple input shortcuts"):
+            TaskConfig(model_path="test.onnx", use_joystick=True, use_usb_joystick=True)
 
 
 class TestUseKeyboardShortcut:
@@ -88,7 +103,7 @@ class TestUseKeyboardShortcut:
 
 class TestShortcutMutualExclusion:
     def test_both_shortcuts_rejected(self):
-        with pytest.raises(Exception, match="Cannot combine.*use-keyboard.*use-joystick"):
+        with pytest.raises(Exception, match="Cannot combine multiple input shortcuts"):
             TaskConfig(model_path="test.onnx", use_keyboard=True, use_joystick=True)
 
 
