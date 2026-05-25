@@ -125,7 +125,7 @@ class BaseTask:
         # Run commands before termination. Previously this was conditional
         # on IsaacGym only, but WBT reward/termination expects the motion clip to
         # have advanced before they evaluate the tracking error.
-        self._update_tasks_before_termination = True
+        self._update_tasks_before_termination = False
         if is_isaacgym_manager:
             self.randomization_manager = RandomizationManager(randomization_config, self, self.device)
             if self.randomization_manager is not None:
