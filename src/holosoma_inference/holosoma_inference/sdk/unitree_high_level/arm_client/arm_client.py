@@ -207,7 +207,7 @@ class G1j29ArmController:
         return self._latest_lowstate
 
     def _read_state_bridge(self, timeout: float | None = None):
-        deadline = time.time() + (timeout if timeout else 0)
+        deadline = time.time() + (timeout or 0)
         while True:
             with self._bridge_lock:
                 raw = self._bridge_raw_state
