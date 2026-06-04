@@ -1,17 +1,14 @@
 """G1 29-DoF arm controller driving Unitree's ``rt/arm_sdk``.
 
 Ported from FAR-pi (rfmpi/ros_workspace/src/gmp_unitree/g1/g1_arm_client.py)
-with all rfmpi dependencies replaced by the local :mod:`.const` module.
-Behavior is otherwise unchanged: direct-DDS or TCP-bridge transport,
-per-joint effort clamping, and the arm-only init trajectory.
+with all rfmpi dependencies replaced by the local :mod:`.const` module and the
+TCP-bridge transport removed — this talks direct DDS only (runs on the Jetson).
+Per-joint effort clamping and the arm-only init trajectory are unchanged.
 """
 
 from __future__ import annotations
 
 import logging
-import socket
-import struct
-import threading
 import time
 
 import numpy as np
@@ -32,11 +29,6 @@ from .const import (
     HardwareG1j29JointIndex,
 )
 
-# Bridge protocol constants (must match g1_dds_bridge.py)
-_BRIDGE_MSG_LOWSTATE = 0x01
-_BRIDGE_MSG_LOWCMD = 0x02
-_BRIDGE_DEFAULT_PORT = 9876
-
 K_TOPIC_LOW_COMMAND_DEBUG = "rt/lowcmd"
 K_TOPIC_LOW_COMMAND_MOTION = "rt/arm_sdk"
 K_TOPIC_LOW_STATE = "rt/lowstate"
@@ -56,7 +48,7 @@ class G1j29LowState:
 
 
 class G1j29ArmController:
-    def __init__(self, dds_uri_config: str, motion_mode=True, simulation_mode=False, logger=None, bridge_host=None):
+    def __init__(self, dds_uri_config: str, motion_mode=True, simulation_mode=False, logger=None):
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
         self.motion_mode = motion_mode
@@ -74,14 +66,10 @@ class G1j29ArmController:
         self._gradual_start_time = None
         self._gradual_time = None
         self._dds_uri_config = dds_uri_config
-        self._bridge_host = bridge_host
         self._logger = logger or logging.getLogger(__name__)
         self._logger.info("Initialize G1_29_ArmController...")
 
-        if self._bridge_host:
-            self._init_bridge(bridge_host)
-        else:
-            self._init_dds()
+        self._init_dds()
 
         # Cache for latest state
         self._latest_lowstate = None
@@ -104,7 +92,7 @@ class G1j29ArmController:
 
         self._latest_debug_state = None
 
-        self._logger.info(f"[G1_29_ArmController] Connected via {'bridge' if self._bridge_host else 'DDS'}")
+        self._logger.info("[G1_29_ArmController] Connected via DDS")
         self.all_motor_q = self.get_current_motor_q()
         self._logger.info(f"Current all body motor state q:\n{self.all_motor_q} \n")
         self._logger.info(f"Current two arms motor state q:\n{self.get_current_dual_arm_q()}\n")
@@ -142,60 +130,8 @@ class G1j29ArmController:
         self.lowstate_subscriber = ChannelSubscriber(K_TOPIC_LOW_STATE, hg_LowState)
         self.lowstate_subscriber.Init()
 
-    def _init_bridge(self, bridge_host: str):
-        """Initialize TCP bridge connection to g1_dds_bridge.py on the Jetson."""
-        if ":" in bridge_host:
-            host, port_str = bridge_host.rsplit(":", 1)
-            port = int(port_str)
-        else:
-            host, port = bridge_host, _BRIDGE_DEFAULT_PORT
-        self._logger.info(f"Connecting to DDS bridge at {host}:{port}...")
-        self._bridge_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._bridge_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self._bridge_sock.connect((host, port))
-        self._bridge_raw_state = None
-        self._bridge_lock = threading.Lock()
-        self._bridge_stop = threading.Event()
-        self._bridge_thread = threading.Thread(target=self._bridge_receiver, daemon=True)
-        self._bridge_thread.start()
-        self._logger.info(f"Connected to DDS bridge at {host}:{port}")
-
-    def _bridge_receiver(self):
-        """Background thread: read lowstate messages from the TCP bridge."""
-        try:
-            while not self._bridge_stop.is_set():
-                header = self._bridge_recv_exact(5)
-                msg_type, length = struct.unpack(">BI", header)
-                data = self._bridge_recv_exact(length)
-                if msg_type == _BRIDGE_MSG_LOWSTATE:
-                    raw = hg_LowState.deserialize(data)
-                    with self._bridge_lock:
-                        self._bridge_raw_state = raw
-        except (ConnectionError, OSError):
-            self._logger.error("[G1_29_ArmController] Bridge connection lost")
-
-    def _bridge_recv_exact(self, n: int) -> bytes:
-        buf = bytearray()
-        while len(buf) < n:
-            chunk = self._bridge_sock.recv(n - len(buf))
-            if not chunk:
-                raise ConnectionError("Bridge connection closed")
-            buf.extend(chunk)
-        return bytes(buf)
-
-    def _bridge_send_cmd(self, msg):
-        """Serialize and send a LowCmd to the bridge."""
-        data = msg.serialize()
-        header = struct.pack(">BI", _BRIDGE_MSG_LOWCMD, len(data))
-        self._bridge_sock.sendall(header + data)
-
     def _read_state(self, timeout: float | None = None):
-        """Read the latest state from DDS or bridge and cache it."""
-        if self._bridge_host:
-            return self._read_state_bridge(timeout)
-        return self._read_state_dds(timeout)
-
-    def _read_state_dds(self, timeout: float | None = None):
+        """Read the latest state from DDS and cache it."""
         msg = self.lowstate_subscriber.Read(timeout=timeout)
         self._latest_debug_state = msg
         if msg is not None:
@@ -205,23 +141,6 @@ class G1j29ArmController:
                 lowstate.motor_state[motor_id].dq = msg.motor_state[motor_id].dq
             self._latest_lowstate = lowstate
         return self._latest_lowstate
-
-    def _read_state_bridge(self, timeout: float | None = None):
-        deadline = time.time() + (timeout or 0)
-        while True:
-            with self._bridge_lock:
-                raw = self._bridge_raw_state
-            if raw is not None:
-                self._latest_debug_state = raw
-                lowstate = G1j29LowState()
-                for motor_id in range(G1_29_NUM_MOTORS):
-                    lowstate.motor_state[motor_id].q = raw.motor_state[motor_id].q
-                    lowstate.motor_state[motor_id].dq = raw.motor_state[motor_id].dq
-                self._latest_lowstate = lowstate
-                return self._latest_lowstate
-            if timeout is None or time.time() >= deadline:
-                return self._latest_lowstate
-            time.sleep(0.001)
 
     def debug_get_motor_temps(self) -> list[list[float]]:
         if self._latest_debug_state is None:
@@ -265,10 +184,7 @@ class G1j29ArmController:
             self.msg.motor_cmd[joint_id].tau = arm_tauff_target[idx]
 
         self.msg.crc = self.crc.Crc(self.msg)
-        if self._bridge_host:
-            self._bridge_send_cmd(self.msg)
-        else:
-            self.lowcmd_publisher.Write(self.msg)
+        self.lowcmd_publisher.Write(self.msg)
 
         if self._speed_gradual_max is True:
             t_elapsed = time.time() - self._gradual_start_time
@@ -294,9 +210,6 @@ class G1j29ArmController:
 
     def get_mode_machine(self):
         """Return current dds mode machine."""
-        self._read_state()
-        if self._bridge_host:
-            return self._latest_debug_state.mode_machine
         return self.lowstate_subscriber.Read().mode_machine
 
     def get_current_motor_q(self):
