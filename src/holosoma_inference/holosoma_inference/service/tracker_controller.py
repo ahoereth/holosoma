@@ -1,11 +1,11 @@
 """Tracker controller — the holosoma-side control logic (NOT a ROS node).
 
-Owns the two G1 high-level client proxies and turns ``ExoDenseCmd``
+Owns the two G1 high-level client proxies and turns ``ExoskeletonCmd``
 targets into client actions. Knows nothing about rclpy.
 
 The control loop is owned here: ``run()`` ticks at a fixed rate and each tick
 polls the newest command from the injected ``source`` (anything with
-``get_latest() -> ExoDenseCmd | None``, e.g. ``TeleopListener``).
+``get_latest() -> ExoskeletonCmd | None``, e.g. ``TeleopListener``).
 Re-publishing every tick gives arm_sdk the steady ~250 Hz it needs to hold/
 track smoothly even between (slower) incoming messages.
 
@@ -21,14 +21,14 @@ from typing import Protocol
 import numpy as np
 from loguru import logger
 
-from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoDenseCmd
+from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd
 from holosoma_inference.utils.rate import RateLimiter
 
 CONTROL_HZ = 250.0
 
 
 class CommandSource(Protocol):
-    def get_latest(self) -> ExoDenseCmd | None: ...
+    def get_latest(self) -> ExoskeletonCmd | None: ...
 
 
 class TrackerController:

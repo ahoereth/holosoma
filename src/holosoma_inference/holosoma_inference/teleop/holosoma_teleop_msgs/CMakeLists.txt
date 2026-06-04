@@ -7,7 +7,7 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/ExoDenseCmd.msg"
+  "msg/ExoskeletonCmd.msg"
   "msg/ThreePointCmd.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )

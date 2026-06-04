@@ -7,7 +7,7 @@ typesupport .so's so rclpy can use them without sourcing a setup.bash.
 
 Requires colcon + ROS2 on the importing machine (e.g. the Jetson).
 
-    from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoDenseCmd, ThreePointCmd
+    from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd, ThreePointCmd
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from pathlib import Path
 _PKG = "holosoma_teleop_msgs"
 _WS = Path("/tmp/holosoma_teleop_ws")
 _PKG_DIR = Path(__file__).resolve().parent  # this dir IS the ament package
-_REQUIRED = ("ExoDenseCmd", "ThreePointCmd")
+_REQUIRED = ("ExoskeletonCmd", "ThreePointCmd")
 
 # Native libs, dependency order (generator_c first, generator_py last).
 _SO_ORDER = [
@@ -114,6 +114,6 @@ def ensure_msgs() -> None:
 
 ensure_msgs()
 
-from holosoma_teleop_msgs.msg import ExoDenseCmd, ThreePointCmd  # noqa: E402
+from holosoma_teleop_msgs.msg import ExoskeletonCmd, ThreePointCmd  # noqa: E402
 
-__all__ = ["ExoDenseCmd", "ThreePointCmd"]
+__all__ = ["ExoskeletonCmd", "ThreePointCmd"]
