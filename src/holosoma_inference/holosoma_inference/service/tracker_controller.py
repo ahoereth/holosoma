@@ -55,9 +55,8 @@ class TrackerController:
         if self._loco is not None:
             v = target.base_velocity
             vel = (v.linear.x, v.linear.y, v.angular.z)
-            if vel != self._last_vel:  # Move latches; only re-issue on change
-                self._loco.set_velocity(*vel)
-                self._last_vel = vel
+            self._loco.set_velocity(*vel)
+            self._last_vel = vel
 
     def run(self) -> None:
         """Block in the steady control loop until :meth:`stop`."""
