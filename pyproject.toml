@@ -42,7 +42,6 @@ lint.ignore=[
 
 [tool.ruff.lint.per-file-ignores]
 "src/holosoma_inference/**/*.py" = ["G004"]  # f-strings in logging are fine here
-"src/holosoma_inference/holosoma_inference/sdk/unitree_high_level/multiprocess_proxy/multiprocess_proxy.py" = ["PLC0415"]  # Child-process-local imports (spawn worker)
 "src/holosoma/holosoma/simulator/isaacsim/**/*.py" = ["ALL"]  # Disable until Jenkins has access to IsaacLab
 "src/holosoma/holosoma/train_agent.py" = ["PLC0415"]  # Disable since imports after SimApp are inherent to IsaacSim
 "src/holosoma/holosoma/utils/draw.py" = ["F401"]  # Disable since unused imports are required for the adapters

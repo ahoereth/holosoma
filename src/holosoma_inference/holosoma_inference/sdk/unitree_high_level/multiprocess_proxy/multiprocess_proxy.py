@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib
 import multiprocessing as mp
+import signal
 from functools import partial
 from typing import Any, Generic, TypeVar
 
@@ -34,8 +35,6 @@ _STOP = None
 
 
 def _worker(factory_path: str, kwargs: dict, req_q: mp.Queue, res_q: mp.Queue):
-    import signal
-
     # Let the parent own Ctrl+C (mirrors unitree_interface_mp).
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
