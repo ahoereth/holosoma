@@ -3,24 +3,21 @@
 Owns the two G1 high-level client proxies and turns ``UnitreeTrackerCommand``
 targets into client actions. Knows nothing about rclpy.
 
-Control split (Option 3 — callback wakes, loop sustains):
+The control loop is owned here: ``run()`` ticks at a fixed rate and each tick
+polls the newest command from the injected ``source`` (anything with
+``get_latest() -> UnitreeTrackerCommand | None``, e.g. ``TeleopListener``).
+Re-publishing every tick gives arm_sdk the steady ~250 Hz it needs to hold/
+track smoothly even between (slower) incoming messages.
 
-* ``set_target(msg)`` is cheap and non-blocking — called straight from the ROS
-  subscription callback (executor thread) so the freshest target is visible
-  immediately, without blocking message reception on a proxy round-trip.
-* ``tick()`` pushes the *held* target to the clients. Run it from a steady loop
-  (``run()``) so arm_sdk keeps getting ~250 Hz commands to hold/track smoothly
-  even between (slower) tracking messages — the heartbeat.
-
-Arm: re-published every tick (it needs continuous commands to hold position).
-Loco: ``LocoClient.Move(continous_move=True)`` latches, so we only re-issue
-velocity when it changes (the callback path makes a change visible at once).
+Arm: re-published every tick. Loco: ``LocoClient.Move(continous_move=True)``
+latches, so velocity is only re-issued when it changes.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from typing import Protocol
 
 import numpy as np
 from loguru import logger
@@ -30,26 +27,23 @@ from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import UnitreeT
 CONTROL_HZ = 250.0
 
 
+class CommandSource(Protocol):
+    def get_latest(self) -> UnitreeTrackerCommand | None: ...
+
+
 class TrackerController:
-    def __init__(self, arm=None, loco=None, control_hz: float = CONTROL_HZ):
+    def __init__(self, source: CommandSource, arm=None, loco=None, control_hz: float = CONTROL_HZ):
+        self._source = source
         self._arm = arm
         self._loco = loco
         self._dt = 1.0 / control_hz
 
-        self._lock = threading.Lock()
-        self._target: UnitreeTrackerCommand | None = None
         self._last_vel: tuple[float, float, float] | None = None
         self._stop = threading.Event()
 
-    # --- called from the ROS callback (executor thread): fast, non-blocking ---
-    def set_target(self, msg: UnitreeTrackerCommand) -> None:
-        with self._lock:
-            self._target = msg
-
-    # --- called from the control loop: pushes held target to the clients ---
     def tick(self) -> None:
-        with self._lock:
-            target = self._target
+        """Poll the newest command and push it to the clients."""
+        target = self._source.get_latest()
         if target is None:
             return
 

@@ -4,15 +4,15 @@
 Composition root. Wires three separable pieces:
 
     TeleopListener               (ROS transport — owns rclpy in a bg thread)
-            │  on_command=ctrl.set_target          ← IoC: rclpy calls us
+            │  get_latest()                        ← controller polls newest msg
             ▼
     TrackerController            (holosoma control logic — owns the clients)
             │  tick() @ 250 Hz                      ← loop we own: arm heartbeat
             ├─ q_left_arm + q_right_arm ─▶ arm proxy  ─▶ G1j29ArmController (rt/arm_sdk)
             └─ base_velocity (Twist)    ─▶ loco proxy ─▶ G1LocoClient       (LocoClient.Move)
 
-The node's callback only stores the freshest target (non-blocking, runs in the
-executor thread); the controller's own loop sustains the ~250 Hz arm commands.
+The spin thread just caches the freshest message; the controller's loop owns
+the ~250 Hz rate and polls it via get_latest() each tick.
 Each SDK client runs in its own spawned child process (separate DDS).
 
 Runs on the Jetson. No retargeting — arms are expected pre-solved. Loco enters
@@ -66,19 +66,19 @@ def main(cfg: ServiceConfig | None = None) -> None:
         arm.ctrl_dual_arm_initialization_pose()
         arm.speed_gradual_max()
 
-    # --- Controller (holosoma logic) injected into the listener (ROS transport) ---
-    controller = TrackerController(arm=arm, loco=loco)
-
-    # TeleopListener owns the rclpy lifecycle in a bg thread (callback freshness);
-    # the controller's steady loop owns this thread (arm heartbeat).
+    # TeleopListener owns the rclpy lifecycle in a bg thread and caches the
+    # newest command; the controller's loop polls it via get_latest().
+    listener = TeleopListener()
+    listener.start()
+    controller = TrackerController(source=listener, arm=arm, loco=loco)
     try:
-        with TeleopListener(on_command=controller.set_target):
-            controller.run()
+        controller.run()
     except KeyboardInterrupt:
         pass
     finally:
         logger.info("shutting down …")
         controller.stop()
+        listener.stop()
         if loco is not None:
             loco.close()  # type: ignore[attr-defined]  # close() lives on the proxy, not G1LocoClient
         if arm is not None:
