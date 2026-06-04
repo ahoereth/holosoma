@@ -21,7 +21,11 @@ from __future__ import annotations
 import importlib
 import multiprocessing as mp
 from functools import partial
-from typing import Any
+from typing import Any, Generic, TypeVar
+
+# The wrapped client's type. Purely for static typing — factories ``cast`` the
+# proxy to the concrete client so callers see its real, typed method surface.
+T = TypeVar("T")
 
 _STOP = None
 
@@ -58,13 +62,17 @@ def _worker(factory_path: str, kwargs: dict, req_q: mp.Queue, res_q: mp.Queue):
 # ── parent-side proxy ──────────────────────────────────────────────────
 
 
-class MPClientProxy:
+class MPClientProxy(Generic[T]):
     """Owns one object in a child process; forwards method calls over queues.
 
     ``factory_path`` is ``"package.module:Callable"`` (class or factory fn),
     constructed in the child with ``**kwargs``. Methods are reachable either as
     attributes (``proxy.foo(1)``) or via :meth:`call` (``proxy.call("foo", 1)``).
     Calls are synchronous: each returns the method's result (or re-raises).
+
+    The ``T`` type parameter is the wrapped client type. It's only a static-typing
+    hint — a constructor can ``cast(T, proxy)`` so callers get the real client's
+    typed method surface (autocomplete + checking) while runtime stays the proxy.
 
     NOTE: only method *calls* are proxied, not attribute *reads* — ``proxy.foo``
     always yields a callable, so ``proxy.some_field`` returns a function, not

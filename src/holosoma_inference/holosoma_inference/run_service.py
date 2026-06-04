@@ -92,9 +92,9 @@ def main() -> None:
         logger.info("shutting down …")
         if loco is not None:
             loco.stop()
-            loco.close()
+            loco.close()  # type: ignore[attr-defined]  # close() lives on the proxy, not G1LocoClient
         if arm is not None:
-            arm.close()
+            arm.close()  # type: ignore[attr-defined]  # close() lives on the proxy, not G1j29ArmController
         node.destroy_node()
         rclpy.shutdown()
 
