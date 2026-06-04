@@ -7,7 +7,7 @@ typesupport .so's so rclpy can use them without sourcing a setup.bash.
 
 Requires colcon + ROS2 on the importing machine (e.g. the Jetson).
 
-    from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import UnitreeTrackerCommand, ThreePointTracking
+    from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoDenseCmd, ThreePointCmd
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from pathlib import Path
 _PKG = "holosoma_teleop_msgs"
 _WS = Path("/tmp/holosoma_teleop_ws")
 _PKG_DIR = Path(__file__).resolve().parent  # this dir IS the ament package
-_REQUIRED = ("UnitreeTrackerCommand", "ThreePointTracking")
+_REQUIRED = ("ExoDenseCmd", "ThreePointCmd")
 
 # Native libs, dependency order (generator_c first, generator_py last).
 _SO_ORDER = [
@@ -93,7 +93,7 @@ def _build() -> None:
 
     print(f"[teleop_msgs] building {_PKG} in {_WS} …")
     cmd = f"source {ros_setup} && cd {_WS} && colcon build --packages-select {_PKG}"
-    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
+    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(f"colcon build failed:\n{r.stdout}\n{r.stderr}")
     print("[teleop_msgs] built.")
@@ -114,6 +114,6 @@ def ensure_msgs() -> None:
 
 ensure_msgs()
 
-from holosoma_teleop_msgs.msg import ThreePointTracking, UnitreeTrackerCommand  # noqa: E402
+from holosoma_teleop_msgs.msg import ExoDenseCmd, ThreePointCmd  # noqa: E402
 
-__all__ = ["UnitreeTrackerCommand", "ThreePointTracking"]
+__all__ = ["ExoDenseCmd", "ThreePointCmd"]

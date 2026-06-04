@@ -1,4 +1,4 @@
-"""ROS2 listener for ``UnitreeTrackerCommand``.
+"""ROS2 listener for ``ExoDenseCmd``.
 
 Experimental. All rclpy lifecycle (init, spin thread, shutdown) is packaged
 inside :class:`TeleopListener` so the rest of holosoma — which is not a
@@ -9,7 +9,7 @@ command from your own control loop, and ``stop()`` it in a finally block:
     listener.start()
     try:
         while running:
-            cmd = listener.get_latest()   # newest UnitreeTrackerCommand or None
+            cmd = listener.get_latest()   # newest ExoDenseCmd or None
             ...
     finally:
         listener.stop()
@@ -30,30 +30,30 @@ from loguru import logger
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import UnitreeTrackerCommand
+from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoDenseCmd
 
 DEFAULT_TOPIC = "/holosoma/tracker_command"
 
 
 class HolosomaTeleopListenerNode(Node):
-    """Subscribe to ``UnitreeTrackerCommand`` and cache the latest message."""
+    """Subscribe to ``ExoDenseCmd`` and cache the latest message."""
 
     def __init__(self, topic: str = DEFAULT_TOPIC):
         super().__init__("holosoma_teleop_listener")
         # Newest received command. Reference assignment is atomic under the GIL,
         # so the polling loop always reads a whole message, never a torn one.
-        self._latest: UnitreeTrackerCommand | None = None
+        self._latest: ExoDenseCmd | None = None
 
         # Best-effort, depth 1: drop stale commands rather than queue them
         # (teleop wants the freshest target, not a backlog).
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self._sub = self.create_subscription(UnitreeTrackerCommand, topic, self._cb, qos)
+        self._sub = self.create_subscription(ExoDenseCmd, topic, self._cb, qos)
         logger.info(f"[teleop-listener] subscribed to {topic}")
 
-    def _cb(self, msg: UnitreeTrackerCommand) -> None:
+    def _cb(self, msg: ExoDenseCmd) -> None:
         self._latest = msg
 
-    def get_latest(self) -> UnitreeTrackerCommand | None:
+    def get_latest(self) -> ExoDenseCmd | None:
         return self._latest
 
 
@@ -76,7 +76,7 @@ class TeleopListener:
         self._thread = threading.Thread(target=rclpy.spin, args=(self._node,), daemon=True)
         self._thread.start()
 
-    def get_latest(self) -> UnitreeTrackerCommand | None:
+    def get_latest(self) -> ExoDenseCmd | None:
         return self._node.get_latest() if self._node is not None else None
 
     def stop(self) -> None:

@@ -1,11 +1,11 @@
 """Tracker controller — the holosoma-side control logic (NOT a ROS node).
 
-Owns the two G1 high-level client proxies and turns ``UnitreeTrackerCommand``
+Owns the two G1 high-level client proxies and turns ``ExoDenseCmd``
 targets into client actions. Knows nothing about rclpy.
 
 The control loop is owned here: ``run()`` ticks at a fixed rate and each tick
 polls the newest command from the injected ``source`` (anything with
-``get_latest() -> UnitreeTrackerCommand | None``, e.g. ``TeleopListener``).
+``get_latest() -> ExoDenseCmd | None``, e.g. ``TeleopListener``).
 Re-publishing every tick gives arm_sdk the steady ~250 Hz it needs to hold/
 track smoothly even between (slower) incoming messages.
 
@@ -16,19 +16,19 @@ latches, so velocity is only re-issued when it changes.
 from __future__ import annotations
 
 import threading
-import time
 from typing import Protocol
 
 import numpy as np
 from loguru import logger
 
-from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import UnitreeTrackerCommand
+from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoDenseCmd
+from holosoma_inference.utils.rate import RateLimiter
 
 CONTROL_HZ = 250.0
 
 
 class CommandSource(Protocol):
-    def get_latest(self) -> UnitreeTrackerCommand | None: ...
+    def get_latest(self) -> ExoDenseCmd | None: ...
 
 
 class TrackerController:
@@ -36,7 +36,8 @@ class TrackerController:
         self._source = source
         self._arm = arm
         self._loco = loco
-        self._dt = 1.0 / control_hz
+        self._control_hz = control_hz
+        self._rate = RateLimiter(control_hz)
 
         self._last_vel: tuple[float, float, float] | None = None
         self._stop = threading.Event()
@@ -60,10 +61,10 @@ class TrackerController:
 
     def run(self) -> None:
         """Block in the steady control loop until :meth:`stop`."""
-        logger.info(f"[tracker-controller] loop running at {1.0 / self._dt:.0f} Hz")
+        logger.info(f"[tracker-controller] loop running at {self._control_hz:.0f} Hz")
         while not self._stop.is_set():
             self.tick()
-            time.sleep(self._dt)
+            self._rate.sleep()  # drift-compensated; accounts for tick() work time
 
     def stop(self) -> None:
         self._stop.set()
