@@ -18,9 +18,8 @@ Each SDK client runs in its own spawned child process (separate DDS).
 Runs on the Jetson. No retargeting — arms are expected pre-solved. Loco enters
 FSM-501 (arms-decoupled walk) BEFORE arm init, else arm_sdk is ignored.
 
-    python run_service.py --bridge-host 192.168.123.164
+    python run_service.py
     python run_service.py --no-loco          # arms only
-    python run_service.py --dry-run          # listener + controller, no SDK clients
 """
 
 from __future__ import annotations
@@ -39,18 +38,12 @@ from holosoma_inference.teleop.holosoma_teleop_listener_node import TeleopListen
 class ServiceConfig:
     """Unitree-as-tracker service."""
 
-    bridge_host: str | None = None
-    """arm DDS bridge host[:port]; omit for direct DDS."""
     dds_uri: str | None = None
-    """CYCLONEDDS_URI config for the arm client (direct-DDS mode)."""
+    """CYCLONEDDS_URI config for the arm client."""
     no_arms: bool = False
     """skip the arm client."""
     no_loco: bool = False
     """skip the loco client."""
-    dry_run: bool = False
-    """listener + controller, no SDK clients."""
-    fsm_id: int = 501
-    """loco FSM id (501 = arms-decoupled walk)."""
 
 
 def main(cfg: ServiceConfig | None = None) -> None:
@@ -60,19 +53,18 @@ def main(cfg: ServiceConfig | None = None) -> None:
     # --- SDK clients, each isolated in its own child process ---
     arm = None
     loco = None
-    if not cfg.dry_run:
-        # Loco first: enter FSM-501 so arm_sdk isn't owned by the loco controller.
-        if not cfg.no_loco:
-            logger.info("starting loco client subprocess …")
-            loco = make_mp_loco_client()
-            loco.start()
-            loco.set_walk_mode(cfg.fsm_id)
-        # Then bring arms to the init pose and ramp velocity.
-        if not cfg.no_arms:
-            logger.info("starting arm client subprocess …")
-            arm = make_mp_arm_client(dds_uri_config=cfg.dds_uri, motion_mode=True, bridge_host=cfg.bridge_host)
-            arm.ctrl_dual_arm_initialization_pose()
-            arm.speed_gradual_max()
+    # Loco first: enter FSM-501 so arm_sdk isn't owned by the loco controller.
+    if not cfg.no_loco:
+        logger.info("starting loco client subprocess …")
+        loco = make_mp_loco_client()
+        loco.start()
+        loco.set_walk_mode()
+    # Then bring arms to the init pose and ramp velocity.
+    if not cfg.no_arms:
+        logger.info("starting arm client subprocess …")
+        arm = make_mp_arm_client(dds_uri_config=cfg.dds_uri, motion_mode=True)
+        arm.ctrl_dual_arm_initialization_pose()
+        arm.speed_gradual_max()
 
     # --- Controller (holosoma logic) injected into the listener (ROS transport) ---
     controller = TrackerController(arm=arm, loco=loco)
