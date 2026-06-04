@@ -23,6 +23,8 @@ from unitree_sdk2py.utils.crc import CRC
 
 from .const import (
     EFFORT_LIMITS as _EFFORT_LIMITS,
+)
+from .const import (
     G1_INIT_TRAJECTORY,
     KD_HOLOSOMA_MIXED_GAINS,
     KP_HOLOSOMA_MIXED_GAINS,
