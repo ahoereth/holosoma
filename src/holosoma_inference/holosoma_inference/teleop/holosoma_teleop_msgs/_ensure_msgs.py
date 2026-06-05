@@ -47,11 +47,22 @@ def _available() -> bool:
     return all(hasattr(mod, n) for n in _REQUIRED)
 
 
+def _site_packages_dirs(install_dir: Path):
+    """All generated python package dirs under an install prefix.
+
+    ament/colcon on Ubuntu uses ``local/lib/pythonX/dist-packages`` (Debian),
+    while plain installs use ``lib/pythonX/site-packages`` — match both, with
+    or without the ``local/`` prefix.
+    """
+    return [p for p in install_dir.glob("**/python*/*-packages") if p.is_dir()]
+
+
 def _build_is_fresh() -> bool:
     """All required bindings present on disk? Check before any dlopen()."""
-    for sp in (_WS / "install" / _PKG).glob(f"lib/python*/site-packages/{_PKG}/msg"):
-        snake = lambda n: re.sub(r"(?<!^)(?=[A-Z])", "_", n).lower()  # noqa: E731
-        if all((sp / f"_{snake(n)}.py").exists() for n in _REQUIRED):
+    snake = lambda n: re.sub(r"(?<!^)(?=[A-Z])", "_", n).lower()  # noqa: E731
+    for sp in _site_packages_dirs(_WS / "install" / _PKG):
+        msg_dir = sp / _PKG / "msg"
+        if all((msg_dir / f"_{snake(n)}.py").exists() for n in _REQUIRED):
             return True
     return False
 
@@ -60,7 +71,7 @@ def _source_workspace() -> None:
     install_dir = _WS / "install" / _PKG
     if not install_dir.exists():
         return
-    for sp in install_dir.glob("lib/python*/site-packages"):
+    for sp in _site_packages_dirs(install_dir):
         if str(sp) not in sys.path:
             sys.path.insert(0, str(sp))
     os.environ["AMENT_PREFIX_PATH"] = f"{install_dir}:{os.environ.get('AMENT_PREFIX_PATH', '')}".rstrip(":")
