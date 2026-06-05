@@ -10,8 +10,8 @@ docker container.
 The robot must be **standing and balanced** before launching the service:
 
 1. Power on, hang the G1 on the gantry / have a spotter.
-2. Joystick: **L2+Up** → damping to standing.
-3. Joystick: **L2+A** → ready / balance stand (legs holding).
+2. Joystick: **L2+Up** → stand.
+3. Joystick: **R2+A** → running mode (legs under the loco controller, ready for walk).
 
 The service then drives loco into **FSM-501** (conventional walk, arms decoupled
 from legs) and runs the arm init trajectory. If the robot is sitting/damped when
