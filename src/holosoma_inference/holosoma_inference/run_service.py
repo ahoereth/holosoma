@@ -38,8 +38,8 @@ from holosoma_inference.teleop.holosoma_teleop_listener_node import TeleopListen
 class ServiceConfig:
     """Unitree-as-tracker service."""
 
-    dds_uri: str | None = None
-    """CYCLONEDDS_URI config for the arm client."""
+    iface: str = "eth0"
+    """network interface the G1 MCU is on (passed to ChannelFactoryInitialize)."""
     no_arms: bool = False
     """skip the arm client."""
     no_loco: bool = False
@@ -56,13 +56,13 @@ def main(cfg: ServiceConfig | None = None) -> None:
     # Loco first: enter FSM-501 so arm_sdk isn't owned by the loco controller.
     if not cfg.no_loco:
         logger.info("starting loco client subprocess …")
-        loco = make_mp_loco_client()
+        loco = make_mp_loco_client(iface=cfg.iface)
         loco.start()
         loco.set_walk_mode()
     # Then bring arms to the init pose and ramp velocity.
     if not cfg.no_arms:
         logger.info("starting arm client subprocess …")
-        arm = make_mp_arm_client(dds_uri_config=cfg.dds_uri, motion_mode=True)
+        arm = make_mp_arm_client(iface=cfg.iface, motion_mode=True)
         arm.ctrl_dual_arm_initialization_pose()
         arm.speed_gradual_max()
 

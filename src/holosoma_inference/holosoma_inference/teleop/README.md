@@ -23,6 +23,11 @@ you start, `loco.start()` won't bring it up correctly — get it standing first.
 # 1. host: get a shell in the container
 cd ~/projects/FAR-pi/holosoma_extensions && bash docker/run.sh
 
+# 1b. container, FIRST TIME ONLY: install the unitree SDK (needs the prebuilt cyclonedds)
+export CYCLONEDDS_HOME=/workspace/cyclonedds_ws/install/cyclonedds
+pip3 install git+https://github.com/unitreerobotics/unitree_sdk2_python.git
+python3 -c "import unitree_sdk2py"   # sanity
+
 # 2. container: point CycloneDDS at the G1 interface (eth0)
 export CYCLONEDDS_URI='<?xml version="1.0"?><CycloneDDS><Domain Id="any"><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General></Domain></CycloneDDS>'
 

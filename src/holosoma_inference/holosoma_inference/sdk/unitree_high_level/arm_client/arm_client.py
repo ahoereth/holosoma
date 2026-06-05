@@ -48,7 +48,7 @@ class G1j29LowState:
 
 
 class G1j29ArmController:
-    def __init__(self, dds_uri_config: str, motion_mode=True, simulation_mode=False, logger=None):
+    def __init__(self, iface: str = "eth0", motion_mode=True, simulation_mode=False, logger=None):
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
         self.motion_mode = motion_mode
@@ -65,7 +65,7 @@ class G1j29ArmController:
         self._speed_gradual_max = False
         self._gradual_start_time = None
         self._gradual_time = None
-        self._dds_uri_config = dds_uri_config
+        self._iface = iface
         self._logger = logger or logging.getLogger(__name__)
         self._logger.info("Initialize G1_29_ArmController...")
 
@@ -121,7 +121,7 @@ class G1j29ArmController:
 
     def _init_dds(self):
         """Initialize direct DDS communication with the MCU."""
-        ChannelFactoryInitialize(0, config=self._dds_uri_config)
+        ChannelFactoryInitialize(0, self._iface)
         if self.motion_mode:
             self.lowcmd_publisher = ChannelPublisher(K_TOPIC_LOW_COMMAND_MOTION, hg_LowCmd)
         else:
@@ -335,10 +335,7 @@ class G1j29ArmController:
 
 
 if __name__ == "__main__":
-    import os
-
-    dds_uri_config = os.environ.get("CYCLONEDDS_URI")
-    arm = G1j29ArmController(dds_uri_config=dds_uri_config, motion_mode=True, simulation_mode=False)
+    arm = G1j29ArmController(iface="eth0", motion_mode=True, simulation_mode=False)
 
     print("=== INITIALIZATION TRAJECTORY TEST ===")
     print("Robot will move arms through the initialization trajectory defined in G1_INIT_TRAJECTORY")

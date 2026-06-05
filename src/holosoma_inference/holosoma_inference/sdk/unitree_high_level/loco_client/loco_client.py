@@ -26,41 +26,40 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_ as hg_LowState
 # alongside locomotion; 200/801 (AMP gait) couples them and blocks arm_sdk.
 FSM_ID_WALK = 501
 
-JETSON_DDS_CONFIG = """<?xml version="1.0" encoding="UTF-8" ?>
-<CycloneDDS>
-    <Domain Id="any">
-        <General>
-            <Interfaces>
-                <NetworkInterface name="eth0" priority="default" multicast="default"/>
-            </Interfaces>
-        </General>
-        <Tracing>
-            <Verbosity>warning</Verbosity>
-            <OutputFile>/tmp/g1_loco_client_dds.log</OutputFile>
-        </Tracing>
-    </Domain>
-</CycloneDDS>"""
+# Network interface the G1 MCU is reachable on. unitree_sdk2py's
+# ChannelFactoryInitialize takes the interface name positionally.
+DEFAULT_IFACE = "eth0"
 
 
 class G1LocoClient:
     """Thin wrapper around Unitree's ``LocoClient`` for base velocity control."""
 
-    def __init__(self, dds_config: str = JETSON_DDS_CONFIG, timeout: float = 5.0, logger=None):
+    def __init__(self, iface: str = DEFAULT_IFACE, timeout: float = 5.0, logger=None):
         self._logger = logger or logging.getLogger(__name__)
 
-        self._logger.info("Initializing DDS...")
-        ChannelFactoryInitialize(0, config=dds_config)
+        self._logger.info(f"Initializing DDS on {iface}...")
+        ChannelFactoryInitialize(0, iface)
 
         # Wait for the MCU to come up on rt/lowstate before opening the
         # LocoClient RPC session (mirrors the bridge's startup gate).
         self._lowstate_sub = ChannelSubscriber("rt/lowstate", hg_LowState)
         self._lowstate_sub.Init()
-        self._logger.info("Waiting for MCU DDS connection...")
+        self._logger.info("Waiting for MCU DDS connection (rt/lowstate)...")
+        waited = 0.0
+        connect_timeout = 10.0
         while True:
             msg = self._lowstate_sub.Read(timeout=0.1)
             if msg is not None:
                 self._logger.info(f"MCU connected! mode_machine={msg.mode_machine}")
                 break
+            waited += 0.1
+            if waited >= connect_timeout:
+                raise TimeoutError(
+                    f"No rt/lowstate in {connect_timeout:.0f}s — MCU not reachable on the "
+                    "loco DDS interface (eth0). Check the robot is up and the interface is right."
+                )
+            if round(waited, 1) % 2 == 0:
+                self._logger.info(f"... still waiting for rt/lowstate ({waited:.0f}s)")
 
         self._loco = LocoClient()
         self._loco.SetTimeout(timeout)
