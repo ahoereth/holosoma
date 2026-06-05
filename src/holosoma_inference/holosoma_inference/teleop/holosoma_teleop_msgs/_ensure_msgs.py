@@ -115,7 +115,9 @@ def ensure_msgs() -> None:
     _build()
     _source_workspace()
     if not _available():
-        raise RuntimeError(f"built {_PKG} but still cannot import it.")
+        # Surface the real import error instead of a generic message.
+        importlib.import_module(f"{_PKG}.msg")
+        raise RuntimeError(f"built {_PKG} but import succeeded yet a required type is missing: {_REQUIRED}")
 
 
 ensure_msgs()
