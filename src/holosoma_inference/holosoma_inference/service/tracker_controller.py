@@ -57,7 +57,9 @@ class TrackerController:
             self._tick_count += 1
             if self._tick_count % 25  == 0:
                 v = target.base_velocity
-                vel = (v.linear.x, v.linear.y, v.angular.z)
+                lx = v.linear.x if abs(v.linear.x) >= 0.05 else 0.0
+                ly = v.linear.y if abs(v.linear.y) >= 0.05 else 0.0
+                vel = (lx, ly, v.angular.z)
                 self._loco.set_velocity(*vel)
                 self._last_vel = vel
 
