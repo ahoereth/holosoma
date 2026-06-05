@@ -76,7 +76,13 @@ def _source_workspace() -> None:
 
 
 def _build() -> None:
-    ros_setup = next(iter(sorted(Path("/opt/ros").glob("*/setup.bash"))), None)
+    # Build against the SAME distro the runtime has sourced. Using
+    # sorted(/opt/ros/*) picks alphabetically (e.g. foxy over humble) and can
+    # build .so's the runtime can't load — so prefer $ROS_DISTRO when set.
+    distro = os.environ.get("ROS_DISTRO")
+    ros_setup = Path(f"/opt/ros/{distro}/setup.bash") if distro else None
+    if ros_setup is None or not ros_setup.exists():
+        ros_setup = next(iter(sorted(Path("/opt/ros").glob("*/setup.bash"))), None)
     if ros_setup is None:
         raise RuntimeError("ROS2 not found (no /opt/ros/*/setup.bash).")
     if not shutil.which("colcon"):
