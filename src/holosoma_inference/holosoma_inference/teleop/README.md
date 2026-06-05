@@ -21,7 +21,7 @@ you start, `loco.start()` won't bring it up correctly — get it standing first.
 
 ```bash
 # 1. host: get a shell in the container
-cd ~/projects/FAR-pi/holosoma_extensions && bash docker/run.sh
+bash ~/projects/FAR-pi/holosoma_extensions/docker/run.sh
 
 # 1b. container, FIRST TIME ONLY: install the unitree SDK (needs the prebuilt cyclonedds)
 export CYCLONEDDS_HOME=/workspace/cyclonedds_ws/install/cyclonedds

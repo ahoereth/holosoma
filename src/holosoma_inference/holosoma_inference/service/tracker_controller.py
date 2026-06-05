@@ -25,6 +25,7 @@ from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import Exoskele
 from holosoma_inference.utils.rate import RateLimiter
 
 CONTROL_HZ = 250.0
+LOCO_HZ = 10.0
 
 
 class CommandSource(Protocol):
@@ -32,18 +33,28 @@ class CommandSource(Protocol):
 
 
 class TrackerController:
-    def __init__(self, source: CommandSource, arm=None, loco=None, control_hz: float = CONTROL_HZ):
+    def __init__(
+        self,
+        source: CommandSource,
+        arm=None,
+        loco=None,
+        control_hz: float = CONTROL_HZ,
+        loco_hz: float = LOCO_HZ,
+    ):
         self._source = source
         self._arm = arm
         self._loco = loco
         self._control_hz = control_hz
         self._rate = RateLimiter(control_hz)
 
-        self._last_vel: tuple[float, float, float] | None = None
+        # Loco runs slower than the arm loop: push velocity every Nth tick.
+        self._loco_every = max(1, round(control_hz / loco_hz))
+        self._tick_count = 0
         self._stop = threading.Event()
 
     def tick(self) -> None:
         """Poll the newest command and push it to the clients."""
+        self._tick_count += 1
         target = self._source.get_latest()
         if target is None:
             return
@@ -52,11 +63,9 @@ class TrackerController:
             q = np.concatenate([np.array(target.q_left_arm), np.array(target.q_right_arm)])
             self._arm.track_dual_arm(q.tolist())  # clip+publish, child-side
 
-        if self._loco is not None:
+        if self._loco is not None and self._tick_count % self._loco_every == 0:
             v = target.base_velocity
-            vel = (v.linear.x, v.linear.y, v.angular.z)
-            self._loco.set_velocity(*vel)
-            self._last_vel = vel
+            self._loco.set_velocity(v.linear.x, v.linear.y, v.angular.z)
 
     def run(self) -> None:
         """Block in the steady control loop until :meth:`stop`."""
