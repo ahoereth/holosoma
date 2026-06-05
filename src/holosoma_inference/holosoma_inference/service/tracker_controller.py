@@ -41,6 +41,7 @@ class TrackerController:
 
         self._last_vel: tuple[float, float, float] | None = None
         self._stop = threading.Event()
+        self._tick_count = 0
 
     def tick(self) -> None:
         """Poll the newest command and push it to the clients."""
@@ -51,12 +52,14 @@ class TrackerController:
         if self._arm is not None:
             q = np.concatenate([np.array(target.q_left_arm), np.array(target.q_right_arm)])
             self._arm.track_dual_arm(q.tolist())  # clip+publish, child-side
-
+        
         if self._loco is not None:
-            v = target.base_velocity
-            vel = (v.linear.x, v.linear.y, v.angular.z)
-            self._loco.set_velocity(*vel)
-            self._last_vel = vel
+            self._tick_count += 1
+            if self._tick_count % 25  == 0:
+                v = target.base_velocity
+                vel = (v.linear.x, v.linear.y, v.angular.z)
+                self._loco.set_velocity(*vel)
+                self._last_vel = vel
 
     def run(self) -> None:
         """Block in the steady control loop until :meth:`stop`."""
