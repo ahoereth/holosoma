@@ -206,7 +206,7 @@ class G1j29ArmController:
         and the clip reads state on this side."""
         if tauff_target is None:
             tauff_target = np.zeros(14)
-        self.ctrl_dual_arm(self.clip_arm_q_target(np.asarray(q_target), self.arm_velocity_limit), tauff_target)
+        self.ctrl_dual_arm(q_target, tauff_target)
 
     def get_mode_machine(self):
         """Return current dds mode machine."""

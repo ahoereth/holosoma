@@ -31,7 +31,7 @@ JETSON_DDS_CONFIG = """<?xml version="1.0" encoding="UTF-8" ?>
     <Domain Id="any">
         <General>
             <Interfaces>
-                <NetworkInterface name="eth0" priority="default" multicast="default"/>
+                <NetworkInterface name="eno1" priority="default" multicast="default"/>
             </Interfaces>
         </General>
         <Tracing>

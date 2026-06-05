@@ -20,8 +20,8 @@ if TYPE_CHECKING:
     from .arm_client.arm_client import G1j29ArmController
     from .loco_client.loco_client import G1LocoClient
 
-_ARM = "holosoma_inference.sdk.unitree.high_level.arm_client.arm_client:G1j29ArmController"
-_LOCO = "holosoma_inference.sdk.unitree.high_level.loco_client.loco_client:G1LocoClient"
+_ARM = "holosoma_inference.sdk.unitree_high_level.arm_client.arm_client:G1j29ArmController"
+_LOCO = "holosoma_inference.sdk.unitree_high_level.loco_client.loco_client:G1LocoClient"
 
 
 def make_mp_arm_client(**kwargs: Any) -> G1j29ArmController:
