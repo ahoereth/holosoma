@@ -58,6 +58,9 @@ class WasdControllerNode(Node):
             self._vyaw -= ANG_STEP
         elif k == " ":
             self._vx = self._vy = self._vyaw = 0.0
+        else:
+            return  # ignore other keys, don't reprint
+        print(f"vel: vx={self._vx:+.2f} vy={self._vy:+.2f} vyaw={self._vyaw:+.2f}", flush=True)
 
     def _publish(self) -> None:
         msg = ExoskeletonCmd()
