@@ -29,14 +29,17 @@ import rclpy
 from loguru import logger
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import JointState
 
-from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd
+from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd, Heartbeat
 
 DEFAULT_TOPIC = "/holosoma/tracker_command"
+CMD_TOPIC = "/holosoma_cmd"
+HEARTBEAT_TOPIC = "/holosoma/heartbeat"
 
 
 class HolosomaTeleopListenerNode(Node):
-    """Subscribe to ``ExoskeletonCmd`` and cache the latest message."""
+    """Subscribe to ``ExoskeletonCmd``; publish commanded ``JointState`` + ``Heartbeat``."""
 
     def __init__(self, topic: str = DEFAULT_TOPIC):
         super().__init__("holosoma_teleop_listener")
@@ -48,13 +51,31 @@ class HolosomaTeleopListenerNode(Node):
         # (teleop wants the freshest target, not a backlog).
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._sub = self.create_subscription(ExoskeletonCmd, topic, self._cb, qos)
-        logger.info(f"[teleop-listener] subscribed to {topic}")
+        self._cmd_pub = self.create_publisher(JointState, CMD_TOPIC, 10)
+        self._hb_pub = self.create_publisher(Heartbeat, HEARTBEAT_TOPIC, 10)
+        logger.info(f"[teleop-listener] sub {topic} | pub {CMD_TOPIC}, {HEARTBEAT_TOPIC}")
 
     def _cb(self, msg: ExoskeletonCmd) -> None:
         self._latest = msg
 
     def get_latest(self) -> ExoskeletonCmd | None:
         return self._latest
+
+    def publish_joint_command(self, names: list[str], positions: list[float], velocities: list[float]) -> None:
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = names
+        msg.position = positions
+        msg.velocity = velocities
+        self._cmd_pub.publish(msg)
+
+    def publish_heartbeat(self, robot_connected: bool, control_mode: int, status: str) -> None:
+        msg = Heartbeat()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.robot_connected = robot_connected
+        msg.control_mode = control_mode
+        msg.status = status
+        self._hb_pub.publish(msg)
 
 
 class TeleopListener:
@@ -78,6 +99,14 @@ class TeleopListener:
 
     def get_latest(self) -> ExoskeletonCmd | None:
         return self._node.get_latest() if self._node is not None else None
+
+    def publish_joint_command(self, names, positions, velocities) -> None:
+        if self._node is not None:
+            self._node.publish_joint_command(names, positions, velocities)
+
+    def publish_heartbeat(self, robot_connected: bool, control_mode: int, status: str) -> None:
+        if self._node is not None:
+            self._node.publish_heartbeat(robot_connected, control_mode, status)
 
     def stop(self) -> None:
         if self._node is not None:

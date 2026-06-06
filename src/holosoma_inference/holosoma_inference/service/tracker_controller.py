@@ -21,14 +21,23 @@ from typing import Protocol
 import numpy as np
 from loguru import logger
 
+from holosoma_inference.sdk.unitree_high_level.arm_client.const import HardwareG1j29JointArmIndex
 from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd
 from holosoma_inference.utils.rate import RateLimiter
 
 CONTROL_HZ = 250.0
+HEARTBEAT_HZ = 5.0
+
+# 14 arm joint names (L then R), e.g. "left_shoulder_pitch", for JointState.
+ARM_JOINT_NAMES = [j.name.removeprefix("k_") for j in HardwareG1j29JointArmIndex]
 
 
 class CommandSource(Protocol):
     def get_latest(self) -> ExoskeletonCmd | None: ...
+
+    def publish_joint_command(self, names, positions, velocities) -> None: ...
+
+    def publish_heartbeat(self, robot_connected: bool, control_mode: int, status: str) -> None: ...
 
 
 class TrackerController:
@@ -38,25 +47,36 @@ class TrackerController:
         self._loco = loco
         self._control_hz = control_hz
         self._rate = RateLimiter(control_hz)
+        self._heartbeat_every = max(1, round(control_hz / HEARTBEAT_HZ))
 
+        self._tick_count = 0
         self._last_vel: tuple[float, float, float] | None = None
         self._stop = threading.Event()
 
     def tick(self) -> None:
-        """Poll the newest command and push it to the clients."""
+        """Poll the newest command, push it to the clients, publish telemetry."""
+        self._tick_count += 1
         target = self._source.get_latest()
-        if target is None:
-            return
 
-        if self._arm is not None:
-            q = np.concatenate([np.array(target.q_left_arm), np.array(target.q_right_arm)])
-            self._arm.track_dual_arm(q.tolist())  # clip+publish, child-side
+        if target is not None:
+            if self._arm is not None:
+                q = np.concatenate([np.array(target.q_left_arm), np.array(target.q_right_arm)])
+                self._arm.track_dual_arm(q.tolist())  # clip+publish, child-side
+                # Echo the commanded arm joints for recording.
+                self._source.publish_joint_command(ARM_JOINT_NAMES, list(map(float, q)), [])
 
-        if self._loco is not None:
-            v = target.base_velocity
-            vel = (v.linear.x, v.linear.y, v.angular.z)
-            self._loco.set_velocity(*vel)
-            self._last_vel = vel
+            if self._loco is not None:
+                v = target.base_velocity
+                vel = (v.linear.x, v.linear.y, v.angular.z)
+                self._loco.set_velocity(*vel)
+                self._last_vel = vel
+
+        if self._tick_count % self._heartbeat_every == 0:
+            self._source.publish_heartbeat(
+                robot_connected=(self._arm is not None or self._loco is not None),
+                control_mode=0,
+                status="running" if target is not None else "no_target",
+            )
 
     def run(self) -> None:
         """Block in the steady control loop until :meth:`stop`."""
