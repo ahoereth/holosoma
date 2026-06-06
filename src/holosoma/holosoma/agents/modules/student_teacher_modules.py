@@ -210,10 +210,12 @@ class StudentTeacher(nn.Module):
 
         ``teacher_obs[:, 0]`` is the motion index (routing key);
         ``teacher_obs[:, 1:]`` is the privileged obs consumed by the teacher
-        MLP. With ``num_teachers == 1`` this is a single forward; with
-        ``num_teachers > 1`` each env is routed to
-        ``self.teachers[motion_idx]``. ``motion_idx == -1`` zeros the output
-        for that env.
+        MLP. Each env is routed to ``self.teachers[motion_idx]`` (with the
+        single-teacher case collapsing to ``self.teachers[0]`` for every
+        non-negative idx). ``motion_idx == -1`` zeros the output for that env
+        regardless of ``num_teachers``, so a single-teacher run still
+        propagates ``which_motion``'s expert-terminate flag into
+        ``DistillationPPO``'s ``teacher_actions == 0`` mask.
         """
         if teacher_obs.shape[-1] != self.num_teacher_obs:
             raise RuntimeError(
@@ -221,8 +223,6 @@ class StudentTeacher(nn.Module):
                 f"(includes leading motion_idx column), got {teacher_obs.shape[-1]}"
             )
         x = teacher_obs[:, 1:]
-        if len(self.teachers) == 1:
-            return self.teachers[0](x)
         idx = teacher_obs[:, 0].long()
         out = self.teachers[0](x)
         for i in range(1, len(self.teachers)):
