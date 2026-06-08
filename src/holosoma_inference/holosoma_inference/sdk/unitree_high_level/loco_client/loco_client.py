@@ -110,6 +110,18 @@ class G1LocoClient:
         """Return raw (code, data) for the current FSM state (api 7001)."""
         return self._loco._Call(7001, "{}")
 
+    def get_mcu_mode(self) -> tuple[int, int] | None:
+        """Read mode_machine and mode_pr from rt/lowstate.
+
+        mode_machine changing during operation indicates the MCU entered
+        a different internal mode (protection, fault, etc.) even if the
+        RPC FSM query still returns 501.
+        """
+        msg = self._lowstate_sub.Read(timeout=0.01)
+        if msg is None:
+            return None
+        return (msg.mode_machine, msg.mode_pr)
+
     def check_fsm_healthy(self) -> tuple[bool, int | str | None]:
         """Check if FSM is still in walking mode (501).
 

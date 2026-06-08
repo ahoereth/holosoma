@@ -86,6 +86,17 @@ class TrackerController:
                 except Exception as e:
                     logger.warning(f"[loco] FSM health check failed: {e}")
 
+                # Read back MCU internal mode from rt/lowstate
+                try:
+                    mode_info = self._loco.get_mcu_mode()
+                    if mode_info is not None:
+                        logger.info(
+                            f"[loco] MCU mode_machine={mode_info[0]} mode_pr={mode_info[1]} "
+                            f"CMD last={self._last_vel}"
+                        )
+                except Exception as e:
+                    logger.debug(f"[loco] lowstate readback failed: {e}")
+
     def run(self) -> None:
         """Block in the steady control loop until :meth:`stop`."""
         logger.info(f"[tracker-controller] loop running at {self._control_hz:.0f} Hz")
