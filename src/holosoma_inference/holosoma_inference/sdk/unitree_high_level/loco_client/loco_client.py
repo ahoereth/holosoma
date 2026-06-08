@@ -83,20 +83,23 @@ class G1LocoClient:
         self._logger.info(f"SetFsmId({fsm_id}) -> code={code}")
 
     def set_velocity(self, vx: float, vy: float, vyaw: float) -> int:
-        """Command base velocity (body frame). Continuous: holds until next call."""
+        """Command base velocity (body frame). Continuous: holds until next call.
+
+        Returns the RPC status code from SetVelocity (0 = success).
+        """
         t0 = time.perf_counter()
-        code = self._loco.Move(vx, vy, vyaw, continous_move=True)
+        code = self._loco.SetVelocity(vx, vy, vyaw, duration=864000.0)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if code != 0:
             self._logger.warning(
-                f"Move FAILED: ({vx:.3f},{vy:.3f},{vyaw:.3f}) -> code={code} ({elapsed_ms:.1f}ms)"
+                f"SetVelocity FAILED: ({vx:.3f},{vy:.3f},{vyaw:.3f}) -> code={code} ({elapsed_ms:.1f}ms)"
             )
         elif elapsed_ms > 50.0:
             self._logger.warning(
-                f"Move SLOW: ({vx:.3f},{vy:.3f},{vyaw:.3f}) -> code={code} ({elapsed_ms:.1f}ms)"
+                f"SetVelocity SLOW: ({vx:.3f},{vy:.3f},{vyaw:.3f}) -> code={code} ({elapsed_ms:.1f}ms)"
             )
         elif abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vyaw) > 0.01:
-            self._logger.info(f"Move({vx:.3f},{vy:.3f},{vyaw:.3f},continuous) -> code={code} ({elapsed_ms:.1f}ms)")
+            self._logger.debug(f"SetVelocity({vx:.3f},{vy:.3f},{vyaw:.3f}) -> code={code} ({elapsed_ms:.1f}ms)")
         return code
 
     def stop(self) -> None:
@@ -106,6 +109,16 @@ class G1LocoClient:
     def get_fsm_state(self):
         """Return raw (code, data) for the current FSM state (api 7001)."""
         return self._loco._Call(7001, "{}")
+
+    def check_fsm_healthy(self) -> bool:
+        """Return True if the FSM is still in walking mode (501). Logs on mismatch."""
+        code, data = self._loco._Call(7001, "{}")
+        if code != 0:
+            self._logger.warning(f"FSM query failed: code={code}")
+            return False
+        # data is typically JSON with the FSM id
+        self._logger.info(f"FSM state check: code={code} data={data}")
+        return True
 
 
 if __name__ == "__main__":

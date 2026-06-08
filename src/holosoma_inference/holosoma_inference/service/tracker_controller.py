@@ -70,8 +70,17 @@ class TrackerController:
                         f"changed={changed} last={self._last_vel}"
                     )
 
-                self._loco.set_velocity(*vel)
+                code = self._loco.set_velocity(*vel)
+                if code is not None and code != 0:
+                    logger.warning(f"[loco] set_velocity error code={code}")
                 self._last_vel = vel
+
+            # Periodic FSM health check every ~5 seconds (offset from velocity ticks)
+            if self._tick_count % 250 == 125:
+                try:
+                    self._loco.check_fsm_healthy()
+                except Exception as e:
+                    logger.warning(f"[loco] FSM health check failed: {e}")
 
     def run(self) -> None:
         """Block in the steady control loop until :meth:`stop`."""
