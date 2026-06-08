@@ -24,7 +24,7 @@ from loguru import logger
 from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd
 from holosoma_inference.utils.rate import RateLimiter
 
-CONTROL_HZ = 250.0
+CONTROL_HZ = 50.0
 
 
 class CommandSource(Protocol):
@@ -55,7 +55,7 @@ class TrackerController:
         
         if self._loco is not None:
             self._tick_count += 1
-            if self._tick_count % 25  == 0:
+            if self._tick_count % 25 == 0:
                 v = target.base_velocity
                 lx = v.linear.x if abs(v.linear.x) >= 0.05 else 0.0
                 ly = v.linear.y if abs(v.linear.y) >= 0.05 else 0.0
