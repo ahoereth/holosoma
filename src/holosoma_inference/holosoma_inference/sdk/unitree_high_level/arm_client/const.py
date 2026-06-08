@@ -78,6 +78,7 @@ class HardwareG1j29JointArmIndex(IntEnum):
     k_right_wrist_yaw = 28
 
 
+SHOULDER_GAIN_MULTIPLIER = 2.0
 KP_HOLOSOMA_MIXED_GAINS = {
     HardwareG1j29JointIndex.k_left_hip_pitch: 300,
     HardwareG1j29JointIndex.k_left_hip_roll: 300,
@@ -94,16 +95,16 @@ KP_HOLOSOMA_MIXED_GAINS = {
     HardwareG1j29JointIndex.k_waist_yaw: 300,
     HardwareG1j29JointIndex.k_waist_roll: 300,
     HardwareG1j29JointIndex.k_waist_pitch: 300,
-    HardwareG1j29JointIndex.k_left_shoulder_pitch: 14.250623098,
-    HardwareG1j29JointIndex.k_left_shoulder_roll: 14.250623098,
-    HardwareG1j29JointIndex.k_left_shoulder_yaw: 14.250623098,
+    HardwareG1j29JointIndex.k_left_shoulder_pitch: 14.250623098 * SHOULDER_GAIN_MULTIPLIER,
+    HardwareG1j29JointIndex.k_left_shoulder_roll: 14.250623098 * SHOULDER_GAIN_MULTIPLIER,
+    HardwareG1j29JointIndex.k_left_shoulder_yaw: 14.250623098 * SHOULDER_GAIN_MULTIPLIER,
     HardwareG1j29JointIndex.k_left_elbow: 14.250623098,
     HardwareG1j29JointIndex.k_left_wrist_roll: 14.250623098,
     HardwareG1j29JointIndex.k_left_wrist_pitch: 16.778327481,
     HardwareG1j29JointIndex.k_left_wrist_yaw: 16.778327481,
-    HardwareG1j29JointIndex.k_right_shoulder_pitch: 14.250623098,
-    HardwareG1j29JointIndex.k_right_shoulder_roll: 14.250623098,
-    HardwareG1j29JointIndex.k_right_shoulder_yaw: 14.250623098,
+    HardwareG1j29JointIndex.k_right_shoulder_pitch: 14.250623098 * SHOULDER_GAIN_MULTIPLIER,
+    HardwareG1j29JointIndex.k_right_shoulder_roll: 14.250623098 * SHOULDER_GAIN_MULTIPLIER,
+    HardwareG1j29JointIndex.k_right_shoulder_yaw: 14.250623098 * SHOULDER_GAIN_MULTIPLIER,
     HardwareG1j29JointIndex.k_right_elbow: 14.250623098,
     HardwareG1j29JointIndex.k_right_wrist_roll: 14.250623098,
     HardwareG1j29JointIndex.k_right_wrist_pitch: 16.778327481,
