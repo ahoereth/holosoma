@@ -78,7 +78,11 @@ class TrackerController:
             # Periodic FSM health check every ~1 second (offset from velocity ticks)
             if self._tick_count % 50 == 25:
                 try:
-                    self._loco.check_fsm_healthy()
+                    healthy, fsm_state = self._loco.check_fsm_healthy()
+                    if not healthy:
+                        logger.warning(f"[loco] FSM NOT IN WALK MODE: {fsm_state}")
+                    else:
+                        logger.debug(f"[loco] FSM OK: {fsm_state}")
                 except Exception as e:
                     logger.warning(f"[loco] FSM health check failed: {e}")
 
