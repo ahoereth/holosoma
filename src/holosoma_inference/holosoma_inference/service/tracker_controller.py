@@ -55,11 +55,21 @@ class TrackerController:
         
         if self._loco is not None:
             self._tick_count += 1
-            if self._tick_count % 25 == 0:
+            if self._tick_count % 10 == 0:
                 v = target.base_velocity
                 lx = v.linear.x if abs(v.linear.x) >= 0.05 else 0.0
                 ly = v.linear.y if abs(v.linear.y) >= 0.05 else 0.0
                 vel = (lx, ly, v.angular.z)
+
+                # --- diagnostics: log every velocity dispatch ---
+                changed = vel != self._last_vel
+                if changed or (self._tick_count % 250 == 0):
+                    logger.info(
+                        f"[loco] tick={self._tick_count} vel_cmd={vel} "
+                        f"raw=({v.linear.x:.3f},{v.linear.y:.3f},{v.angular.z:.3f}) "
+                        f"changed={changed} last={self._last_vel}"
+                    )
+
                 self._loco.set_velocity(*vel)
                 self._last_vel = vel
 

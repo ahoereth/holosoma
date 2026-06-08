@@ -17,6 +17,7 @@ Standalone (smoke test on Jetson):
 from __future__ import annotations
 
 import logging
+import time
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
 from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
@@ -81,11 +82,22 @@ class G1LocoClient:
         code = self._loco.SetFsmId(fsm_id)
         self._logger.info(f"SetFsmId({fsm_id}) -> code={code}")
 
-    def set_velocity(self, vx: float, vy: float, vyaw: float) -> None:
+    def set_velocity(self, vx: float, vy: float, vyaw: float) -> int:
         """Command base velocity (body frame). Continuous: holds until next call."""
+        t0 = time.perf_counter()
         code = self._loco.Move(vx, vy, vyaw, continous_move=True)
-        if abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vyaw) > 0.01:
-            self._logger.info(f"Move({vx:.3f},{vy:.3f},{vyaw:.3f},continuous) -> code={code}")
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        if code != 0:
+            self._logger.warning(
+                f"Move FAILED: ({vx:.3f},{vy:.3f},{vyaw:.3f}) -> code={code} ({elapsed_ms:.1f}ms)"
+            )
+        elif elapsed_ms > 50.0:
+            self._logger.warning(
+                f"Move SLOW: ({vx:.3f},{vy:.3f},{vyaw:.3f}) -> code={code} ({elapsed_ms:.1f}ms)"
+            )
+        elif abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vyaw) > 0.01:
+            self._logger.info(f"Move({vx:.3f},{vy:.3f},{vyaw:.3f},continuous) -> code={code} ({elapsed_ms:.1f}ms)")
+        return code
 
     def stop(self) -> None:
         """Stop base motion (zero velocity)."""
