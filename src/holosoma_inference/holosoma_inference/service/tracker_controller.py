@@ -75,8 +75,8 @@ class TrackerController:
                     logger.warning(f"[loco] set_velocity error code={code}")
                 self._last_vel = vel
 
-            # Periodic FSM health check every ~5 seconds (offset from velocity ticks)
-            if self._tick_count % 250 == 125:
+            # Periodic FSM health check every ~1 second (offset from velocity ticks)
+            if self._tick_count % 50 == 25:
                 try:
                     self._loco.check_fsm_healthy()
                 except Exception as e:

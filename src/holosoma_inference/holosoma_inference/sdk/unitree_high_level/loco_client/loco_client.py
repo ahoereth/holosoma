@@ -112,12 +112,24 @@ class G1LocoClient:
 
     def check_fsm_healthy(self) -> bool:
         """Return True if the FSM is still in walking mode (501). Logs on mismatch."""
-        code, data = self._loco._Call(7001, "{}")
-        if code != 0:
-            self._logger.warning(f"FSM query failed: code={code}")
+        try:
+            code, data = self._loco._Call(7001, "{}")
+        except Exception as exc:
+            self._logger.warning(f"FSM query exception: {exc}")
             return False
-        # data is typically JSON with the FSM id
-        self._logger.info(f"FSM state check: code={code} data={data}")
+        if code != 0:
+            self._logger.warning(f"FSM query RPC failed: code={code}")
+            return False
+        # data is JSON like '{"data": 501}'
+        import json
+        try:
+            fsm_id = json.loads(data).get("data")
+        except Exception:
+            fsm_id = data
+        if fsm_id != FSM_ID_WALK:
+            self._logger.warning(f"FSM STATE MISMATCH: expected {FSM_ID_WALK}, got {fsm_id}")
+            return False
+        self._logger.debug(f"FSM OK: {fsm_id}")
         return True
 
 
