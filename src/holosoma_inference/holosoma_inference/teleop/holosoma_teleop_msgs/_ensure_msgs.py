@@ -24,7 +24,7 @@ from pathlib import Path
 _PKG = "holosoma_teleop_msgs"
 _WS = Path("/tmp/holosoma_teleop_ws")
 _PKG_DIR = Path(__file__).resolve().parent  # this dir IS the ament package
-_REQUIRED = ("ExoskeletonCmd", "ThreePointCmd", "Heartbeat")
+_REQUIRED = ("ExoskeletonCmd", "ThreePointCmd", "Heartbeat", "SmplhCmd")
 
 # Native libs, dependency order (generator_c first, generator_py last).
 _SO_ORDER = [
@@ -133,6 +133,6 @@ def ensure_msgs() -> None:
 
 ensure_msgs()
 
-from holosoma_teleop_msgs.msg import ExoskeletonCmd, Heartbeat, ThreePointCmd  # noqa: E402
+from holosoma_teleop_msgs.msg import ExoskeletonCmd, Heartbeat, SmplhCmd, ThreePointCmd  # noqa: E402
 
-__all__ = ["ExoskeletonCmd", "Heartbeat", "ThreePointCmd"]
+__all__ = ["ExoskeletonCmd", "Heartbeat", "SmplhCmd", "ThreePointCmd"]

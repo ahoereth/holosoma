@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+It cmake_minimum_required(VERSION 3.8)
 project(holosoma_teleop_msgs)
 
 find_package(ament_cmake REQUIRED)
@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ExoskeletonCmd.msg"
   "msg/ThreePointCmd.msg"
   "msg/Heartbeat.msg"
+  "msg/SmplhCmd.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 
