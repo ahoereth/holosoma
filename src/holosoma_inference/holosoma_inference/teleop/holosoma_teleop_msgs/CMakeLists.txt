@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ThreePointCmd.msg"
   "msg/Heartbeat.msg"
   "msg/SmplhCmd.msg"
+  "msg/DenseTrackingCmd.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 
