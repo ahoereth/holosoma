@@ -4,15 +4,15 @@ Two teleop backends, composed via `ros2 launch`. The API is the input ROS
 messages; a backend turns them into robot motion.
 
 ```
-SmplhCmd ─▶ retargeter ─DenseTrackingCmd─▶ run_policy (WBT) ─▶ G1   (holosoma policy)
-ExoskeletonCmd ───────────────────────────▶ unitree_split_controller ─▶ G1   (arm_sdk + loco)
+CmdSMPLH ─▶ retargeter ─CmdDense─▶ run_policy (WBT) ─▶ G1   (holosoma policy)
+CmdExoskeleton ──────────────────▶ unitree_split_controller ─▶ G1   (arm_sdk + loco)
 ```
 
 ## Build & source (once, in the container on the Jetson)
 
-The service is a colcon workspace of ament packages (`holosoma_input_msgs`,
-`holosoma_state_msgs`, `holosoma_service`). No auto-build-on-import — build &
-source before launching (re-run after editing a `.msg`):
+The service is a colcon workspace of ament packages (`holosoma_msgs`,
+`holosoma_service`). No auto-build-on-import — build & source before launching
+(re-run after editing a `.msg`):
 
 ```bash
 # from this directory (holosoma_inference_service/)
@@ -40,10 +40,10 @@ A backend does nothing without an **input publisher** (your tracker / AVP / Pico
 
 ## Input support (current)
 
-| mode \ input                                      | `SmplhCmd` (24-joint) | `ExoskeletonCmd` (arm q + twist) | `ThreePointCmd` |
-|---------------------------------------------------|-----------------------|---------------------------------|-----------------|
-| **policy** (`teleop_with_holosoma_policy`)        | ✅ via retargeter     | ❌                              | ❌              |
-| **split-body** (`teleop_with_unitree_split_body`) | ❌                    | ✅                              | ❌              |
+| mode \ input                                      | `CmdSMPLH` (24-joint) | `CmdExoskeleton` (arm q + twist) | `Cmd3pt` |
+|---------------------------------------------------|-----------------------|----------------------------------|----------|
+| **policy** (`teleop_with_holosoma_policy`)        | ✅ via retargeter     | ❌                               | ❌       |
+| **split-body** (`teleop_with_unitree_split_body`) | ❌                    | ✅                               | ❌       |
 
 ## Gotchas
 
@@ -51,4 +51,4 @@ A backend does nothing without an **input publisher** (your tracker / AVP / Pico
 - **Policy URDF must be fixed-base** (no `<freejoint/>`) — retargeter expects 29 DOF;
   a freejoint URDF gives nq=36 and frames are rejected.
 - **No input publisher = nothing moves.**
-- `ThreePointCmd` is defined but not yet consumed; Sonic policies not wired.
+- `Cmd3pt` is defined but not yet consumed; Sonic policies not wired.

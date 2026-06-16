@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal WASD keyboard teleop -> ExoskeletonCmd (twist only).
+"""Minimal WASD keyboard teleop -> CmdExoskeleton (twist only).
 
 Publishes base velocity from keyboard on ``/holosoma/tracker_command``; the arm
 fields are left zero. Reads stdin in cbreak mode via select(), so it works over
@@ -24,7 +24,7 @@ import tty
 
 import rclpy
 from geometry_msgs.msg import Twist
-from holosoma_input_msgs.msg import ExoskeletonCmd
+from holosoma_msgs.msg import CmdExoskeleton
 from rclpy.node import Node
 
 from holosoma_service.unitree_control.unitree_split_controller import EXOSKELETON_TOPIC
@@ -37,7 +37,7 @@ RATE_HZ = 20.0
 class WasdControllerNode(Node):
     def __init__(self):
         super().__init__("wasd_controller")
-        self._pub = self.create_publisher(ExoskeletonCmd, EXOSKELETON_TOPIC, 10)
+        self._pub = self.create_publisher(CmdExoskeleton, EXOSKELETON_TOPIC, 10)
         self._vx = 0.0
         self._vy = 0.0
         self._vyaw = 0.0
@@ -63,7 +63,7 @@ class WasdControllerNode(Node):
         print(f"vel: vx={self._vx:+.2f} vy={self._vy:+.2f} vyaw={self._vyaw:+.2f}", flush=True)
 
     def _publish(self) -> None:
-        msg = ExoskeletonCmd()
+        msg = CmdExoskeleton()
         msg.header.stamp = self.get_clock().now().to_msg()
         twist = Twist()
         twist.linear.x = self._vx

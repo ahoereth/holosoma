@@ -1,8 +1,8 @@
 """Holosoma WBT policy node.
 
-Runs a whole-body-tracking policy driven by a live ``DenseTrackingCmd`` stream:
+Runs a whole-body-tracking policy driven by a live ``CmdDense`` stream:
 
-    DenseTrackingCmd ─▶ DenseTargetSource ─▶ policy.target_source ─▶ policy.run() ─▶ robot
+    CmdDense ─▶ DenseTargetSource ─▶ policy.target_source ─▶ policy.run() ─▶ robot
 
 The policy class is resolved by ``config.task.policy_type`` via the
 ``holosoma.policies.by_type`` entry-point group (registered by the installed
@@ -17,7 +17,7 @@ import threading
 import numpy as np
 import rclpy
 import tyro
-from holosoma_input_msgs.msg import DenseTrackingCmd
+from holosoma_msgs.msg import CmdDense
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
@@ -30,7 +30,7 @@ _POLICY_GROUP = "holosoma.policies.by_type"
 
 
 class DenseTargetSource(Node):
-    """Subscribes ``DenseTrackingCmd``; serves it as a WBT ``TargetSource``
+    """Subscribes ``CmdDense``; serves it as a WBT ``TargetSource``
     (newest-wins, holds the last frame between policy ticks)."""
 
     def __init__(self, num_dofs: int, topic: str = DENSE_TOPIC):
@@ -38,10 +38,10 @@ class DenseTargetSource(Node):
         self._cmd = np.zeros((1, 2 * num_dofs), dtype=np.float32)  # held until first frame
         self._ref = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)  # xyzw
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(DenseTrackingCmd, topic, self._cb, qos)
+        self.create_subscription(CmdDense, topic, self._cb, qos)
         threading.Thread(target=rclpy.spin, args=(self,), daemon=True).start()
 
-    def _cb(self, msg: DenseTrackingCmd) -> None:
+    def _cb(self, msg: CmdDense) -> None:
         self._cmd = np.concatenate([msg.q, msg.dq]).astype(np.float32).reshape(1, -1)
         r = msg.root_quat
         self._ref = np.array([r.x, r.y, r.z, r.w], dtype=np.float32)

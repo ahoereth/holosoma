@@ -5,8 +5,7 @@ from __future__ import annotations
 import numpy as np
 import rclpy
 import tyro
-from holosoma_input_msgs.msg import ExoskeletonCmd
-from holosoma_state_msgs.msg import Heartbeat
+from holosoma_msgs.msg import CmdExoskeleton, Heartbeat
 from loguru import logger
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -21,7 +20,7 @@ HEARTBEAT_TOPIC = "/holosoma/heartbeat"
 CONTROL_RATE_HZ = 50.0
 HEARTBEAT_EVERY = 10  # ticks -> 5 Hz at 50 Hz control
 
-# 14-DoF arm command order: [left(7), right(7)], matching ExoskeletonCmd and track_dual_arm.
+# 14-DoF arm command order: [left(7), right(7)], matching CmdExoskeleton and track_dual_arm.
 _ARM_JOINTS = ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw")
 ARM_JOINT_NAMES = [f"{side}_{j}" for side in ("left", "right") for j in _ARM_JOINTS]
 
@@ -31,9 +30,9 @@ class UnitreeSplitControllerNode(Node):
         super().__init__("unitree_split_controller")
         self._arm = arm
         self._loco = loco
-        self._latest: ExoskeletonCmd | None = None
+        self._latest: CmdExoskeleton | None = None
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(ExoskeletonCmd, EXOSKELETON_TOPIC, self._cb, qos)
+        self.create_subscription(CmdExoskeleton, EXOSKELETON_TOPIC, self._cb, qos)
         self._cmd_pub = self.create_publisher(JointState, CMD_TOPIC, 10)
         self._hb_pub = self.create_publisher(Heartbeat, HEARTBEAT_TOPIC, 10)
         self._rate = RateLimiter(CONTROL_RATE_HZ)
@@ -57,7 +56,7 @@ class UnitreeSplitControllerNode(Node):
             tick += 1
             self._rate.sleep()
 
-    def _cb(self, msg: ExoskeletonCmd) -> None:
+    def _cb(self, msg: CmdExoskeleton) -> None:
         self._latest = msg
 
     def _publish_joint_command(self, q_target: np.ndarray) -> None:

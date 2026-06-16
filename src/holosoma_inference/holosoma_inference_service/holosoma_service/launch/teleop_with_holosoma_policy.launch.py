@@ -1,6 +1,6 @@
 """Live teleop -> WBT policy.
 
-    SmplhCmd -> retargeter_node -> DenseTrackingCmd -> holosoma_node (WBT) -> robot
+    CmdSMPLH -> retargeter_node -> CmdDense -> holosoma_node (WBT) -> robot
 
 holosoma_node resolves the policy class from ``config.task.policy_type`` via the
 ``holosoma.policies.by_type`` entry-point group and injects a DenseTargetSource
