@@ -1,16 +1,24 @@
 """Live teleop -> WBT policy.
 
-    SmplhCmd -> retargeter_node -> DenseTrackingCmd -> policy_node -> robot
+    SmplhCmd -> retargeter_node -> DenseTrackingCmd -> run_policy (WBT) -> robot
+
+The policy is wbt_wrappers_inference.run_policy with --task.teleop-topic, which
+injects a DenseTargetSource (subscribes the dense topic) instead of an NPZ.
+Requires both holosoma + wbt_wrappers installed.
 
 Usage:
-    ros2 launch holosoma_service teleop_policy.launch.py \
+    ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
         urdf_path:=/path/g1_29dof.urdf model_path:=/path/model.onnx preset:=g1-29dof-holosoma-wbt
 """
 
+import sys
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+DENSE_TOPIC = "/holosoma/dense_tracking_command"
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -32,11 +40,10 @@ def generate_launch_description() -> LaunchDescription:
                 arguments=["--urdf-path", urdf, "--rl-rate-hz", rl_rate],
                 output="screen",
             ),
-            Node(
-                package="holosoma_service",
-                executable="policy_node",
-                name="wbt_policy",
-                arguments=[preset, "--task.model-path", model],
+            ExecuteProcess(
+                # FAR-pi's WBT runner; --task.teleop-topic flips it to the live source.
+                cmd=[sys.executable, "-m", "wbt_wrappers_inference.run_policy", preset,
+                     "--task.model-path", model, "--task.teleop-topic", DENSE_TOPIC],
                 output="screen",
             ),
         ]

@@ -5,7 +5,7 @@ targets into client actions. Knows nothing about rclpy.
 
 The control loop is owned here: ``run()`` ticks at a fixed rate and each tick
 polls the newest command from the injected ``source`` (anything with
-``get_latest() -> ExoskeletonCmd | None``, e.g. ``TeleopListener``).
+``get_latest() -> ExoskeletonCmd | None``, e.g. ``HolosomaNode``).
 Re-publishing every tick gives arm_sdk the steady ~250 Hz it needs to hold/
 track smoothly even between (slower) incoming messages.
 

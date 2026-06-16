@@ -27,7 +27,7 @@ from geometry_msgs.msg import Twist
 from holosoma_input_msgs.msg import ExoskeletonCmd
 from rclpy.node import Node
 
-from holosoma_service.holosoma_teleop_listener_node import DEFAULT_TOPIC
+from holosoma_service.holosoma_node import EXOSKELETON_TOPIC
 
 LIN_STEP = 0.1  # m/s per keypress
 ANG_STEP = 0.2  # rad/s per keypress
@@ -37,7 +37,7 @@ RATE_HZ = 20.0
 class WasdControllerNode(Node):
     def __init__(self):
         super().__init__("wasd_controller")
-        self._pub = self.create_publisher(ExoskeletonCmd, DEFAULT_TOPIC, 10)
+        self._pub = self.create_publisher(ExoskeletonCmd, EXOSKELETON_TOPIC, 10)
         self._vx = 0.0
         self._vy = 0.0
         self._vyaw = 0.0

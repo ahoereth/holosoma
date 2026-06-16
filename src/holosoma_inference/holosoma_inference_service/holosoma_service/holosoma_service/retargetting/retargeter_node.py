@@ -11,11 +11,10 @@ from __future__ import annotations
 import numpy as np
 import rclpy
 import tyro
+from holosoma_inference.teleop.retargeting.smpl_retargeter import JOINT_NAMES, NUM_JOINTS, SMPLRetargeter
 from holosoma_input_msgs.msg import DenseTrackingCmd, SmplhCmd
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-
-from holosoma_inference.teleop.retargeting.smpl_retargeter import JOINT_NAMES, NUM_JOINTS, SMPLRetargeter
 
 IN_TOPIC = "/holosoma/smplh_command"
 OUT_TOPIC = "/holosoma/dense_tracking_command"
