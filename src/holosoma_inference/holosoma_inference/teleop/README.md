@@ -1,54 +1,88 @@
-# Exoskeleton teleop service
+# Teleop
 
-Drives a Unitree G1 as a stop-gap tracker: arm joint targets → `rt/arm_sdk`,
-base velocity → `LocoClient`. Subscribes to `ExoskeletonCmd` on
-`/holosoma/tracker_command`. Runs on the Jetson, inside the holosoma-extensions
-docker container.
+This package holds the **rclpy-free core** of teleop: `retargeting/smpl_retargeter.py`
+(`SMPLRetargeter`), pure-Python SMPL → 24-joint mink IK → holosoma (URDF/Mujoco
+29-DOF) target. It has no ROS dependency and is unit-testable on its own.
 
-## Robot state (before step 4)
+Everything ROS — message definitions, nodes, launch — lives in the colcon
+workspace at `../../holosoma_inference_service/` and is documented here because
+the core is consumed from there.
 
-The robot must be **standing and balanced** before launching the service:
+## Architecture
 
-1. Power on, hang the G1 on the gantry / have a spotter.
-2. Joystick: **L2+Up** → stand.
-3. Joystick: **R2+A** → running mode (legs under the loco controller, ready for walk).
+```
+SmplhCmd ──▶ retargeter_node ──DenseTrackingCmd──▶ policy_node ──▶ robot
+(external      (runs SMPLRetargeter)                (WBT policy +
+ tracker)                                            DenseTargetSource)
+```
 
-The service then drives loco into **FSM-501** (conventional walk, arms decoupled
-from legs) and runs the arm init trajectory. If the robot is sitting/damped when
-you start, `loco.start()` won't bring it up correctly — get it standing first.
+- `retargeter_node` subscribes `SmplhCmd` on `/holosoma/smplh_command`, runs the
+  `SMPLRetargeter`, and publishes `DenseTrackingCmd` on
+  `/holosoma/dense_tracking_command`.
+- `policy_node` builds a `WholeBodyTrackingPolicy`, injects a `DenseTargetSource`
+  (subscribes that topic) as the policy's target source, and runs the policy loop.
+- `Heartbeat` (`holosoma_state_msgs`) is a status topic.
+
+## Workspace layout (`holosoma_inference_service/`)
+
+- `holosoma_input_msgs/` — ament interface pkg. Msgs: `SmplhCmd`,
+  `ExoskeletonCmd`, `ThreePointCmd`, `DenseTrackingCmd`.
+- `holosoma_state_msgs/` — ament interface pkg. Msg: `Heartbeat`.
+- `holosoma_service/` — ament_python pkg: nodes + launch. console_scripts:
+  `retargeter_node`, `policy_node`, `teleop_listener_node`, `wasd_controller_node`.
+
+## Build & source
+
+The msgs are real colcon-built ament packages — there is no longer any
+auto-build-on-import. You **must** build the workspace and source it before any
+`from holosoma_input_msgs.msg import ...` resolves or any node runs.
+
+```bash
+cd /path/to/holosoma_inference/holosoma_inference_service
+colcon build
+source install/setup.bash
+```
+
+Rebuild after editing a `.msg` (and re-`source`).
 
 ## Run
 
+Launch the full teleop → policy flow:
+
 ```bash
-# 1. host: get a shell in the container
-cd ~/projects/FAR-pi/holosoma_extensions && bash docker/run.sh
-
-# 1b. container, FIRST TIME ONLY: install the unitree SDK (needs the prebuilt cyclonedds)
-export CYCLONEDDS_HOME=/workspace/cyclonedds_ws/install/cyclonedds
-pip3 install git+https://github.com/unitreerobotics/unitree_sdk2_python.git
-python3 -c "import unitree_sdk2py"   # sanity
-
-# 2. container: point CycloneDDS at the G1 interface (eth0)
-export CYCLONEDDS_URI='<?xml version="1.0"?><CycloneDDS><Domain Id="any"><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General></Domain></CycloneDDS>'
-
-# 3. container: smoke-test the listener (builds the ROS msgs on first run, no robot motion)
-python3 -m holosoma_inference.teleop.holosoma_teleop_listener_node
-
-# 4. container: run the service (robot must be standing — see "Robot state" above)
-python3 -m holosoma_inference.run_service               # arms + loco
-python3 -m holosoma_inference.run_service --no-arms     # loco only
-python3 -m holosoma_inference.run_service --no-loco     # arms only
-
-# 5. container, SECOND shell: drive base velocity from the keyboard (SSH-safe)
-python3 -m holosoma_inference.teleop.wasd_controller_node
-#   w/s forward/back · a/d left/right · q/e yaw · space stop · Ctrl-C quit
+ros2 launch holosoma_service teleop_policy.launch.py \
+    urdf_path:=<fixed-base g1_29dof.urdf> \
+    model_path:=<model.onnx> \
+    preset:=g1-29dof-holosoma-wbt          # default; rl_rate_hz:=50.0 default
 ```
 
-## Notes
+Or run nodes individually:
 
-- First import builds `holosoma_input_msgs` via colcon into
-  `/tmp/holosoma_teleop_ws` (needs `ROS_DISTRO` set; humble is fine). Wipe that
-  dir to force a rebuild after editing a `.msg`.
-- The service enters FSM-501 (arms-decoupled walk) before arm init — required,
-  else `rt/arm_sdk` is ignored by the loco controller.
-- Ctrl-C to stop (sends `StopMove`, closes the SDK clients).
+```bash
+ros2 run holosoma_service retargeter_node --urdf-path <g1_29dof.urdf> --rl-rate-hz 50
+ros2 run holosoma_service policy_node g1-29dof-holosoma-wbt --task.model-path <model.onnx>
+ros2 run holosoma_service teleop_listener_node     # smoke-test listener, no robot motion
+ros2 run holosoma_service wasd_controller_node     # keyboard base-velocity teleop (SSH-safe)
+```
+
+A `SmplhCmd` publisher (your tracking source — AVP / Pico / replay) is external
+to this workspace. Without one, the retargeter has nothing to retarget.
+
+## Status / notes
+
+- **Untested scaffolding.** Needs a `colcon build` on the Jetson; the
+  teleop → policy flow has not been verified end-to-end on hardware.
+- `URDF must be fixed-base` (no `<freejoint/>`): the retargeter loads it as-is
+  and expects 29 DOF; a freejoint URDF gives nq=36 and frames are rejected.
+- `wasd_controller_node` reads stdin in cbreak mode (works over SSH):
+  `w/s` fwd/back · `a/d` left/right · `q/e` yaw · `space` stop · Ctrl-C quit.
+  It publishes `ExoskeletonCmd` (twist only) on `/holosoma/tracker_command`.
+
+## Controller path (punted)
+
+An earlier "controller" path drove the G1 directly via `rt/arm_sdk` + `LocoClient`
+(stand with L2+Up, running mode R2+A, then FSM-501 arms-decoupled walk before arm
+init), launched by a now-deleted `run_service.py`. That path is **punted** — it is
+not part of the teleop → policy flow above. The `ExoskeletonCmd` /
+`teleop_listener_node` / `wasd_controller_node` pieces remain in the workspace but
+no node currently drives the Unitree SDK from them.
