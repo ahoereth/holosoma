@@ -5,7 +5,7 @@ messages; a backend turns them into robot motion.
 
 ```
 SmplhCmd ─▶ retargeter ─DenseTrackingCmd─▶ run_policy (WBT) ─▶ G1   (holosoma policy)
-ExoskeletonCmd ───────────────────────────▶ controller_node ─▶ G1   (arm_sdk + loco)
+ExoskeletonCmd ───────────────────────────▶ unitree_split_controller ─▶ G1   (arm_sdk + loco)
 ```
 
 ## Build & source (once, in the container on the Jetson)
@@ -31,8 +31,8 @@ ros2 launch holosoma_service teleop_with_unitree_split_body.launch.py iface:=eth
 
 # ...or run the controller node directly (tyro CLI; --no-arms/--no-loco bring up
 # one client at a time during robot bringup):
-ros2 run holosoma_service controller_node --iface eth0
-ros2 run holosoma_service controller_node --iface eth0 --no-arms   # loco only
+ros2 run holosoma_service unitree_split_controller --iface eth0
+ros2 run holosoma_service unitree_split_controller --iface eth0 --no-arms   # loco only
 ```
 
 A backend does nothing without an **input publisher** (your tracker / AVP / Pico

@@ -1,6 +1,6 @@
 """Split-body Unitree controller (arm_sdk + loco) driven by ExoskeletonCmd.
 
-    ExoskeletonCmd ─▶ controller_node ─▶ arm_sdk + LocoClient ─▶ G1
+    ExoskeletonCmd ─▶ unitree_split_controller ─▶ arm_sdk + LocoClient ─▶ G1
 
 Usage:
     ros2 launch holosoma_service teleop_with_unitree_split_body.launch.py iface:=eth0
@@ -19,8 +19,8 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("iface", default_value="eth0"),
             Node(
                 package="holosoma_service",
-                executable="controller_node",
-                name="controller",
+                executable="unitree_split_controller",
+                name="unitree_split_controller",
                 arguments=["--iface", iface],
                 output="screen",
             ),
