@@ -46,7 +46,7 @@ python3 -m holosoma_inference.teleop.wasd_controller_node
 
 ## Notes
 
-- First import builds `holosoma_teleop_msgs` via colcon into
+- First import builds `holosoma_input_msgs` via colcon into
   `/tmp/holosoma_teleop_ws` (needs `ROS_DISTRO` set; humble is fine). Wipe that
   dir to force a rebuild after editing a `.msg`.
 - The service enters FSM-501 (arms-decoupled walk) before arm init — required,

@@ -1,73 +1,65 @@
 #!/usr/bin/env python3
-"""Unitree-as-tracker service entrypoint (experimental glue).
+"""Holosoma teleop service. The API is the teleop ROS messages (SmplhCmd, etc.);
+this entrypoint routes them to one of two backends:
 
-Composition root. Wires three separable pieces:
+    controller : in-process split-body Unitree control (arm_sdk + loco)
+    policy     : a WBT policy tracking a retargeted SmplhCmd stream
 
-    TeleopListener               (ROS transport — owns rclpy in a bg thread)
-            │  get_latest()                        ← controller polls newest msg
-            ▼
-    TrackerController            (holosoma control logic — owns the clients)
-            │  tick() @ 250 Hz                      ← loop we own: arm heartbeat
-            ├─ q_left_arm + q_right_arm ─▶ arm proxy  ─▶ G1j29ArmController (rt/arm_sdk)
-            └─ base_velocity (Twist)    ─▶ loco proxy ─▶ G1LocoClient       (LocoClient.Move)
-
-The spin thread just caches the freshest message; the controller's loop owns
-the ~250 Hz rate and polls it via get_latest() each tick.
-Each SDK client runs in its own spawned child process (separate DDS).
-
-Runs on the Jetson. No retargeting — arms are expected pre-solved. Loco enters
-FSM-501 (arms-decoupled walk) BEFORE arm init, else arm_sdk is ignored.
-
-    python run_service.py
-    python run_service.py --no-loco          # arms only
+    python run_service.py controller --no-loco
+    python run_service.py policy --preset g1-29dof-holosoma-wbt --model-path m.onnx --urdf-path g1.urdf
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 
 import tyro
 from loguru import logger
 
-from holosoma_inference.sdk.unitree_high_level import make_mp_arm_client, make_mp_loco_client
-from holosoma_inference.service.tracker_controller import TrackerController
-from holosoma_inference.teleop.holosoma_teleop_listener_node import TeleopListener
+DENSE_TOPIC = "/holosoma/dense_tracking_command"
 
 
 @dataclass
-class ServiceConfig:
-    """Unitree-as-tracker service."""
+class ControllerConfig:
+    """In-process split-body controller (arm_sdk + loco)."""
 
     iface: str = "eth0"
-    """network interface the G1 MCU is on (passed to ChannelFactoryInitialize)."""
+    """network interface the G1 MCU is on."""
     no_arms: bool = False
-    """skip the arm client."""
     no_loco: bool = False
-    """skip the loco client."""
 
 
-def main(cfg: ServiceConfig | None = None) -> None:
-    if cfg is None:
-        cfg = tyro.cli(ServiceConfig)
+@dataclass
+class PolicyConfig:
+    """WBT policy driven by a retargeted SmplhCmd stream (two subprocesses)."""
 
-    # --- SDK clients, each isolated in its own child process ---
-    arm = None
-    loco = None
-    # Loco first: enter FSM-501 so arm_sdk isn't owned by the loco controller.
-    if not cfg.no_loco:
+    preset: str
+    model_path: str
+    urdf_path: str
+    rl_rate_hz: float = 50.0
+    smplh_topic: str = "/holosoma/smplh_command"
+
+
+def _run_controller(cfg: ControllerConfig) -> None:
+    from holosoma_inference.sdk.unitree_high_level import make_mp_arm_client, make_mp_loco_client
+    from holosoma_inference.service.tracker_controller import TrackerController
+    from holosoma_inference.teleop.holosoma_teleop_listener_node import TeleopListener
+
+    arm = loco = None
+    if not cfg.no_loco:  # loco first: enter FSM-501 before arm_sdk
         logger.info("starting loco client subprocess …")
         loco = make_mp_loco_client(iface=cfg.iface)
         loco.start()
         loco.set_walk_mode()
-    # Then bring arms to the init pose and ramp velocity.
     if not cfg.no_arms:
         logger.info("starting arm client subprocess …")
         arm = make_mp_arm_client(iface=cfg.iface, motion_mode=True)
         arm.ctrl_dual_arm_initialization_pose()
         arm.speed_gradual_max()
 
-    # TeleopListener owns the rclpy lifecycle in a bg thread and caches the
-    # newest command; the controller's loop polls it via get_latest().
     listener = TeleopListener()
     listener.start()
     controller = TrackerController(source=listener, arm=arm, loco=loco)
@@ -80,9 +72,59 @@ def main(cfg: ServiceConfig | None = None) -> None:
         controller.stop()
         listener.stop()
         if loco is not None:
-            loco.close()  # type: ignore[attr-defined]  # close() lives on the proxy, not G1LocoClient
+            loco.close()  # type: ignore[attr-defined]
         if arm is not None:
-            arm.close()  # type: ignore[attr-defined]  # close() lives on the proxy, not G1j29ArmController
+            arm.close()  # type: ignore[attr-defined]
+
+
+def _run_policy(cfg: PolicyConfig) -> None:
+    # The WBT policy lives in FAR-pi (wbt_wrappers), so we can't import it from
+    # holosoma core — orchestrate the two pieces as subprocesses instead.
+    cmds = [
+        [
+            sys.executable,
+            "-m",
+            "holosoma_inference.teleop.retargeting.retargeter_node",
+            "--urdf-path",
+            cfg.urdf_path,
+            "--rl-rate-hz",
+            str(cfg.rl_rate_hz),
+        ],
+        [
+            sys.executable,
+            "-m",
+            "wbt_wrappers_inference.run_policy",
+            cfg.preset,
+            "--task.model-path",
+            cfg.model_path,
+            "--task.teleop-topic",
+            DENSE_TOPIC,
+        ],
+    ]
+    procs = [subprocess.Popen(c) for c in cmds]
+    try:
+        while all(p.poll() is None for p in procs):  # run until one exits or Ctrl-C
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        logger.info("shutting down …")
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
+        for p in procs:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+
+def main() -> None:
+    cfg = tyro.cli(ControllerConfig | PolicyConfig)
+    if isinstance(cfg, ControllerConfig):
+        _run_controller(cfg)
+    else:
+        _run_policy(cfg)
 
 
 if __name__ == "__main__":

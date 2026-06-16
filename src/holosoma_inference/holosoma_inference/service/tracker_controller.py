@@ -19,10 +19,10 @@ import threading
 from typing import Protocol
 
 import numpy as np
+from holosoma_input_msgs.msg import ExoskeletonCmd
 from loguru import logger
 
 from holosoma_inference.sdk.unitree_high_level.arm_client.const import HardwareG1j29JointArmIndex
-from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd
 from holosoma_inference.utils.rate import RateLimiter
 
 CONTROL_HZ = 250.0

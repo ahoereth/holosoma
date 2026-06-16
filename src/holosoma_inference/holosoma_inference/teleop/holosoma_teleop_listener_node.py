@@ -26,12 +26,12 @@ import threading
 import time
 
 import rclpy
+from holosoma_input_msgs.msg import ExoskeletonCmd
+from holosoma_state_msgs.msg import Heartbeat
 from loguru import logger
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
-
-from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd, Heartbeat
 
 DEFAULT_TOPIC = "/holosoma/tracker_command"
 CMD_TOPIC = "/holosoma_cmd"
