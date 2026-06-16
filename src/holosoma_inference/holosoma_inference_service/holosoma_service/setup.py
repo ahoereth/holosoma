@@ -21,10 +21,10 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
-            "holosoma_node = holosoma_service.holosoma_node:main",
-            "retargeter_node = holosoma_service.retargeter_node:main",
-            "controller_node = holosoma_service.split_controller.controller_node:_cli",
-            "wasd_controller_node = holosoma_service.wasd_controller_node:main",
+            "holosoma_node = holosoma_service.policy_control.holosoma_node:main",
+            "retargeter_node = holosoma_service.retargetting.retargeter_node:main",
+            "controller_node = holosoma_service.unitree_control.controller_node:_cli",
+            "wasd_controller_node = holosoma_service.unitree_control.wasd_controller_node:main",
         ],
     },
 )

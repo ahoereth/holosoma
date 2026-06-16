@@ -28,6 +28,11 @@ ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
 
 # Split-body mode (arm_sdk + LocoClient). Robot must be standing in FSM-501.
 ros2 launch holosoma_service teleop_with_unitree_split_body.launch.py iface:=eth0
+
+# ...or run the controller node directly (tyro CLI; --no-arms/--no-loco bring up
+# one client at a time during robot bringup):
+ros2 run holosoma_service controller_node --iface eth0
+ros2 run holosoma_service controller_node --iface eth0 --no-arms   # loco only
 ```
 
 A backend does nothing without an **input publisher** (your tracker / AVP / Pico

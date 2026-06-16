@@ -1,24 +1,21 @@
 """Live teleop -> WBT policy.
 
-    SmplhCmd -> retargeter_node -> DenseTrackingCmd -> run_policy (WBT) -> robot
+    SmplhCmd -> retargeter_node -> DenseTrackingCmd -> holosoma_node (WBT) -> robot
 
-The policy is wbt_wrappers_inference.run_policy with --task.teleop-topic, which
-injects a DenseTargetSource (subscribes the dense topic) instead of an NPZ.
-Requires both holosoma + wbt_wrappers installed.
+holosoma_node resolves the policy class from ``config.task.policy_type`` via the
+``holosoma.policies.by_type`` entry-point group and injects a DenseTargetSource
+subscribed to the dense topic. Requires both holosoma + the policy extension
+(e.g. wbt_wrappers) installed.
 
 Usage:
     ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
         urdf_path:=/path/g1_29dof.urdf model_path:=/path/model.onnx preset:=g1-29dof-holosoma-wbt
 """
 
-import sys
-
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-
-DENSE_TOPIC = "/holosoma/dense_tracking_command"
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -40,18 +37,12 @@ def generate_launch_description() -> LaunchDescription:
                 arguments=["--urdf-path", urdf, "--rl-rate-hz", rl_rate],
                 output="screen",
             ),
-            ExecuteProcess(
-                # FAR-pi's WBT runner; --task.teleop-topic flips it to the live source.
-                cmd=[
-                    sys.executable,
-                    "-m",
-                    "wbt_wrappers_inference.run_policy",
-                    preset,
-                    "--task.model-path",
-                    model,
-                    "--task.teleop-topic",
-                    DENSE_TOPIC,
-                ],
+            Node(
+                package="holosoma_service",
+                executable="holosoma_node",
+                name="holosoma_policy",
+                # tyro CLI: positional preset + --task.* overrides.
+                arguments=[preset, "--task.model-path", model],
                 output="screen",
             ),
         ]
