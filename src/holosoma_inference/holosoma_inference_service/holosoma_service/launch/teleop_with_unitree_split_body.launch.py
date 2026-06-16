@@ -14,13 +14,15 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     iface = LaunchConfiguration("iface")
-    return LaunchDescription([
-        DeclareLaunchArgument("iface", default_value="eth0"),
-        Node(
-            package="holosoma_service",
-            executable="controller_node",
-            name="controller",
-            arguments=["--iface", iface],
-            output="screen",
-        ),
-    ])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("iface", default_value="eth0"),
+            Node(
+                package="holosoma_service",
+                executable="controller_node",
+                name="controller",
+                arguments=["--iface", iface],
+                output="screen",
+            ),
+        ]
+    )

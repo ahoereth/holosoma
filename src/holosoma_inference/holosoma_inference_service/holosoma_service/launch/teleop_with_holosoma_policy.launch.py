@@ -42,8 +42,16 @@ def generate_launch_description() -> LaunchDescription:
             ),
             ExecuteProcess(
                 # FAR-pi's WBT runner; --task.teleop-topic flips it to the live source.
-                cmd=[sys.executable, "-m", "wbt_wrappers_inference.run_policy", preset,
-                     "--task.model-path", model, "--task.teleop-topic", DENSE_TOPIC],
+                cmd=[
+                    sys.executable,
+                    "-m",
+                    "wbt_wrappers_inference.run_policy",
+                    preset,
+                    "--task.model-path",
+                    model,
+                    "--task.teleop-topic",
+                    DENSE_TOPIC,
+                ],
                 output="screen",
             ),
         ]

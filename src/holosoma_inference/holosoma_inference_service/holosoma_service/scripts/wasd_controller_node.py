@@ -25,9 +25,8 @@ import tty
 import rclpy
 from geometry_msgs.msg import Twist
 from holosoma_input_msgs.msg import ExoskeletonCmd
-from rclpy.node import Node
-
 from holosoma_service.holosoma_node import EXOSKELETON_TOPIC
+from rclpy.node import Node
 
 LIN_STEP = 0.1  # m/s per keypress
 ANG_STEP = 0.2  # rad/s per keypress
