@@ -38,7 +38,10 @@ class WholeBodyTrackingPolicy(BasePolicy):
         self.config = config
 
         # Injected target source (NPZ / teleop). Unset -> ONNX clip.
-        self._target_source: TargetSource | None = None
+        # Subclasses (e.g. HolosomaWBTPolicy) set this *before* calling
+        # super().__init__(), so don't clobber an already-injected source.
+        if not hasattr(self, "_target_source"):
+            self._target_source: TargetSource | None = None
 
         # initialize motion state
         self.motion_clip_progressing = False
