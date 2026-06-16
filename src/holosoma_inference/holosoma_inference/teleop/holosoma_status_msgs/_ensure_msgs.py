@@ -1,13 +1,13 @@
-"""Auto-build the ``holosoma_teleop_msgs`` ROS2 package on first import.
+"""Auto-build the ``holosoma_status_msgs`` ROS2 package on first import.
 
 Experimental. Modeled on bxi_sim_bridge's _ensure_communication. Builds the
-.msg files in this package (via colcon, into /tmp/holosoma_teleop_ws) if the
+.msg files in this package (via colcon, into /tmp/holosoma_status_ws) if the
 types aren't already importable, then patches sys.path + pre-loads the native
 typesupport .so's so rclpy can use them without sourcing a setup.bash.
 
 Requires colcon + ROS2 on the importing machine (e.g. the Jetson).
 
-    from holosoma_inference.teleop.holosoma_teleop_msgs._ensure_msgs import ExoskeletonCmd, ThreePointCmd
+    from holosoma_inference.teleop.holosoma_status_msgs._ensure_msgs import Heartbeat
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-_PKG = "holosoma_teleop_msgs"
-_WS = Path("/tmp/holosoma_teleop_ws")
+_PKG = "holosoma_status_msgs"
+_WS = Path("/tmp/holosoma_status_ws")
 _PKG_DIR = Path(__file__).resolve().parent  # this dir IS the ament package
-_REQUIRED = ("ExoskeletonCmd", "ThreePointCmd", "SmplhCmd", "DenseTrackingCmd")
+_REQUIRED = ("Heartbeat",)
 
 # Native libs, dependency order (generator_c first, generator_py last).
 _SO_ORDER = [
@@ -83,7 +83,7 @@ def _source_workspace() -> None:
             try:
                 ctypes.CDLL(str(p), mode=ctypes.RTLD_GLOBAL)
             except OSError as exc:
-                print(f"[teleop_msgs] warn: pre-load {so} failed: {exc}")
+                print(f"[status_msgs] warn: pre-load {so} failed: {exc}")
 
 
 def _build() -> None:
@@ -108,12 +108,12 @@ def _build() -> None:
     link = _WS / "src" / _PKG
     link.symlink_to(_PKG_DIR)
 
-    print(f"[teleop_msgs] building {_PKG} in {_WS} …")
+    print(f"[status_msgs] building {_PKG} in {_WS} …")
     cmd = f"source {ros_setup} && cd {_WS} && colcon build --packages-select {_PKG}"
     r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(f"colcon build failed:\n{r.stdout}\n{r.stderr}")
-    print("[teleop_msgs] built.")
+    print("[status_msgs] built.")
 
 
 def ensure_msgs() -> None:
@@ -133,6 +133,6 @@ def ensure_msgs() -> None:
 
 ensure_msgs()
 
-from holosoma_teleop_msgs.msg import DenseTrackingCmd, ExoskeletonCmd, SmplhCmd, ThreePointCmd  # noqa: E402
+from holosoma_status_msgs.msg import Heartbeat  # noqa: E402
 
-__all__ = ["DenseTrackingCmd", "ExoskeletonCmd", "SmplhCmd", "ThreePointCmd"]
+__all__ = ["Heartbeat"]
