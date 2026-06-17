@@ -2,23 +2,34 @@
 
 Two teleop backends, composed via `ros2 launch`. The API is the input ROS messages; a backend turns them into robot motion.
 
-```
+## Service API
+Inputs (one of):
+- `CmdSMPLH.msg`
+- `CmdDense.msg`
+- `CmdExoskeleton.msg`
+- `Cmd3pt.msg` (not supported yet)
+
+Outputs:
+
+| Topic | Type | Published by | Description | Rate |
+|---|---|---|---|---|
+| `/holosoma/holosoma_executed_cmd` | `sensor_msgs/JointState` | split-body controller | Commanded 14-DoF arm joint positions (`[left(7), right(7)]`). | 50 Hz (only while a command is being tracked) |
+| `/holosoma/heartbeat` | `holosoma_msgs/Heartbeat` | split-body controller | Liveness + status (`robot_connected`, `control_mode`, `status`). | 5 Hz |
+| `/holosoma/dense_tracking_command` | `holosoma_msgs/CmdDense` | retargeter | Intermediate dense 29-DoF target (retargeter → policy); also the topic an external `dense` publisher writes to. | input rate (event-driven, per `CmdSMPLH`) |
+
+The policy backend (`holosoma_node`) publishes no ROS topics — it drives the robot over the Unitree DDS `LowCmd` channel directly. `/holosoma/holosoma_executed_cmd` and `/holosoma/heartbeat` are emitted by the split-body controller only.
+
+
+Internal structure:
+```bash
 CmdSMPLH ─▶ retargeter ─┐
                         ├─CmdDense─▶ holosoma_node (WBT) ─▶ G1   (holosoma policy)
 external publisher ─────┘
+
 CmdExoskeleton ──────────────────▶ unitree_split_controller ─▶ G1   (arm_sdk + loco)
 ```
 
-The policy launch's `input_type` arg selects which `CmdDense` source is wired in: `smplh` runs the retargeter; `dense` skips it for a direct publisher.
 
-The policy node never imports the policy extension by name: it resolves the policy class from `config.task.policy_type` via the `holosoma.policies.by_type` entry-point group and injects a live `DenseTargetSource` (subscribes `CmdDense`). The `holosoma_wbt` policy is registered by a separate policy extension package, which must be installed in the env alongside `holosoma` for the policy backend.
-
-## Packages
-
-ament colcon workspace of two packages:
-
-- `holosoma_msgs` — message interfaces (`CmdSMPLH`, `CmdDense`, `CmdExoskeleton`, `Cmd3pt`, `Heartbeat`).
-- `holosoma_service` — the ROS2 nodes (`holosoma_node`, `retargeter_node`, `unitree_split_controller`, `wasd_controller_node`) and launch files.
 
 
 ## Input support

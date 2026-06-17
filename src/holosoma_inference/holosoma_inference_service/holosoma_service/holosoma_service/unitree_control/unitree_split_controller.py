@@ -15,7 +15,7 @@ from holosoma_inference.sdk.unitree_high_level import make_mp_arm_client, make_m
 from holosoma_inference.utils.rate import RateLimiter
 
 EXOSKELETON_TOPIC = "/holosoma/exoskeleton_command"
-CMD_TOPIC = "/holosoma_cmd"
+CMD_TOPIC = "/holosoma/holosoma_executed_cmd"
 HEARTBEAT_TOPIC = "/holosoma/heartbeat"
 CONTROL_RATE_HZ = 50.0
 HEARTBEAT_EVERY = 10  # ticks -> 5 Hz at 50 Hz control
