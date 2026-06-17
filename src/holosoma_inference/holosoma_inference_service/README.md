@@ -1,22 +1,22 @@
-# Holosoma teleop service
+# Holosoma Inference Service
 
-Two teleop backends, composed via `ros2 launch`. The API is the input ROS messages; a backend turns them into robot motion.
+Service layer for deploying `holosoma` policies. The input/output API is ROS2 messages; a backend turns them into robot motion. The service is not required to run `holosoma_inference`, but can be helpful for integrating it into a larger system.
 
 ## Service API
 Inputs (one of):
 
-| Topic | Type | Description | Rate |
+| Topic | Type | Description | Exp. Rate |
 |---|---|---|---|
-| `/holosoma/smplh_command` | `CmdSMPLH.msg` | SMPL-H 24-joint pose targets, retargeted to dense before the policy | publisher rate |
-| `/holosoma/dense_tracking_command` | `CmdDense.msg` | Dense per-joint 29-DoF target (q/dq + root quat) consumed directly by the policy | publisher rate |
-| `/holosoma/exoskeleton_command` | `CmdExoskeleton.msg` | Left/right arm joint targets (7+7) plus base twist for the split-body controller | publisher rate |
-| `/holosoma/3pt_command` | `Cmd3pt.msg` | Head + wrist poses with grippers (not supported yet) | publisher rate |
+| `/holosoma/smplh_command` | `CmdSMPLH.msg` | SMPL-H 24-joint pose targets, retargeted to dense before the policy | 50Hz |
+| `/holosoma/dense_tracking_command` | `CmdDense.msg` | Dense per-joint 29-DoF target (q/dq + root quat) consumed directly by the policy | 50Hz |
+| `/holosoma/exoskeleton_command` | `CmdExoskeleton.msg` | Left/right arm joint targets (7+7) plus base twist for the split-body controller | 50Hz |
+| `/holosoma/3pt_command` | `Cmd3pt.msg` | Head + wrist poses with grippers (not supported yet) | 50Hz |
 
 Outputs:
 
 | Topic | Type | Description | Rate |
 |---|---|---|---|
-| `/holosoma/holosoma_executed_cmd` | `JointState.msg` | Executed joint command, always full 29-DoF | Policy OR split-controller rate (typically 50Hz)  |
+| `/holosoma/holosoma_executed_cmd` | `JointState.msg` | Executed joint command, always full 29-DoF | Policy Rate (typ. 50Hz)  |
 | `/holosoma/heartbeat` | `Heartbeat.msg` | Liveness + status  | 5 Hz |
 
 Note: for  `/holosoma/holosoma_executed_cmd`, the policy backend fills all 29 values. The split-body backend fills the 14 arm joints (indices 15–28) and zeros the rest.

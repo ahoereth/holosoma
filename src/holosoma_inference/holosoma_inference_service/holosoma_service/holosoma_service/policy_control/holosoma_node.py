@@ -6,8 +6,8 @@ Runs a whole-body-tracking policy driven by a live ``CmdDense`` stream:
 
 The policy class is resolved by ``config.task.policy_type`` via the
 ``holosoma.policies.by_type`` entry-point group (registered by the installed
-policy extension, e.g. wbt_wrappers' ``HolosomaWBTPolicy``) — so this node never
-imports the extension by name. Requires the extension installed in the env.
+policy extension) — so this node never imports the extension by name. Requires
+a policy extension installed in the env.
 """
 
 from __future__ import annotations

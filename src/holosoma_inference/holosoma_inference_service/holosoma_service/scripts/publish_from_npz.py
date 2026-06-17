@@ -7,12 +7,12 @@ live target source ignores), we replay the NPZ frame-by-frame onto the dense
 topic so the policy tracks the full trajectory. Useful for sim2sim "watch it
 dance" tests without any real input device.
 
-Frame → CmdDense mapping (matches HolosomaWBTPolicy._get_ext_motion_at_frame):
+Frame → CmdDense mapping (matches the WBT policy's per-frame motion accessor):
     q        = joint_pos[t, 7:]    # drop root pos(3)+quat(4) → 29 joints
     dq       = joint_vel[t, 6:]    # drop root lin/ang vel(6) → 29 joints
     root_quat= body_quat_w[t, ref] # wxyz in NPZ → xyzw for geometry_msgs
 
-Joint order in the wbt_training NPZs already matches the Unitree SDK / MuJoCo
+Joint order in the reference-motion NPZs already matches the Unitree SDK / MuJoCo
 29-DOF order, so no reordering is needed.
 
 DDS note: the policy's ROS graph runs on a separate ROS_DOMAIN_ID from the
@@ -113,7 +113,7 @@ class NpzDensePublisher(Node):
 
 def main(args=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("npz", help="Path to reference-motion NPZ (wbt_training format).")
+    parser.add_argument("npz", help="Path to reference-motion NPZ.")
     parser.add_argument("--topic", default=DENSE_TOPIC, help=f"Dense topic (default: {DENSE_TOPIC}).")
     parser.add_argument("--rate", type=float, default=0.0, help="Publish rate Hz (default: NPZ fps, else 50).")
     parser.add_argument("--loop", action="store_true", help="Loop the motion instead of holding the last frame.")

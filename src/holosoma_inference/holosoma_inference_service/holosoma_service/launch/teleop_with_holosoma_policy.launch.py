@@ -5,8 +5,8 @@
 
 holosoma_node resolves the policy class from ``config.task.policy_type`` via the
 ``holosoma.policies.by_type`` entry-point group and injects a HolosomaNode
-subscribed to the dense topic. Requires both holosoma + the policy extension
-(e.g. wbt_wrappers) installed.
+subscribed to the dense topic. Requires both holosoma + the installed policy
+extension that registers the chosen ``preset``.
 
 ``input_type`` selects how CmdDense is produced:
 
@@ -20,11 +20,11 @@ subscribed to the dense topic. Requires both holosoma + the policy extension
 Usage:
     # SMPL-H teleop (retargeter on):
     ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
-        urdf_path:=/path/g1_29dof.urdf model_path:=/path/model.onnx
+        preset:=<inference-preset> urdf_path:=/path/g1_29dof.urdf model_path:=/path/model.onnx
 
     # Dense input (retargeter off):
     ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
-        input_type:=dense model_path:=/path/model.onnx
+        preset:=<inference-preset> input_type:=dense model_path:=/path/model.onnx
 """
 
 from launch import LaunchDescription
@@ -56,7 +56,11 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="",
                 description="Fixed-base 29-DOF URDF for the retargeter IK. Required for input_type:=smplh.",
             ),
-            DeclareLaunchArgument("preset", default_value="g1-29dof-holosoma-wbt"),
+            DeclareLaunchArgument(
+                "preset",
+                description="Inference preset registered in the installed policy extension "
+                "(resolves the policy via config.task.policy_type). Required.",
+            ),
             DeclareLaunchArgument("rl_rate_hz", default_value="50.0"),
             # Retargeter: only when consuming SMPL-H input.
             Node(
