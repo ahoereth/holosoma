@@ -21,7 +21,7 @@ Outputs:
 
 Note: for  `/holosoma/holosoma_executed_cmd`, the policy backend fills all 29 values. The split-body backend fills the 14 arm joints (indices 15–28) and zeros the rest.
 
-Internal structure:
+## Internal structure
 ```bash
 CmdSMPLH ─▶ retargeter ─┐
                         ├─CmdDense─▶ holosoma_node (WBT) ─▶ G1   (holosoma policy)
@@ -30,10 +30,7 @@ external publisher ─────┘
 CmdExoskeleton ──────────────────▶ unitree_split_controller ─▶ G1   (arm_sdk + loco)
 ```
 
-
-
-
-## Input support
+## Input Support across Modes
 
 | mode \ input                                      | `CmdSMPLH` (24-joint)        | `CmdDense` (29-DOF)          | `CmdExoskeleton` (arm q + twist) | `Cmd3pt` |
 |---------------------------------------------------|------------------------------|------------------------------|----------------------------------|----------|
