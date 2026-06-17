@@ -1,7 +1,6 @@
 # Holosoma teleop service
 
-Two teleop backends, composed via `ros2 launch`. The API is the input ROS
-messages; a backend turns them into robot motion.
+Two teleop backends, composed via `ros2 launch`. The API is the input ROS messages; a backend turns them into robot motion.
 
 ```
 CmdSMPLH ─▶ retargeter ─┐
@@ -10,24 +9,16 @@ external publisher ─────┘
 CmdExoskeleton ──────────────────▶ unitree_split_controller ─▶ G1   (arm_sdk + loco)
 ```
 
-The policy launch's `input_type` arg selects which `CmdDense` source is wired
-in: `smplh` runs the retargeter; `dense` skips it for a direct publisher (see
-[Launch arg: `input_type`](#launch-arg-input_type-policy-launch)).
+The policy launch's `input_type` arg selects which `CmdDense` source is wired in: `smplh` runs the retargeter; `dense` skips it for a direct publisher.
 
-The policy node never imports the policy extension by name: it resolves the
-policy class from `config.task.policy_type` via the `holosoma.policies.by_type`
-entry-point group and injects a live `DenseTargetSource` (subscribes `CmdDense`).
-The `holosoma_wbt` policy is registered by a separate policy extension package,
-which must be installed in the env alongside `holosoma` for the policy backend.
+The policy node never imports the policy extension by name: it resolves the policy class from `config.task.policy_type` via the `holosoma.policies.by_type` entry-point group and injects a live `DenseTargetSource` (subscribes `CmdDense`). The `holosoma_wbt` policy is registered by a separate policy extension package, which must be installed in the env alongside `holosoma` for the policy backend.
 
 ## Packages
 
 ament colcon workspace of two packages:
 
-- `holosoma_msgs` — message interfaces (`CmdSMPLH`, `CmdDense`, `CmdExoskeleton`,
-  `Cmd3pt`, `Heartbeat`).
-- `holosoma_service` — the ROS2 nodes (`holosoma_node`, `retargeter_node`,
-  `unitree_split_controller`, `wasd_controller_node`) and launch files.
+- `holosoma_msgs` — message interfaces (`CmdSMPLH`, `CmdDense`, `CmdExoskeleton`, `Cmd3pt`, `Heartbeat`).
+- `holosoma_service` — the ROS2 nodes (`holosoma_node`, `retargeter_node`, `unitree_split_controller`, `wasd_controller_node`) and launch files.
 
 
 ## Input support
@@ -74,14 +65,10 @@ ros2 run holosoma_service unitree_split_controller --iface eth0
 ros2 run holosoma_service unitree_split_controller --iface eth0 --no-arms   # loco only
 ```
 
-A backend does nothing without an **input publisher**. For the policy backend,
-the simplest one is the bundled NPZ replay script, which streams a
-reference-motion NPZ onto `CmdDense` as a live feed (pair with
-`input_type:=dense`):
+A backend does nothing without an **input publisher**. For the policy backend, the simplest one is the bundled NPZ replay script, which streams a reference-motion NPZ onto `CmdDense` as a live feed (pair with `input_type:=dense`):
 
 ```bash
 python holosoma_service/scripts/publish_from_npz.py <motion.npz> --loop
 ```
 
-Other publishers: your tracker / AVP / Pico, or
-`ros2 run holosoma_service wasd_controller_node` for mocking `CmdExoskeleton.msg`.
+Other publishers: your tracker / AVP / Pico, or `ros2 run holosoma_service wasd_controller_node` for mocking `CmdExoskeleton.msg`.
