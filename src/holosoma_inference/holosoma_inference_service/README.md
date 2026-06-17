@@ -11,14 +11,12 @@ Inputs (one of):
 
 Outputs:
 
-| Topic | Type | Published by | Description | Rate |
-|---|---|---|---|---|
-| `/holosoma/holosoma_executed_cmd` | `sensor_msgs/JointState` | split-body controller | Commanded 14-DoF arm joint positions (`[left(7), right(7)]`). | 50 Hz (only while a command is being tracked) |
-| `/holosoma/heartbeat` | `holosoma_msgs/Heartbeat` | split-body controller | Liveness + status (`robot_connected`, `control_mode`, `status`). | 5 Hz |
-| `/holosoma/dense_tracking_command` | `holosoma_msgs/CmdDense` | retargeter | Intermediate dense 29-DoF target (retargeter → policy); also the topic an external `dense` publisher writes to. | input rate (event-driven, per `CmdSMPLH`) |
+| Topic | Type | Description | Rate |
+|---|---|---|---|
+| `/holosoma/holosoma_executed_cmd` | `JointState.msg` | Executed joint command, always full 29-DoF | Policy OR split-controller rate (typically 50Hz)  |
+| `/holosoma/heartbeat` | `Heartbeat.msg` | Liveness + status (`robot_connected`, `control_mode`, `status`). Policy `status` is `running`/`get_ready`/`stiff_hold`; split-body is `running`/`waiting_for_cmd`. | 5 Hz |
 
-The policy backend (`holosoma_node`) publishes no ROS topics — it drives the robot over the Unitree DDS `LowCmd` channel directly. `/holosoma/holosoma_executed_cmd` and `/holosoma/heartbeat` are emitted by the split-body controller only.
-
+Note: for  `/holosoma/holosoma_executed_cmd`, the policy backend fills all 29 values. The split-body backend fills the 14 arm joints (indices 15–28) and zeros the rest.
 
 Internal structure:
 ```bash

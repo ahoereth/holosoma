@@ -3,7 +3,7 @@
 
 This drives ``holosoma_node`` exactly like a teleop source would: instead of
 handing the NPZ to the policy via ``--task.ref-motion-path`` (which the injected
-``DenseTargetSource`` ignores), we replay the NPZ frame-by-frame onto the dense
+live target source ignores), we replay the NPZ frame-by-frame onto the dense
 topic so the policy tracks the full trajectory. Useful for sim2sim "watch it
 dance" tests without any real input device.
 
@@ -61,7 +61,7 @@ class NpzDensePublisher(Node):
         self._dq = (jv[:, 6:] if jv.shape[1] > 29 else jv).astype(np.float32)
 
         ref_idx = _resolve_ref_body(data, ref_body)
-        # body_quat_w is wxyz; geometry_msgs/Quaternion + DenseTargetSource want xyzw.
+        # body_quat_w is wxyz; geometry_msgs/Quaternion + holosoma_node want xyzw.
         bq = data["body_quat_w"][:, ref_idx, :].astype(np.float32)  # (T, 4) wxyz
         self._quat_xyzw = bq[:, [1, 2, 3, 0]]
 

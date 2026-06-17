@@ -4,7 +4,7 @@
     (dense)                               CmdDense -> holosoma_node (WBT) -> robot
 
 holosoma_node resolves the policy class from ``config.task.policy_type`` via the
-``holosoma.policies.by_type`` entry-point group and injects a DenseTargetSource
+``holosoma.policies.by_type`` entry-point group and injects a HolosomaNode
 subscribed to the dense topic. Requires both holosoma + the policy extension
 (e.g. wbt_wrappers) installed.
 

@@ -24,6 +24,43 @@ HEARTBEAT_EVERY = 10  # ticks -> 5 Hz at 50 Hz control
 _ARM_JOINTS = ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw")
 ARM_JOINT_NAMES = [f"{side}_{j}" for side in ("left", "right") for j in _ARM_JOINTS]
 
+# Full 29-DoF G1 joint order. The split-body controller only commands the 14
+# arm joints; the executed-cmd feedback is zero-padded to 29 so it shares the
+# schema with the policy backend's /holosoma/holosoma_executed_cmd.
+FULL_DOF_NAMES = [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+]
+# The 14 arm joints occupy indices 15..28 in FULL_DOF_NAMES.
+_ARM_SLICE = slice(15, 29)
+
 
 class UnitreeSplitControllerNode(Node):
     def __init__(self, arm, loco) -> None:
@@ -60,9 +97,13 @@ class UnitreeSplitControllerNode(Node):
         self._latest = msg
 
     def _publish_joint_command(self, q_target: np.ndarray) -> None:
+        # Zero-pad the 14-DoF arm command into the full 29-DoF layout so the
+        # topic shares its schema with the policy backend.
+        full = np.zeros(len(FULL_DOF_NAMES))
+        full[_ARM_SLICE] = q_target
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name, msg.position = ARM_JOINT_NAMES, q_target.tolist()
+        msg.name, msg.position = FULL_DOF_NAMES, full.tolist()
         self._cmd_pub.publish(msg)
 
     def _publish_heartbeat(self, status: str) -> None:
