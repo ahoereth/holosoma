@@ -4,9 +4,15 @@ Two teleop backends, composed via `ros2 launch`. The API is the input ROS
 messages; a backend turns them into robot motion.
 
 ```
-CmdSMPLH ─▶ retargeter ─CmdDense─▶ holosoma_node (WBT) ─▶ G1   (holosoma policy)
+CmdSMPLH ─▶ retargeter ─┐
+                        ├─CmdDense─▶ holosoma_node (WBT) ─▶ G1   (holosoma policy)
+external publisher ─────┘
 CmdExoskeleton ──────────────────▶ unitree_split_controller ─▶ G1   (arm_sdk + loco)
 ```
+
+The policy launch's `input_type` arg selects which `CmdDense` source is wired
+in: `smplh` runs the retargeter; `dense` skips it for a direct publisher (see
+[Launch arg: `input_type`](#launch-arg-input_type-policy-launch)).
 
 The policy node never imports the policy extension by name: it resolves the
 policy class from `config.task.policy_type` via the `holosoma.policies.by_type`
@@ -160,13 +166,40 @@ required for `global` / `2pt` / `3pt` obs modes.
 
 ```bash
 # Policy mode (whole-body WBT ONNX). Needs holosoma + wbt_wrappers installed.
+# preset defaults to g1-29dof-holosoma-wbt; input_type defaults to smplh.
 ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
-    urdf_path:=<fixed-base g1_29dof.urdf> model_path:=<model.onnx>   # preset defaults to g1-29dof-holosoma-wbt
+    urdf_path:=<fixed-base g1_29dof.urdf> model_path:=<model.onnx>
 
 # Split-body mode (arm_sdk + LocoClient). Robot must be standing in FSM-501.
 ros2 run holosoma_service unitree_split_controller --iface eth0
 ros2 run holosoma_service unitree_split_controller --iface eth0 --no-arms   # loco only
 ```
+
+### Launch arg: `input_type` (policy launch)
+
+`teleop_with_holosoma_policy.launch.py` takes `input_type` to select how the
+`CmdDense` stream the policy consumes is produced:
+
+| `input_type` | Nodes launched | `CmdDense` source | `urdf_path` |
+|---|---|---|---|
+| `smplh` (default) | retargeter + policy | `CmdSMPLH ─▶ retargeter ─▶ CmdDense` | **required** (retargeter IK model) |
+| `dense` | policy only | external publisher feeds `CmdDense` directly | not used |
+
+```bash
+# SMPL-H teleop (retargeter on — the default):
+ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
+    urdf_path:=<fixed-base g1_29dof.urdf> model_path:=<model.onnx>
+
+# Dense input (retargeter off — pair with publish_from_npz.py or any teleop
+# already in dense 29-DOF convention):
+ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
+    input_type:=dense model_path:=<model.onnx>
+```
+
+`input_type` is validated against `{smplh, dense}` at launch (a typo fails
+fast). Note the sim2sim recipe above runs `holosoma_node` directly via
+`python -m` rather than `ros2 launch`, which is the `dense` flow by hand (no
+retargeter); the launch file is the same topology for the real robot.
 
 A backend does nothing without an **input publisher** (your tracker / AVP / Pico
 / replay, `publish_from_npz.py`, or `ros2 run holosoma_service wasd_controller_node`
@@ -174,10 +207,10 @@ for keyboard base vel).
 
 ## Input support (current)
 
-| mode \ input                                      | `CmdSMPLH` (24-joint) | `CmdExoskeleton` (arm q + twist) | `Cmd3pt` |
-|---------------------------------------------------|-----------------------|----------------------------------|----------|
-| **policy** (`teleop_with_holosoma_policy`)        | ✅ via retargeter     | ❌                               | ❌       |
-| **split-body** (`teleop_with_unitree_split_body`) | ❌                    | ✅                               | ❌       |
+| mode \ input                                      | `CmdSMPLH` (24-joint)        | `CmdDense` (29-DOF)          | `CmdExoskeleton` (arm q + twist) | `Cmd3pt` |
+|---------------------------------------------------|------------------------------|------------------------------|----------------------------------|----------|
+| **policy** (`teleop_with_holosoma_policy`)        | ✅ `input_type:=smplh` (retargeter) | ✅ `input_type:=dense` (direct) | ❌                               | ❌       |
+| **split-body** (`teleop_with_unitree_split_body`) | ❌                           | ❌                           | ✅                               | ❌       |
 
 ## Gotchas
 
