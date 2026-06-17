@@ -29,61 +29,44 @@ ament colcon workspace of two packages:
 - `holosoma_service` — the ROS2 nodes (`holosoma_node`, `retargeter_node`,
   `unitree_split_controller`, `wasd_controller_node`) and launch files.
 
+
+## Input support
+
+| mode \ input                                      | `CmdSMPLH` (24-joint)        | `CmdDense` (29-DOF)          | `CmdExoskeleton` (arm q + twist) | `Cmd3pt` |
+|---------------------------------------------------|------------------------------|------------------------------|----------------------------------|----------|
+| **policy** (`teleop_with_holosoma_policy`)        | ✅ `input_type:=smplh` (retargeter) | ✅ `input_type:=dense` (direct) | ❌                               | ❌       |
+| **split-body** (`teleop_with_unitree_split_body`) | ❌                           | ❌                           | ✅                               | ❌       |
+
+
+
 ## Build & source
 
 Build & source before launching; re-run after editing a `.msg`.
 
 ```bash
 cd src/holosoma_inference/holosoma_inference_service
-# CLEAN build — stale generated artifacts for old msg package names shadow the
-# new ones. Nuke first whenever the .msg set changed:
-rm -rf build install log
+rm -rf build install log # for a clean build
 colcon build && source install/setup.bash
 ```
 
-The policy backend additionally needs `holosoma` + a policy extension (the one
-that registers your `holosoma.policies.by_type` entry point) importable in the
-same environment. Verify the entry points resolve:
+## Run (with onnx policy)
 
+Run with Whole-body WBT ONNX policy + SMPL-H teleop (the default)
 ```bash
-python -c "from holosoma_inference.compat import entry_points; \
-  print([e.name for e in entry_points(group='holosoma.policies.by_type')])"
+ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
+    urdf_path:=<fixed-base g1_29dof.urdf> \
+    input_type:=simplh \
+    model_path:=<model.onnx>
 ```
 
-## Run — policy backend
-
+Whole body policy with `CmdDense` input (retargeter off):
 ```bash
-# Whole-body WBT ONNX policy.
-# preset defaults to g1-29dof-holosoma-wbt; input_type defaults to smplh.
 ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
-    urdf_path:=<fixed-base g1_29dof.urdf> model_path:=<model.onnx>
+    input_type:=dense \
+    model_path:=<model.onnx>
 ```
 
-### Launch arg: `input_type` (policy launch)
-
-`teleop_with_holosoma_policy.launch.py` takes `input_type` to select how the
-`CmdDense` stream the policy consumes is produced:
-
-| `input_type` | Nodes launched | `CmdDense` source | `urdf_path` |
-|---|---|---|---|
-| `smplh` (default) | retargeter + policy | `CmdSMPLH ─▶ retargeter ─▶ CmdDense` | **required** (retargeter IK model) |
-| `dense` | policy only | external publisher feeds `CmdDense` directly | not used |
-
-```bash
-# SMPL-H teleop (retargeter on — the default):
-ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
-    urdf_path:=<fixed-base g1_29dof.urdf> model_path:=<model.onnx>
-
-# Dense input (retargeter off — pair with any teleop already in dense
-# 29-DOF convention, or a CmdDense replay publisher):
-ros2 launch holosoma_service teleop_with_holosoma_policy.launch.py \
-    input_type:=dense model_path:=<model.onnx>
-```
-
-`input_type` is validated against `{smplh, dense}` at launch (a typo fails
-fast).
-
-## Run — split-body backend
+## Run (unitree split-body backend)
 
 ```bash
 # arm_sdk + LocoClient. Robot must be standing in FSM-501.
@@ -91,29 +74,14 @@ ros2 run holosoma_service unitree_split_controller --iface eth0
 ros2 run holosoma_service unitree_split_controller --iface eth0 --no-arms   # loco only
 ```
 
-A backend does nothing without an **input publisher** (your tracker / AVP / Pico
-/ replay, or `ros2 run holosoma_service wasd_controller_node` for keyboard base
-velocity).
+A backend does nothing without an **input publisher**. For the policy backend,
+the simplest one is the bundled NPZ replay script, which streams a
+reference-motion NPZ onto `CmdDense` as a live feed (pair with
+`input_type:=dense`):
 
-## Input support (current)
+```bash
+python holosoma_service/scripts/publish_from_npz.py <motion.npz> --loop
+```
 
-| mode \ input                                      | `CmdSMPLH` (24-joint)        | `CmdDense` (29-DOF)          | `CmdExoskeleton` (arm q + twist) | `Cmd3pt` |
-|---------------------------------------------------|------------------------------|------------------------------|----------------------------------|----------|
-| **policy** (`teleop_with_holosoma_policy`)        | ✅ `input_type:=smplh` (retargeter) | ✅ `input_type:=dense` (direct) | ❌                               | ❌       |
-| **split-body** (`teleop_with_unitree_split_body`) | ❌                           | ❌                           | ✅                               | ❌       |
-
-## Gotchas
-
-- **Two DDS graphs / two domains.** The unitree SDK link and the ROS2 graph each
-  spin up a CycloneDDS participant. If both land on the same domain, the unitree
-  binding aborts with `PreconditionNotMetError: Failed to create domain
-  explicitly`. Keep the ROS graph (the node's `DenseTargetSource` + any
-  `CmdDense` publisher) on a different `ROS_DOMAIN_ID` from the robot link.
-- **`ros2 run` bypasses a conda env** — the installed console-script shebang is
-  `#!/usr/bin/python3` (system Python). If your deps live in a conda env, run the
-  node module directly with that env's Python via `python -m ...`. A rebuild is
-  required after any `src/` edit — colcon copies `.py` into `build/`.
-- **Policy URDF must be fixed-base** (no `<freejoint/>`) — the retargeter expects
-  29 DOF; a freejoint URDF gives nq=36 and frames are rejected.
-- **No input publisher = nothing moves.**
-- `Cmd3pt` is defined but not yet consumed; Sonic policies not wired.
+Other publishers: your tracker / AVP / Pico, or
+`ros2 run holosoma_service wasd_controller_node` for mocking `CmdExoskeleton.msg`.
