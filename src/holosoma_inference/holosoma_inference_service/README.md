@@ -4,17 +4,20 @@ Two teleop backends, composed via `ros2 launch`. The API is the input ROS messag
 
 ## Service API
 Inputs (one of):
-- `CmdSMPLH.msg`
-- `CmdDense.msg`
-- `CmdExoskeleton.msg`
-- `Cmd3pt.msg` (not supported yet)
+
+| Topic | Type | Description | Rate |
+|---|---|---|---|
+| `/holosoma/smplh_command` | `CmdSMPLH.msg` | SMPL-H 24-joint pose targets, retargeted to dense before the policy | publisher rate |
+| `/holosoma/dense_tracking_command` | `CmdDense.msg` | Dense per-joint 29-DoF target (q/dq + root quat) consumed directly by the policy | publisher rate |
+| `/holosoma/exoskeleton_command` | `CmdExoskeleton.msg` | Left/right arm joint targets (7+7) plus base twist for the split-body controller | publisher rate |
+| `/holosoma/3pt_command` | `Cmd3pt.msg` | Head + wrist poses with grippers (not supported yet) | publisher rate |
 
 Outputs:
 
 | Topic | Type | Description | Rate |
 |---|---|---|---|
 | `/holosoma/holosoma_executed_cmd` | `JointState.msg` | Executed joint command, always full 29-DoF | Policy OR split-controller rate (typically 50Hz)  |
-| `/holosoma/heartbeat` | `Heartbeat.msg` | Liveness + status (`robot_connected`, `control_mode`, `status`). Policy `status` is `running`/`get_ready`/`stiff_hold`; split-body is `running`/`waiting_for_cmd`. | 5 Hz |
+| `/holosoma/heartbeat` | `Heartbeat.msg` | Liveness + status  | 5 Hz |
 
 Note: for  `/holosoma/holosoma_executed_cmd`, the policy backend fills all 29 values. The split-body backend fills the 14 arm joints (indices 15–28) and zeros the rest.
 
