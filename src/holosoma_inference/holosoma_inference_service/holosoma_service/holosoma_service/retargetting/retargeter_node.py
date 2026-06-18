@@ -61,8 +61,19 @@ class RetargeterNode(Node):
 
 
 def main(args=None) -> None:
+    # Under `ros2 run` / a launch file, argv carries ROS args (e.g.
+    # "--ros-args -r __node:=..."). tyro would reject those, so strip them
+    # before parsing this node's own CLI, and hand the full argv to
+    # rclpy.init (which consumes the ROS args).
+    import sys
+
+    from rclpy.utilities import remove_ros_args
+
+    ros_argv = sys.argv if args is None else args
+    cli_argv = remove_ros_args(args=ros_argv)[1:]  # drop argv[0]
+
     def run(urdf_path: str, rl_rate_hz: float = 50.0):
-        rclpy.init(args=args)
+        rclpy.init(args=ros_argv)
         node = RetargeterNode(urdf_path, rl_rate_hz, joint_names=[])
         try:
             rclpy.spin(node)
@@ -72,7 +83,7 @@ def main(args=None) -> None:
             node.destroy_node()
             rclpy.shutdown()
 
-    tyro.cli(run)
+    tyro.cli(run, args=cli_argv)
 
 
 if __name__ == "__main__":
