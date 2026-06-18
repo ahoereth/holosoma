@@ -1,9 +1,9 @@
 """Minimal G1 locomotion client — direct ``LocoClient`` wrapper.
 
-This is the SDK-side subset of FAR-pi's ``g1_loco_bridge.py`` with all
-TCP-bridge plumbing removed. It assumes it runs ON THE JETSON, where the
-unitree SDK's CycloneDDS version works (the bridge only existed to escape
-the laptop/Docker DDS version mismatch — not needed here).
+A direct-DDS locomotion client with no TCP-bridge plumbing. It assumes it
+runs ON THE JETSON, where the unitree SDK's CycloneDDS version works (a
+bridge is only needed to escape a laptop/Docker DDS version mismatch — not
+the case here).
 
 Intended use: a service layer receives ROS2 commands and calls these
 methods directly. The class owns DDS init + the ``LocoClient`` session;

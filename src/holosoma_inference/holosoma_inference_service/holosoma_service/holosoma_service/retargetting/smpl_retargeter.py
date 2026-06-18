@@ -154,12 +154,79 @@ _IK_TARGETS: list[tuple[str, int, float, float]] = [
 _GROUND_FOOT_HEIGHT = 0.05
 
 
+def _strip_freejoint(xml_path: str) -> str | None:
+    """If the MJCF at ``xml_path`` has a ``<freejoint/>`` element, return
+    the XML with that element removed (so the model loads fixed-base).
+    Returns ``None`` if the file has no freejoint and can be loaded
+    directly via ``from_xml_path``.
+
+    Used by the retargeter to accept the shipped freejoint MJCFs (which
+    the policy's MuJoCo backend needs for its own sim) without inheriting
+    the freejoint DOF into the IK.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    text = _Path(xml_path).read_text(encoding="utf-8")
+    if "<freejoint" not in text:
+        return None
+    # Remove any line containing <freejoint .../> or <freejoint></freejoint>.
+    stripped = _re.sub(r"\s*<freejoint[^>]*/>\s*", "\n", text)
+    return _re.sub(r"\s*<freejoint[^>]*>.*?</freejoint>\s*", "\n", stripped, flags=_re.DOTALL)
+
+
+_ASSET_CACHE: dict[str, dict[str, bytes]] = {}
+
+
+def _asset_dir_for(xml_path: str) -> dict:
+    """Return a single-entry asset dict mapping ``assets/<name>`` relative
+    paths (the way the shipped MJCFs reference mesh files) to their bytes,
+    so ``mujoco.MjModel.from_xml_string`` can find them without an
+    on-disk ``meshdir`` resolving relative to cwd.
+
+    Cache the manifest keyed on xml_path so repeated SMPLRetargeter construction
+    (e.g. WBT policy re-init) doesn't re-read every OBJ/STL from disk every time.
+    mujoco does not cache from_xml_string assets across calls, so without this every
+    retargeter instance paid ~60 file reads before first retarget().
+    """
+    import os as _os
+
+    base = _os.path.dirname(_os.path.abspath(xml_path))
+    cache_key = _os.path.abspath(xml_path)
+    cached = _ASSET_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    assets: dict[str, bytes] = {}
+    for root, _dirs, files in _os.walk(base):
+        for fn in files:
+            if not fn.lower().endswith((".obj", ".stl", ".mtl", ".png", ".jpg")):
+                continue
+            p = _os.path.join(root, fn)
+            rel = _os.path.relpath(p, base)
+            with open(p, "rb") as f:
+                assets[rel] = f.read()
+    _ASSET_CACHE[cache_key] = assets
+    return assets
+
+
 class SMPLRetargeter:
     """Online retargeting from Pico body tracker to G1 29-DOF via mink differential IK."""
 
     def __init__(self, urdf_path: str, dt: float = 0.02, *, max_ik_iters: int = 20):
         # -- MuJoCo model (fixed base, 29 DOF) --
-        self._mj_model = mujoco.MjModel.from_xml_path(urdf_path)
+        # The retargeter's IK is designed for a fixed-base model — all
+        # ``_IK_TARGETS`` are root-relative and the solver must not have
+        # freejoint DOF to absorb the tasks into. The shipped ``g1_29dof.xml``
+        # carries a ``<freejoint/>`` (needed by the policy's MuJoCo backend);
+        # if we load it as-is the IK bakes up to 7 DOF of body rotation into
+        # the root, yielding joint angles that don't match the SMPL pose. So
+        # strip the freejoint here and load fixed-base.
+        model_xml = _strip_freejoint(urdf_path)
+        if model_xml is not None:
+            self._mj_model = mujoco.MjModel.from_xml_string(model_xml, _asset_dir_for(urdf_path))
+        else:
+            self._mj_model = mujoco.MjModel.from_xml_path(urdf_path)
         self._mj_data = mujoco.MjData(self._mj_model)
 
         self._dt = dt

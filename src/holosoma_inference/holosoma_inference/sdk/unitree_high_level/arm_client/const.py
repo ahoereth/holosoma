@@ -1,8 +1,7 @@
 """Constants for the G1 high-level arm/loco clients.
 
-Copied verbatim from FAR-pi (rfmpi.gmp_hw_utils.g1_utils,
-rfmpi.ros_workspace.src.gmp_unitree.utils.{gains,trajectories}) so this
-package carries no rfmpi dependency.
+Joint gains, index maps, and initialization trajectories are inlined here so
+this package is self-contained with no external dependency.
 """
 
 from __future__ import annotations
@@ -173,7 +172,7 @@ EFFORT_LIMITS = {
     HardwareG1j29JointIndex.k_right_wrist_yaw: 5.0,
 }
 
-# Arm initialization trajectory (== rfmpi PICK_PLACE_INIT_TRAJECTORY).
+# Arm initialization trajectory.
 # Each waypoint is 14 floats: 7 left-arm joints then 7 right-arm joints,
 # shoulder_pitch..wrist_yaw ordering.
 G1_INIT_TRAJECTORY = [

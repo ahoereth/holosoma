@@ -1,9 +1,8 @@
 """G1 29-DoF arm controller driving Unitree's ``rt/arm_sdk``.
 
-Ported from FAR-pi (rfmpi/ros_workspace/src/gmp_unitree/g1/g1_arm_client.py)
-with all rfmpi dependencies replaced by the local :mod:`.const` module and the
-TCP-bridge transport removed — this talks direct DDS only (runs on the Jetson).
-Per-joint effort clamping and the arm-only init trajectory are unchanged.
+Self-contained: all constants live in the local :mod:`.const` module and the
+transport is direct DDS only (runs on the Jetson). Provides per-joint effort
+clamping and an arm-only initialization trajectory.
 """
 
 from __future__ import annotations
