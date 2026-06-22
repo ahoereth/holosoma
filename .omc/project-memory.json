@@ -1,0 +1,109 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1782167749319,
+  "projectRoot": "/home/ANT.AMAZON.COM/asetapen/gt/holosoma/polecats/furiosa/holosoma",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "scripts",
+      "src",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "demo_scripts": {
+      "path": "demo_scripts",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1782167749315,
+      "keyFiles": [
+        "demo_lafan_wb_tracking.sh",
+        "demo_omomo_wb_tracking.sh",
+        "ros2_velocity_publisher.py"
+      ]
+    },
+    "docker": {
+      "path": "docker",
+      "purpose": null,
+      "fileCount": 7,
+      "lastAccessed": 1782167749316,
+      "keyFiles": [
+        "Dockerfile",
+        "build.sh",
+        "build_and_push.sh",
+        "docker_images.json",
+        "isaacgym.Dockerfile"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1782167749317,
+      "keyFiles": [
+        "g1-docker-cheatsheet.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 19,
+      "lastAccessed": 1782167749318,
+      "keyFiles": [
+        "reset_isaacsim.sh",
+        "setup_all.sh",
+        "setup_inference.sh",
+        "setup_inference_via_uv.sh",
+        "setup_isaacgym.sh"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1782167749318,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 0,
+      "lastAccessed": 1782167749318,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
