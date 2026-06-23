@@ -7,14 +7,17 @@ and mass configurations.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import TYPE_CHECKING
 
 from isaacgym import gymapi
 from loguru import logger
 
+if TYPE_CHECKING:
+    from holosoma.config_types.scene import PhysicsConfig
+
 
 def apply_rigid_shape_properties(
-    gym: gymapi.Gym, env_ptr: int, actor_handle: int, physics_config: Dict[str, Any], object_name: str
+    gym: gymapi.Gym, env_ptr: int, actor_handle: int, physics_config: PhysicsConfig, object_name: str
 ) -> None:
     """Apply rigid shape properties (friction, restitution, compliance).
 
@@ -29,8 +32,9 @@ def apply_rigid_shape_properties(
         Environment handle for the IsaacGym environment.
     actor_handle : int
         Handle to the actor to modify.
-    physics_config : Dict[str, Any]
-        Physics configuration containing IsaacGym-specific properties.
+    physics_config : PhysicsConfig
+        The live per-object physics config; IsaacGym friction is read from its ``isaacgym``
+        sub-config (``None`` => keep the asset's authored friction).
     object_name : str
         Name of the object for logging purposes.
 
@@ -71,7 +75,7 @@ def apply_rigid_shape_properties(
 
 
 def apply_mass_from_config(
-    gym: gymapi.Gym, env_ptr: int, actor_handle: int, physics_config: Dict[str, Any], object_name: str
+    gym: gymapi.Gym, env_ptr: int, actor_handle: int, physics_config: PhysicsConfig, object_name: str
 ) -> None:
     """Apply mass or density from physics config.
 
@@ -86,8 +90,9 @@ def apply_mass_from_config(
         Environment handle for the IsaacGym environment.
     actor_handle : int
         Handle to the actor to modify.
-    physics_config : Dict[str, Any]
-        Physics configuration containing mass or density settings.
+    physics_config : PhysicsConfig
+        The live per-object physics config; ``mass`` (priority 1) and ``density`` (priority 2)
+        are read from its core fields.
     object_name : str
         Name of the object for logging purposes.
 
@@ -102,8 +107,8 @@ def apply_mass_from_config(
         raise RuntimeError(f"No rigid body properties found for '{object_name}', cannot apply mass config")
 
     # Priority 1: Direct mass override
-    if physics_config.get("mass") is not None:
-        target_mass = physics_config["mass"]
+    if physics_config.mass is not None:
+        target_mass = physics_config.mass
         logger.debug(f"Setting explicit mass for '{object_name}': {target_mass}")
 
         for prop in body_props:
@@ -114,12 +119,12 @@ def apply_mass_from_config(
         return
 
     # Priority 2: Density-based calculation
-    if physics_config.get("density") is not None:
+    if physics_config.density is not None:
         current_mass = sum(prop.mass for prop in body_props)
 
         if current_mass < 1e-6:
             # URDF has very low mass, log warning but keep original values
-            target_density = physics_config["density"]
+            target_density = physics_config.density
             logger.warning(
                 f"URDF has very low mass ({current_mass}) for '{object_name}' "
                 f"with density config {target_density}. Keeping original URDF mass values."
