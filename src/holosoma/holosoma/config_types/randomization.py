@@ -77,10 +77,9 @@ class MaterialRandomizationConfig:
     """Per-backend material-DR ranges, mirroring scene.py's ``PhysicsConfig`` backend split.
 
     Each backend sub-block names ONLY the channels that backend's API honors, so a channel can never
-    be silently dropped: if a backend can't do restitution, its block simply has no restitution field
-    (vs the old flat 3-channel config that IsaacGym/MuJoCo quietly ignored two-thirds of). A backend
-    whose sub-block is ``None`` randomizes nothing. Each channel range is a ``[lo, hi]`` pair (uniform)
-    or a spec dict for a non-uniform distribution.
+    be silently dropped: if a backend can't do restitution, its block simply has no restitution
+    field. A backend whose sub-block is ``None`` randomizes nothing. Each channel range is a
+    ``[lo, hi]`` pair (uniform) or a spec dict for a non-uniform distribution.
     """
 
     isaacgym: IsaacGymMaterialDR | None = None
