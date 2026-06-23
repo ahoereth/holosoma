@@ -5,7 +5,7 @@ world targets, assert written envs land at their own target AND unwritten envs [
 Guards the strided-env-subset write path through the unified WORLD-frame set_actor_states (after the
 frame unification, IsaacGym writes world poses straight through with no env_origins re-add).
 
-Unmarked + ``importorskip("isaacgym")``/CUDA-gated so the IsaacGym CI job (``-m "not isaacsim"``)
+Unmarked (conftest's directory rule applies ``isaacgym``; the CI job selects ``-m isaacgym``)
 collects it and it skips cleanly elsewhere.
 """
 

@@ -7,8 +7,8 @@ refactor is responsible for (URDF/USD honor the same PhysicsConfig; the material
 mutates the shared source asset). It does NOT build a full sim, so it's the cheapest IsaacSim
 check in the suite.
 
-Marked ``isaacsim`` so the IsaacSim CI job (``-m "isaacsim"``) collects it and the IsaacGym job
-(``-m "not isaacsim"``) skips it; ``importorskip("isaaclab")`` makes a stray unfiltered run skip.
+Marked ``isaacsim`` so only the IsaacSim CI job (``-m isaacsim``) collects it;
+``importorskip("isaaclab")`` makes a stray unfiltered run skip.
 """
 
 from __future__ import annotations
