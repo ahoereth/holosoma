@@ -374,9 +374,10 @@ class IsaacGym(BaseSimulator):
         self.commands = torch.zeros(self.num_envs, 9, device=self.device, dtype=torch.float32)
         logger.info(f"Initialized command system with shape: {self.commands.shape}")
 
-        # After building, register objects and setup mappings/indexes
-        if self.has_scene_objects:
-            self._register_objects()
+        # After building, register objects and setup mappings/indexes. Unconditional (like
+        # MuJoCo/IsaacSim): a robot-only scene still registers "robot" so the unified
+        # get/set_actor_states API works on every backend.
+        self._register_objects()
 
         # Invoke startup randomization for domain randomization
         # This must happen AFTER all envs are created but BEFORE prepare_sim()
@@ -1032,7 +1033,7 @@ class IsaacGym(BaseSimulator):
             self.gym_object_indices[object_name] = torch.tensor(indices_list, device=self.device, dtype=torch.long)
             logger.debug(f"Finalized gym_object_indices for '{object_name}': {self.gym_object_indices[object_name]}")
 
-        self.register_scene_assets()
+        self._register_scene_assets()
 
     @property
     def scene_file_static_names(self) -> set[str]:
@@ -1050,15 +1051,13 @@ class IsaacGym(BaseSimulator):
         straight through with NO origin re-add. Object poses come from the loader (a scene file
         expands 1->N into object_handles); a body is static per its standalone ``fixed`` flag or
         the file's joint structure (scene_file_static_names), the rest are free. The robot's
-        config pose is registered env-LOCAL (origins not added), same as MuJoCo, because the robot
-        is reset through the robot_root_states/DOF paths in practice, not through set_actor_states.
-        set_actor_states does accept "robot": its world-frame input writes straight through to the
-        world-frame raw buffer with no origin re-add, exactly like an object.
-        register_scene_assets sorts by name, so order here is irrelevant.
+        config pose is registered WORLD too (origins added), so ``get_actor_initial_poses`` is
+        world-frame for every actor including "robot".
         """
         pos = torch.tensor(self.robot_config.init_state.pos, device=self.device, dtype=torch.float32)
         rot = torch.tensor(self.robot_config.init_state.rot, device=self.device, dtype=torch.float32)
         robot_pose = torch.cat([pos, rot]).unsqueeze(0).expand(self.num_envs, 7).clone()
+        robot_pose[:, :3] += self.env_origins
 
         static_names = {
             name for name, obj in self.scene_config.rigid_objects.items() if obj.fixed
@@ -1187,8 +1186,7 @@ class IsaacGym(BaseSimulator):
         -----
         ``names`` may include ``"robot"``: the robot's live root state is world-frame
         (origins baked in at create_actor), so a world-frame robot state writes straight
-        through like an object. ``get_actor_initial_poses(["robot"])`` is env-local, so do not
-        round-trip it into a robot write in multi-env without adding origins (same as MuJoCo).
+        through like an object.
         """
         if len(names) == 0 or len(env_ids) == 0:
             return

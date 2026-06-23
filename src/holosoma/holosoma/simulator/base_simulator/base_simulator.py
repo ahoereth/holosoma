@@ -298,7 +298,7 @@ class BaseSimulator:
 
     # ----- Scene-asset registration (shared across backends) -----
 
-    def register_scene_assets(self) -> None:
+    def _register_scene_assets(self) -> None:
         """Register the robot and every scene asset in the ObjectRegistry.
 
         Shared across backends: each supplies its spawned data via ``_collect_spawned_actors``;
@@ -345,10 +345,10 @@ class BaseSimulator:
         - ``items``: one ``(name, is_static, pose, velocity)`` per spawned scene actor, free
           and static bodies alike, including the 1->N bodies a scene file expands into. ``pose``
           is ``[num_envs, 7]``; ``velocity`` is ``[num_envs, 6]`` or ``None`` for zero. Order is
-          irrelevant (``register_scene_assets`` sorts by name), so collect them however is
+          irrelevant (``_register_scene_assets`` sorts by name), so collect them however is
           natural for the backend.
 
-        ``register_scene_assets`` turns this into the registry: it sorts, prepends the robot, and
+        ``_register_scene_assets`` turns this into the registry: it sorts, prepends the robot, and
         classifies ``items`` into type bands identically for every backend, so the subclass only
         describes its actors, not how they map to the registry.
         """
@@ -733,7 +733,7 @@ class BaseSimulator:
         """
         return self.set_actor_states_by_names(names, env_ids, states, write_updates)
 
-    def set_static_body_pose(self, names: ActorNames, env_ids: EnvIds, poses: ActorPoses) -> None:
+    def set_static_body_pose(self, names: ActorNames, env_ids: EnvIds | None, poses: ActorPoses) -> None:
         """Kinematically relocate static (SCENE) scene bodies at runtime.
 
         Convenience over :meth:`set_actor_states` for the common "move a static obstacle" case:
@@ -747,8 +747,8 @@ class BaseSimulator:
         names : ActorNames
             SCENE (static) body names to relocate. (Free INDIVIDUAL bodies also accept this, but
             for those :meth:`set_actor_states` with a velocity is usually what you want.)
-        env_ids : EnvIds
-            Environments to update.
+        env_ids : EnvIds or None
+            Environments to update (``None`` = all envs, as in :meth:`get_actor_indices`).
         poses : ActorPoses
             ``[len(names) * len(env_ids), 7]`` = ``[x, y, z, qx, qy, qz, qw]`` (xyzw). FULL pose:
             position + orientation, in the **WORLD frame**, the single backend-independent
@@ -762,7 +762,9 @@ class BaseSimulator:
         moved pose back via :meth:`get_actor_states` (NOT ``get_actor_initial_poses``, which
         returns the spawn pose).
         """
-        if not names or env_ids is None or len(env_ids) == 0:
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.sim_device)
+        if not names or len(env_ids) == 0:
             return
         zeros = torch.zeros(poses.shape[0], 6, device=poses.device, dtype=poses.dtype)
         self.set_actor_states(list(names), env_ids, torch.cat([poses, zeros], dim=1))
