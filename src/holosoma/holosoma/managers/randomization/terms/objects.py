@@ -181,25 +181,32 @@ def randomize_object_rigid_body_material_startup(
             return
         gym = simulator.gym
         idx_cpu = idx.to(device="cpu", dtype=torch.long)
-        # One keyed value per env per requested channel (distinct int stream coord), written to the
-        # object's shapes. A None channel is left at the spawned value. friction -> single sliding
-        # coeff (stream 0); restitution -> native per-shape restitution (stream 1). Per-env -> [E].
-        fric = sampler.draw(ig_cfg.friction, env_ids=idx_cpu, coords=(0,)) if ig_cfg.friction is not None else None
+        # One keyed value per (env, object) per requested channel (distinct int stream coord),
+        # written to the object's shapes — per-object like the mass/inertia branches, so objects
+        # within one env get independent materials (matching MuJoCo/IsaacSim's within-env variety).
+        # A None channel is left at the spawned value. friction -> single sliding coeff (stream 0);
+        # restitution -> native per-shape restitution (stream 1). -> [E, n_names].
+        obj_ids = torch.arange(len(names))[None, :]
+        fric = (
+            sampler.draw(ig_cfg.friction, env_ids=idx_cpu, coords=(0, obj_ids)) if ig_cfg.friction is not None else None
+        )
         rest = (
-            sampler.draw(ig_cfg.restitution, env_ids=idx_cpu, coords=(1,)) if ig_cfg.restitution is not None else None
+            sampler.draw(ig_cfg.restitution, env_ids=idx_cpu, coords=(1, obj_ids))
+            if ig_cfg.restitution is not None
+            else None
         )
         if fric is None and rest is None:
             return
         for offset, env_id in enumerate(idx_cpu.tolist()):
             env_ptr = simulator.envs[env_id]
-            for name in names:
+            for name_off, name in enumerate(names):
                 actor = simulator.object_handles[name][env_id]
                 shape_props = gym.get_actor_rigid_shape_properties(env_ptr, actor)
                 for prop in shape_props:
                     if fric is not None:
-                        prop.friction = float(fric[offset])
+                        prop.friction = float(fric[offset, name_off])
                     if rest is not None:
-                        prop.restitution = float(rest[offset])
+                        prop.restitution = float(rest[offset, name_off])
                 gym.set_actor_rigid_shape_properties(env_ptr, actor, shape_props)
         return
 
@@ -288,9 +295,8 @@ def randomize_object_rigid_body_mass_startup(
     Cross-backend (IsaacSim / IsaacGym / MuJoCo Warp GPU + Classic CPU); the offset is sampled
     from ``mass_distribution_params`` and ADDED, identically on every backend. Scene objects are
     single rigid bodies (no articulated-object support), so "per (env, object)" and "per body" are
-    the same draw — should multi-body objects ever be supported, every body of an object would still
-    receive that object's one offset. Targets every registered free body by default; pass
-    ``object_names`` to narrow it. No-ops on a robot-only scene. MuJoCo Classic CPU is single-env.
+    the same draw. Targets every registered free body by default; pass ``object_names`` to narrow
+    it. No-ops on a robot-only scene. MuJoCo Classic CPU is single-env.
 
     ``recompute_inertia`` (default True): when True, each body's inertia is rescaled by the SAME
     factor its mass changed by (``m_after / m_before``), identically on all backends (explicit
@@ -333,7 +339,9 @@ def randomize_object_rigid_body_mass_startup(
                 delta = float(offsets[env_off, name_off])  # add operation, matches the other backends
                 for prop in body_props:
                     m_before = prop.mass
-                    prop.mass = m_before + delta
+                    # Clamp like the IsaacSim helper (min_mass=1e-6): a signed band on a light body
+                    # must not produce a non-positive mass (which would also flip the inertia sign).
+                    prop.mass = max(m_before + delta, 1e-6)
                     if recompute_inertia and m_before > 0.0:
                         # Explicit per-body mass-ratio scale (NOT recomputeInertia=True, which would
                         # recompute from geometry — a different result that also clobbers a prior
@@ -396,7 +404,14 @@ def randomize_object_rigid_body_mass_startup(
                 # Resolve by ID (URDF descendant bodies are often unnamed) — mirrors the geom path.
                 entity_ids=body_ids_t,
                 operation="add",
+                # One offset per object, shared by all its bodies (matches the IsaacGym branch,
+                # which adds one delta to every body of the actor).
+                shared_across_entities=True,
             )
+            # Clamp like the Isaac paths (min_mass=1e-6): a signed band on a light body must not
+            # leave a non-positive mass in the model.
+            mass_view = _field_view(simulator, "body_mass")
+            mass_view[:, body_ids_t] = mass_view[:, body_ids_t].clamp(min=1e-6)
             if recompute_inertia:
                 scale_inertia_by_mass_ratio(simulator, body_ids_t, mass_before)
         return
@@ -566,6 +581,8 @@ def randomize_object_rigid_body_inertia_startup(
                 # Resolve by ID (URDF descendant bodies are often unnamed) — mirrors the geom path.
                 entity_ids=torch.tensor(body_ids, device=simulator.sim_device, dtype=torch.long),
                 operation="scale",
+                # One scale per object, shared by all its bodies (matches the IsaacGym branch).
+                shared_across_entities=True,
             )
         return
 
@@ -607,9 +624,8 @@ def _isaacsim_randomize_body_damping(
     the edit on the next step. ``axis`` is "linear" or "angular". Unlike the mass/com/inertia paths,
     this writes the USD attr directly, drawing through the bound ``sampler`` AND reproducibly.
 
-    The stage is traversed ONCE into a path-keyed index of API-bearing prims (rather than re-walking
-    the full stage for every (name, env) pair), so the cost is linear in the stage size, not
-    quadratic in the env count.
+    The stage is traversed ONCE into a list of API-bearing prims (rather than re-walking the full
+    stage for every (name, env) pair); the per-(name, env) work then scans only that list.
     """
     import omni.usd
     from pxr import PhysxSchema
@@ -841,9 +857,14 @@ def jitter_object_pose_on_reset(
     if idx.numel() == 0:
         return
 
-    # Only INDIVIDUAL (free) bodies are jitterable; never write a static body's pose.
+    # Only INDIVIDUAL (free) bodies are jitterable; never write a static body's pose. An explicitly
+    # requested static name is a config mistake — warn instead of silently skipping it.
     static = set(env.simulator.object_registry.get_names_by_type(ObjectType.SCENE))
-    names = [n for n in _resolve_object_names(env, object_names) if n not in static]
+    resolved = _resolve_object_names(env, object_names)
+    dropped_static = [n for n in resolved if n in static]
+    if dropped_static and object_names is not None:
+        logger.warning(f"pose jitter skips static (SCENE) bodies: {dropped_static}")
+    names = [n for n in resolved if n not in static]
     if not names:
         return
 
