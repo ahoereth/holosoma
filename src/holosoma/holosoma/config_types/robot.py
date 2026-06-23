@@ -72,11 +72,6 @@ class RobotForceControlConfig:
 
 
 @dataclass(frozen=True)
-class ObjectConfig:
-    object_urdf_path: str | None = None
-
-
-@dataclass(frozen=True)
 class RobotConfig:
     num_bodies: int
     dof_obs_size: int
@@ -118,9 +113,6 @@ class RobotConfig:
 
     control: RobotControlConfig
     asset: RobotAssetConfig
-
-    # TODO(jchen): talk to SAM, merge this into scene config
-    object: ObjectConfig = field(default_factory=ObjectConfig)
 
     bridge: RobotBridgeConfig = field(default_factory=RobotBridgeConfig)
     """Bridge SDK configuration for this robot."""
