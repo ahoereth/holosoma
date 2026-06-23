@@ -12,8 +12,8 @@ shape IsaacSim supports — it loads USD and URDF:
   - 1->N scene file, file-default types    (multibody, USD path)
   - 1->N scene file, per-object override   (multibody-override, USD path)
 
-Marked ``isaacsim`` so the IsaacSim CI job (``-m "isaacsim"``) collects it; the IsaacGym
-job (``-m "not isaacsim"``) skips it. ``importorskip("isaaclab")``/CUDA-gated so direct/
+Marked ``isaacsim`` so only the IsaacSim CI job (``-m isaacsim``) collects it.
+``importorskip("isaaclab")``/CUDA-gated so direct/
 unfiltered runs skip cleanly where IsaacSim is absent. The harness asserts free bodies
 fall, static bodies hold, get_actor_states shape, and (scene files) the body-to-body offset.
 """
