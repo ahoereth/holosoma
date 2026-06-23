@@ -331,13 +331,17 @@ class VirtualGantry:
         """
         env_id = 0  # Virtual gantry only supports single environment
 
+        # applied_forces (xfrc_applied) is full-model-width (raw MuJoCo body ids),
+        # but link_id is a 0-based body_names index. Map through body_ids.
+        mj_body_id = self.sim.body_ids[link_id]
+
         if isinstance(self.sim.applied_forces, torch.Tensor):
-            # WarpBackend: GPU tensor with env dimension [num_envs, num_bodies, 6]
+            # WarpBackend: GPU tensor with env dimension [num_envs, model.nbody, 6]
             force_tensor = torch.from_numpy(force).float().to(self.sim.device)
-            self.sim.applied_forces[env_id, link_id, :3] = force_tensor
+            self.sim.applied_forces[env_id, mj_body_id, :3] = force_tensor
         else:
-            # ClassicBackend: CPU numpy array without env dimension [num_bodies, 6]
-            self.sim.applied_forces[link_id, :3] = force
+            # ClassicBackend: CPU numpy array without env dimension [model.nbody, 6]
+            self.sim.applied_forces[mj_body_id, :3] = force
 
     def _clear_forces_mujoco(self) -> None:
         """Clear forces in MuJoCo (WarpBackend only - ClassicBackend doesn't need it).
@@ -354,7 +358,9 @@ class VirtualGantry:
         if isinstance(self.sim.applied_forces, torch.Tensor):
             # WarpBackend: Clear GPU tensor for this body only
             # Zero out both forces [0:3] and torques [3:6] for completeness
-            self.sim.applied_forces[env_id, self.body_link_id, :] = 0.0
+            # Map 0-based body_names index to full-model xfrc layout via body_ids.
+            mj_body_id = self.sim.body_ids[self.body_link_id]
+            self.sim.applied_forces[env_id, mj_body_id, :] = 0.0
         # ClassicBackend (numpy array): Do nothing
         # MuJoCo automatically zeros xfrc_applied each step, so no explicit clearing needed
 
@@ -373,7 +379,14 @@ class VirtualGantry:
         """
         from isaacgym import gymapi, gymtorch
 
-        force_tensor = torch.zeros(self.sim.num_envs, self.sim.num_bodies, 3, device=self.sim.device)
+        # The force tensor must span the FULL per-env rigid-body buffer (robot + any
+        # scene bodies) because apply_rigid_body_force_tensors writes every rigid body.
+        # link_id is a robot body index (< num_bodies); it addresses the correct row
+        # since the robot occupies the first rows.
+        # Unlike _apply_force_mujoco / _apply_force_isaacsim, which map link_id through
+        # self.sim.body_ids, the IsaacGym per-env buffer is already indexed by robot body
+        # index, so no body_ids mapping is applied here.
+        force_tensor = torch.zeros(self.sim.num_envs, self.sim.bodies_per_env, 3, device=self.sim.device)
         force_tensor[:, link_id, :] = torch.tensor(force, device=self.sim.device, dtype=torch.float32)
 
         # Apply force directly at center of mass (matches MuJoCo behavior)
