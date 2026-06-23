@@ -18,7 +18,7 @@ PLATFORM_MAP = {
 _SUPPORTED_PY_TAGS = {(3, 8), (3, 10), (3, 11), (3, 12)}
 _py = (sys.version_info.major, sys.version_info.minor)
 if _py not in _SUPPORTED_PY_TAGS:
-    _supported = ", ".join(f"{maj}.{min}" for maj, min in sorted(_SUPPORTED_PY_TAGS))
+    _supported = ", ".join(f"{maj}.{minor}" for maj, minor in sorted(_SUPPORTED_PY_TAGS))
     raise RuntimeError(
         f"holosoma_inference[unitree,booster] has no prebuilt SDK wheel for "
         f"Python {_py[0]}.{_py[1]}. Supported versions: {_supported}."
