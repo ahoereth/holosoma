@@ -593,16 +593,15 @@ class MuJoCo(BaseSimulator):
         }
 
     def _collect_spawned_actors(self):
-        """MuJoCo stores WORLD poses. The robot's config pose is left as-is (env_origins are
-        applied by the task layer at reset). Every scene object — free OR static — is described
-        at its true per-env world pose with env_origins added, so it spreads across envs;
-        prepare_sim places each from that pose via its own mechanism (free: freejoint qpos;
-        static: model body_pos, since a welded body has no qpos). A scene-file body's composed
-        in-file pose already lives in the compiled model. Velocity is None for fixed/scene-file
-        bodies.
+        """MuJoCo stores WORLD poses. Every actor, the robot included, is described at its
+        per-env world pose with env_origins added (the uniform get_actor_initial_poses frame);
+        prepare_sim places each scene object from that pose via its own mechanism (free:
+        freejoint qpos; static: model body_pos, since a welded body has no qpos), while the
+        robot is placed by the task layer at reset. A scene-file body's composed in-file pose
+        already lives in the compiled model. Velocity is None for fixed/scene-file bodies.
         """
         robot_pose = self._object_pose(
-            self.robot_config.init_state.pos, self.robot_config.init_state.rot, add_origins=False
+            self.robot_config.init_state.pos, self.robot_config.init_state.rot, add_origins=True
         )
 
         items = [
@@ -822,7 +821,7 @@ class MuJoCo(BaseSimulator):
 
         # Robot + individual free bodies (objects already attached in load_assets, so the
         # spawn hook is a no-op; this only does the registry bookkeeping + poses).
-        self.register_scene_assets()
+        self._register_scene_assets()
 
         # Calculate indices for robot freejoint components
         robot_qpos_addr = self.object_addrs["robot"]["qpos_addr"]
