@@ -54,7 +54,7 @@ from holosoma_service.policy_control.injected_inputs import (
     STATE_INPUT_TOPIC,
     InjectedRos2Input,
 )
-from holosoma_service.policy_control.sensors import Ros2DepthSensor
+from holosoma_service.policy_control.sensors import Ros2DepthConsumer
 
 DENSE_TOPIC = "/holosoma/dense_tracking_command"
 EXECUTED_CMD_TOPIC = "/holosoma/holosoma_executed_cmd"
@@ -87,9 +87,16 @@ class ServiceIONode(Node):
 
         # --- Sensors: keyed by name, injected into the policy before __init__ ---
         self.sensors: dict[str, Sensor] = {}
-        depth_topics = getattr(task_config, "depth_image_topics", ()) if task_config else ()
-        if depth_topics:
-            self.sensors["depth"] = Ros2DepthSensor(self, topics=list(depth_topics))
+        depth_cfg = getattr(task_config, "depth", None) if task_config else None
+        if depth_cfg is not None and depth_cfg.topics:
+            self.sensors["depth"] = Ros2DepthConsumer(
+                self,
+                topics=list(depth_cfg.topics),
+                resized_height=depth_cfg.resized_height,
+                resized_width=depth_cfg.resized_width,
+                near_clip=depth_cfg.near_clip,
+                far_clip=depth_cfg.far_clip,
+            )
 
         # --- Input: dense tracking target (WBT only); attached on demand ---
         self._cmd = np.zeros((1, 2 * num_dofs), dtype=np.float32)  # held until first frame

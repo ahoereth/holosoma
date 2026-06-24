@@ -27,6 +27,34 @@ class DebugConfig:
 
 
 @dataclass(frozen=True)
+class Ros2DepthConsumerConfig:
+    """Config for the ROS2 depth-image consumer (``Ros2DepthConsumer``).
+
+    Defaults match the on-robot image_server preprocessing the policy was
+    trained against. Leave ``topics`` empty to disable the depth sensor.
+    """
+
+    topics: tuple[str, ...] = ()
+    """Raw depth topic(s) (``sensor_msgs/Image``, encoding ``32FC1``, metric
+    meters). Empty disables the sensor. One per camera, in stack order (front
+    first, back second). Multi-camera frames are time-synchronized; the policy
+    reads a preprocessed ``(N, 1, resized_height, resized_width)`` stack via
+    ``self._injected_sensors["depth"].get_latest()``."""
+
+    resized_height: int = 27
+    """Target height (bicubic resize) before clip+normalize."""
+
+    resized_width: int = 48
+    """Target width (bicubic resize) before clip+normalize."""
+
+    near_clip: float = 0.1
+    """Near clip (m); depth is normalized to [-0.5, 0.5] over [near, far]."""
+
+    far_clip: float = 2.0
+    """Far clip (m); depth is normalized to [-0.5, 0.5] over [near, far]."""
+
+
+@dataclass(frozen=True)
 class TaskConfig:
     """Task execution configuration for policy inference."""
 
@@ -59,13 +87,8 @@ class TaskConfig:
     interface: str = "auto"
     """Network interface name. Use ``"auto"`` to auto-detect, or specify explicitly (e.g. ``"eth0"``)."""
 
-    depth_image_topics: tuple[str, ...] = ()
-    """ROS2 topic(s) for depth image input (``sensor_msgs/Image``, encoding ``32FC1``).
-    Empty disables the depth sensor. One topic per camera, in stack order
-    (front first, back second). When set, the service node creates a
-    ``Ros2DepthSensor`` (multi-camera frames are time-synchronized) and injects
-    it; the policy reads a ``(N, 1, H, W)`` stack via
-    ``self._injected_sensors["depth"].get_latest()``."""
+    depth: Ros2DepthConsumerConfig = Ros2DepthConsumerConfig()
+    """Depth-image consumer config (empty ``topics`` disables it)."""
 
     velocity_input: InputSource = DEFAULT_VELOCITY_INPUT
     """Source for velocity commands."""
