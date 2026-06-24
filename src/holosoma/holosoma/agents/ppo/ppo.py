@@ -80,7 +80,7 @@ class EmpiricalNormalization(nn.Module):
             global_sum_shifted, global_sum_sq_shifted = stats_to_sync
 
             batch_mean_shifted = global_sum_shifted / global_batch_size
-            batch_var = global_sum_sq_shifted / global_batch_size - batch_mean_shifted.pow(2)
+            batch_var = (global_sum_sq_shifted / global_batch_size - batch_mean_shifted.pow(2)).clamp_min(0.0)
             batch_mean = batch_mean_shifted + self._mean
         else:
             global_batch_size = x.shape[0]
@@ -96,7 +96,7 @@ class EmpiricalNormalization(nn.Module):
         m_a = self._var * self.count
         m_b = batch_var * global_batch_size
         M2 = m_a + m_b + delta2.pow(2) * (self.count * global_batch_size / new_count)
-        self._var.copy_(M2 / new_count)
+        self._var.copy_((M2 / new_count).clamp_min(0.0))
         self._std.copy_(self._var.sqrt())
         self.count.copy_(new_count)
 
@@ -807,7 +807,7 @@ class PPO(BaseAlgo):
 
         global_mean = local_stats[0] / self.gpu_world_size
         global_sq_mean = local_stats[1] / self.gpu_world_size
-        global_variance = global_sq_mean - global_mean**2
+        global_variance = (global_sq_mean - global_mean**2).clamp_min(0.0)
         global_std = torch.sqrt(global_variance + 1e-8)
 
         return (advantages - global_mean) / global_std
