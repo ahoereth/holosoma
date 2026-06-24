@@ -48,11 +48,13 @@ from sensor_msgs.msg import JointState
 from holosoma_inference.config.config_values.inference import get_annotated_inference_config
 from holosoma_inference.config.utils import TYRO_CONFIG
 from holosoma_inference.policies.dual_mode import DualModePolicy, _select_policy_class
+from holosoma_inference.sensors.base import Sensor
 from holosoma_service.policy_control.injected_inputs import (
     CMD_VEL_TOPIC,
     STATE_INPUT_TOPIC,
     InjectedRos2Input,
 )
+from holosoma_service.policy_control.sensors import Ros2DepthSensor
 
 DENSE_TOPIC = "/holosoma/dense_tracking_command"
 EXECUTED_CMD_TOPIC = "/holosoma/holosoma_executed_cmd"
@@ -75,13 +77,18 @@ class ServiceIONode(Node):
     on one node, spun once.
     """
 
-    def __init__(self, num_dofs: int, vel_timeout: float = 1.0):
+    def __init__(self, num_dofs: int, vel_timeout: float = 1.0, task_config=None):
         super().__init__("policy_service")
         # --- Input: one combined vel+state provider (subscribes on THIS node) ---
         # A single object implements both protocols, mirroring Ros2Input, so the
         # base policy can share it for both roles when velocity_input ==
         # state_input == "injected".
         self.input = InjectedRos2Input(self, CMD_VEL_TOPIC, STATE_INPUT_TOPIC, vel_timeout=vel_timeout)
+
+        # --- Sensors: keyed by name, injected into the policy before __init__ ---
+        self.sensors: dict[str, Sensor] = {}
+        if task_config is not None and getattr(task_config, "depth_image_topic", None):
+            self.sensors["depth"] = Ros2DepthSensor(self, topic=task_config.depth_image_topic)
 
         # --- Input: dense tracking target (WBT only); attached on demand ---
         self._cmd = np.zeros((1, 2 * num_dofs), dtype=np.float32)  # held until first frame
@@ -155,6 +162,8 @@ def _new_with_injected(cls, config, io: ServiceIONode):
     p = object.__new__(cls)
     p._injected_velocity_input = io.input
     p._injected_command_provider = io.input
+    if io.sensors:
+        p._injected_sensors = io.sensors
     p.__init__(config=config)
     return p
 
@@ -257,7 +266,7 @@ def main() -> None:
     config = _apply_noninteractive_defaults(config)
 
     # One node owns every subscription + publisher.
-    io = ServiceIONode(config.robot.num_joints, vel_timeout=config.task.ros_vel_timeout)
+    io = ServiceIONode(config.robot.num_joints, vel_timeout=config.task.ros_vel_timeout, task_config=config.task)
 
     # Build the policy with node-owned injected vel/state providers.
     policy = _build_policy(config, io)
