@@ -59,10 +59,12 @@ class TaskConfig:
     interface: str = "auto"
     """Network interface name. Use ``"auto"`` to auto-detect, or specify explicitly (e.g. ``"eth0"``)."""
 
-    depth_image_topic: str | None = None
-    """ROS2 topic for depth image input (``sensor_msgs/Image``, encoding ``32FC1``).
-    ``None`` disables the depth sensor. When set, the service node creates a
-    ``DepthSensor`` and injects it; the policy reads it via
+    depth_image_topics: tuple[str, ...] = ()
+    """ROS2 topic(s) for depth image input (``sensor_msgs/Image``, encoding ``32FC1``).
+    Empty disables the depth sensor. One topic per camera, in stack order
+    (front first, back second). When set, the service node creates a
+    ``Ros2DepthSensor`` (multi-camera frames are time-synchronized) and injects
+    it; the policy reads a ``(N, 1, H, W)`` stack via
     ``self._injected_sensors["depth"].get_latest()``."""
 
     velocity_input: InputSource = DEFAULT_VELOCITY_INPUT

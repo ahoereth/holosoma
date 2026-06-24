@@ -87,8 +87,9 @@ class ServiceIONode(Node):
 
         # --- Sensors: keyed by name, injected into the policy before __init__ ---
         self.sensors: dict[str, Sensor] = {}
-        if task_config is not None and getattr(task_config, "depth_image_topic", None):
-            self.sensors["depth"] = Ros2DepthSensor(self, topic=task_config.depth_image_topic)
+        depth_topics = getattr(task_config, "depth_image_topics", ()) if task_config else ()
+        if depth_topics:
+            self.sensors["depth"] = Ros2DepthSensor(self, topics=list(depth_topics))
 
         # --- Input: dense tracking target (WBT only); attached on demand ---
         self._cmd = np.zeros((1, 2 * num_dofs), dtype=np.float32)  # held until first frame
