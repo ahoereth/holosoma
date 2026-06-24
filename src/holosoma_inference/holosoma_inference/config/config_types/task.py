@@ -48,6 +48,11 @@ class TaskConfig:
     gait_period: float = 1.0
     """Gait cycle period in seconds."""
 
+    skip_stiff_prompt: bool = False
+    """WBT: skip the blocking stdin prompt before entering stiff hold and enter
+    immediately. Default False keeps the interactive 'Press Enter to continue'
+    safety pause; non-interactive launches (e.g. the ROS2 service node) set True."""
+
     domain_id: int = 0
     """DDS domain ID for communication."""
 

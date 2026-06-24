@@ -104,6 +104,10 @@ class WholeBodyTrackingPolicy(BasePolicy):
 
         if hasattr(self, "_shared_hardware_source"):
             logger.info(colored("Skipping stiff hold prompt (secondary policy)", "yellow"))
+        elif self.config.task.skip_stiff_prompt:
+            # Non-interactive launches (service node, eval) skip the blocking
+            # stdin gate and enter stiff hold immediately (config default True).
+            logger.info(colored("✓ Entering stiff hold mode (skip_stiff_prompt)", "green"))
         elif sys.stdin.isatty():
             logger.info(colored("\n⚠️  Ready to enter stiff hold mode", "yellow", attrs=["bold"]))
             logger.info(colored("Press Enter to continue...", "yellow"))
@@ -390,7 +394,7 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 self.curr_motion_timestep += 1
 
             if self.curr_motion_timestep != prev:
-                self.logger.info(f"Motion timestep: {prev} → {self.curr_motion_timestep}")
+                self.logger.debug(f"Motion timestep: {prev} → {self.curr_motion_timestep}")
 
             # Stop motion clip at configured end timestep (keep policy running at final pose)
             if (end := self.config.task.motion_end_timestep) and self.curr_motion_timestep >= end:

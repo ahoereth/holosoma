@@ -224,6 +224,19 @@ def _use_mp_sdk(config):
     return config
 
 
+def _apply_noninteractive_defaults(config):
+    """Flip WBT task knobs that only make sense for an interactive console.
+
+    The service node has no TTY, so the stiff-hold ``input()`` prompt would
+    hang it; skip it. Per-tick DEBUG logs are suppressed naturally because
+    the service node runs at the loguru default level (INFO).
+    """
+    config = replace(config, task=replace(config.task, skip_stiff_prompt=True))
+    if config.secondary is not None:
+        config = replace(config, secondary=_apply_noninteractive_defaults(config.secondary))
+    return config
+
+
 def main() -> None:
     # Under `ros2 launch` / `ros2 run`, argv carries ROS args (e.g.
     # "--ros-args -r __node:=..."). tyro would reject those, so strip them
@@ -238,6 +251,10 @@ def main() -> None:
     # Route the Unitree SDK through its multiprocess proxy so its CycloneDDS
     # never shares this process's rclpy (otherwise SDK init heap-corrupts).
     config = _use_mp_sdk(config)
+
+    # This node is non-interactive: skip the stiff-hold stdin prompt and quiet
+    # the per-tick motion-timestep log.
+    config = _apply_noninteractive_defaults(config)
 
     # One node owns every subscription + publisher.
     io = ServiceIONode(config.robot.num_joints, vel_timeout=config.task.ros_vel_timeout)
