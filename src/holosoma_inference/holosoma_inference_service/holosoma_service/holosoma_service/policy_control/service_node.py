@@ -250,11 +250,25 @@ def main() -> None:
     # Under `ros2 launch` / `ros2 run`, argv carries ROS args (e.g.
     # "--ros-args -r __node:=..."). tyro would reject those, so strip them
     # before parsing this node's own CLI; rclpy.init() consumes them separately.
+    import argparse
+
     from rclpy.utilities import remove_ros_args
 
     sys.argv = remove_ros_args(args=sys.argv)
 
+    # Pre-parse --secondary none (mirrors run_policy.py behaviour).
+    # tyro cannot natively disable a preset-provided Optional field via CLI,
+    # so we strip the flag before tyro sees it and null-out afterwards.
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    pre.add_argument("--secondary", default=None, help="Set to 'none' to disable dual-mode.")
+    known, remaining = pre.parse_known_args()
+    disable_secondary = known.secondary is not None and known.secondary.lower() == "none"
+    sys.argv = [sys.argv[0]] + remaining
+
     config = tyro.cli(get_annotated_inference_config(), config=TYRO_CONFIG)
+
+    if disable_secondary:
+        config = replace(config, secondary=None)
     rclpy.init()
 
     # Route the Unitree SDK through its multiprocess proxy so its CycloneDDS
