@@ -256,9 +256,11 @@ def main() -> None:
 
     sys.argv = remove_ros_args(args=sys.argv)
 
+    # TODO: clean up stacking argparse on top of tyro.cli
     # Pre-parse --secondary none (mirrors run_policy.py behaviour).
-    # tyro cannot natively disable a preset-provided Optional field via CLI,
-    # so we strip the flag before tyro sees it and null-out afterwards.
+    # tyro cannot natively set a preset-populated Optional[X] back to None via
+    # CLI — it generates nested subcommands for the default's fields with no
+    # "disable" toggle. argparse pre-parse is the same workaround run_policy uses.
     pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--secondary", default=None, help="Set to 'none' to disable dual-mode.")
     known, remaining = pre.parse_known_args()
