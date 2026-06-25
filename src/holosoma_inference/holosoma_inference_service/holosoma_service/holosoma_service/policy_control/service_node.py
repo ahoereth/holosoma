@@ -164,6 +164,11 @@ def _new_with_injected(cls, config, io: ServiceIONode):
     p._injected_command_provider = io.input
     if io.sensors:
         p._injected_sensors = io.sensors
+    # Attach the node as the dense target source *before* __init__ so that
+    # setup_policy() can detect live-source mode and skip the NPZ requirement.
+    # WholeBodyTrackingPolicy uses ``if not hasattr(self, "_target_source")``
+    # to avoid clobbering a pre-set source, so this is the intended pattern.
+    p._target_source = io
     p.__init__(config=config)
     return p
 
