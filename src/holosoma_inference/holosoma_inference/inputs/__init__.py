@@ -23,8 +23,7 @@ def create_input(policy: BasePolicy, source: InputSource, role: str) -> VelCmdPr
         provider = getattr(policy, attr, None)
         if provider is None:
             raise ValueError(
-                f"input source 'injected' requires the owner to set policy.{attr} before init "
-                f"(role={role!r})."
+                f"input source 'injected' requires the owner to set policy.{attr} before init (role={role!r})."
             )
         return provider
 

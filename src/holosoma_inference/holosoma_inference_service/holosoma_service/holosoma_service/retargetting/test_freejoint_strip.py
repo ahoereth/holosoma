@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 import pytest
 
@@ -28,13 +29,13 @@ def _strip(text: str) -> str:
     return re.sub(r"\s*<freejoint[^>]*>.*?</freejoint>\s*", "\n", s, flags=re.DOTALL)
 
 
-@pytest.mark.skipif(not os.path.exists(_G1_XML), reason="shipped g1_29dof.xml not present")
+@pytest.mark.skipif(not Path(_G1_XML).exists(), reason="shipped g1_29dof.xml not present")
 def test_shipped_g1_has_freejoint():
     with open(_G1_XML, encoding="utf-8") as f:
         assert "<freejoint" in f.read(), "test fixture invalid: expected a freejoint in g1_29dof.xml"
 
 
-@pytest.mark.skipif(not os.path.exists(_G1_XML), reason="shipped g1_29dof.xml not present")
+@pytest.mark.skipif(not Path(_G1_XML).exists(), reason="shipped g1_29dof.xml not present")
 def test_strip_yields_fixed_base_29dof():
     mujoco = pytest.importorskip("mujoco")
     with open(_G1_XML, encoding="utf-8") as f:
