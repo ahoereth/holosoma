@@ -42,7 +42,7 @@ class Ros2DepthConsumer(Sensor):
     Preprocessing per camera (matches the on-robot image_server's
     ``_resize_clip_expand_transpose`` that the policy was trained against):
 
-    1. resize to ``(resized_height, resized_width)`` with bilinear interpolation
+    1. resize to ``(resized_height, resized_width)`` with area-averaging interpolation
     2. clip to ``[near_clip, far_clip]`` meters
     3. normalize to ``[-0.5, 0.5]``: ``(d - near) / (far - near) - 0.5``
 
@@ -129,10 +129,7 @@ class Ros2DepthConsumer(Sensor):
 
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
         """resize -> clip -> normalize to [-0.5, 0.5]. Returns (1, H, W) float32."""
-        # INTER_LINEAR (cv2.resize's default) to match the on-robot image_server the
-        # policy trained against: it passed INTER_CUBIC as the positional `dst` arg, so
-        # cubic was silently dropped and training actually saw linear-resized depth.
-        resized = cv2.resize(frame, (self._resized_width, self._resized_height), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(frame, (self._resized_width, self._resized_height), interpolation=cv2.INTER_AREA)
         clipped = np.clip(resized, self._near_clip, self._far_clip)
         normalized = (clipped - self._near_clip) / (self._far_clip - self._near_clip) - 0.5
         return normalized[np.newaxis, :, :].astype(np.float32)
