@@ -62,6 +62,31 @@ ros2_stereo = SensorEgressConfig(
     }
 )
 
+# One ROS2 node publishing the G1 waist forward/back depth cameras as raw float32-meter Image
+# (sensor_msgs/Image, 32FC1) plus latched CameraInfo. Pair with `sensors:g1-waist` (the
+# `waist_cameras` preset), which defines `waist_front_cam` / `waist_back_cam` as depth cameras.
+ros2_waist_depth = SensorEgressConfig(
+    instances={
+        "waist": ROS2ImageEgressConfig(
+            node_name="sim_cameras_waist",
+            routes={
+                "front": ROS2ImageRoute(
+                    camera="waist_front_cam",
+                    topic="/sim_cameras/waist_front/depth",
+                    modality="depth",
+                    format="32FC1",
+                ),
+                "back": ROS2ImageRoute(
+                    camera="waist_back_cam",
+                    topic="/sim_cameras/waist_back/depth",
+                    modality="depth",
+                    format="32FC1",
+                ),
+            },
+        )
+    }
+)
+
 # Visualize all configured cameras (every modality): record an mp4 at teardown. Pair with any
 # sensors preset; cameras=None watches them all. Add --sensor_egress.instances.viz.live_window True
 # for a live cv2 window instead of (or in addition to) the file.
@@ -75,6 +100,7 @@ DEFAULTS: dict[str, SensorEgressConfig] = {
     "none": none,
     "ros2-image": ros2_image,
     "ros2-stereo": ros2_stereo,
+    "ros2-waist-depth": ros2_waist_depth,
     "viz": viz,
     "ros2-stereo+viz": ros2_stereo_and_viz,
 }

@@ -13,6 +13,7 @@ from holosoma.config_values.wbt.g1.sensors import (
     head_and_wrist_cameras,
     stereo_head_and_wrist_cameras,
     stereo_head_cameras,
+    waist_cameras,
 )
 
 # No sensors (default)
@@ -48,6 +49,8 @@ DEFAULTS = {
     "g1-stereo": stereo_head_cameras,
     # Stereo head pair plus the two wrist grasp cameras.
     "g1-stereo-wrists": stereo_head_and_wrist_cameras,
+    # Waist-height forward/back depth cameras (waist_front_cam / waist_back_cam).
+    "g1-waist": waist_cameras,
     # Free-floating angled isometric overview camera looking at the scene center (640x480).
     "overview": overview_camera,
 }

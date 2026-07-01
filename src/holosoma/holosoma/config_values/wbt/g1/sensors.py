@@ -95,6 +95,40 @@ g1_cameras = SensorsConfig(
     },
 )
 
+# Waist-height depth cameras, one looking forward and one back, both on the torso_link frame whose
+# origin sits at the waist-pitch joint (z~=0 => waist height). Depth-only, for near-body obstacle
+# sensing / whole-body awareness fore and aft.
+waist_cameras = SensorsConfig(
+    cameras={
+        # forward = body +X, up = body +Z (level), just ahead of the torso.
+        "waist_front_cam": CameraSensorConfig(
+            mount=SensorMountConfig(
+                target_kind="robot_link",
+                target="torso_link",
+                position=[0.1, 0.0, 0.0],
+                orientation=[0.5, 0.5, -0.5, -0.5],
+            ),
+            width=128,
+            height=128,
+            data_types=["depth"],
+            update_decimation="50Hz",
+        ),
+        # forward = body -X, up = body +Z (level), just behind the torso (180deg yaw of the front).
+        "waist_back_cam": CameraSensorConfig(
+            mount=SensorMountConfig(
+                target_kind="robot_link",
+                target="torso_link",
+                position=[-0.1, 0.0, 0.0],
+                orientation=[0.5, 0.5, 0.5, 0.5],
+            ),
+            width=128,
+            height=128,
+            data_types=["depth"],
+            update_decimation="50Hz",
+        ),
+    },
+)
+
 head_and_wrist_cameras = SensorsConfig(cameras={**head_camera.cameras, **wrist_cameras.cameras})
 
 stereo_head_and_wrist_cameras = SensorsConfig(cameras={**stereo_head_cameras.cameras, **wrist_cameras.cameras})
