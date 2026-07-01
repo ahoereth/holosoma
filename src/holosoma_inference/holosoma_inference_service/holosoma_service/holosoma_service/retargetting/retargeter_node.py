@@ -15,12 +15,10 @@ from holosoma_msgs.msg import CmdDense, CmdSMPLH
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from holosoma_service.retargetting.smpl_retargeter import (
-    JOINT_NAMES,
-    NUM_JOINTS,
-    G1SmplRetargeter,
-    Retargeter,
-)
+from holosoma_service.retargetting import create_retargeter
+from holosoma_service.retargetting.smpl_retargeter import JOINT_NAMES, NUM_JOINTS, Retargeter
+
+DEFAULT_RETARGETER = "g1-smpl"
 
 IN_TOPIC = "/holosoma/smplh_command"
 OUT_TOPIC = "/holosoma/dense_tracking_command"
@@ -39,9 +37,9 @@ def _to_transforms(msg: CmdSMPLH) -> np.ndarray:
 
 
 class RetargeterNode(Node):
-    def __init__(self, urdf_path: str, rl_rate_hz: float, joint_names: list[str]):
+    def __init__(self, urdf_path: str, rl_rate_hz: float, joint_names: list[str], retargeter: str = DEFAULT_RETARGETER):
         super().__init__("holosoma_retargeter")
-        self._rt: Retargeter = G1SmplRetargeter(urdf_path=urdf_path, dt=1.0 / rl_rate_hz)
+        self._rt: Retargeter = create_retargeter(retargeter, urdf_path=urdf_path, dt=1.0 / rl_rate_hz)
         self._joint_names = joint_names
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._pub = self.create_publisher(CmdDense, OUT_TOPIC, qos)
@@ -77,9 +75,9 @@ def main(args=None) -> None:
     ros_argv = sys.argv if args is None else args
     cli_argv = remove_ros_args(args=ros_argv)[1:]  # drop argv[0]
 
-    def run(urdf_path: str, rl_rate_hz: float = 50.0):
+    def run(urdf_path: str, rl_rate_hz: float = 50.0, retargeter: str = DEFAULT_RETARGETER):
         rclpy.init(args=ros_argv)
-        node = RetargeterNode(urdf_path, rl_rate_hz, joint_names=[])
+        node = RetargeterNode(urdf_path, rl_rate_hz, joint_names=[], retargeter=retargeter)
         try:
             rclpy.spin(node)
         except KeyboardInterrupt:

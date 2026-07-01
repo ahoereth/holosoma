@@ -26,5 +26,10 @@ setup(
             "unitree_split_controller = holosoma_service.unitree_control.unitree_split_controller:_cli",
             "wasd_controller_node = holosoma_service.unitree_control.wasd_controller_node:main",
         ],
+        # Retargeter implementations, selectable at launch via retargeter:=<name>.
+        # Extensions register their own here (see FAR-pi holosoma_extensions).
+        "holosoma.retargeter": [
+            "g1-smpl = holosoma_service.retargetting.smpl_retargeter:G1SmplRetargeter",
+        ],
     },
 )

@@ -51,6 +51,7 @@ def generate_launch_description() -> LaunchDescription:
     preset = LaunchConfiguration("preset")
     rl_rate = LaunchConfiguration("rl_rate_hz")
     input_type = LaunchConfiguration("input_type")
+    retargeter = LaunchConfiguration("retargeter")
     velocity_input = LaunchConfiguration("velocity_input")
     state_input = LaunchConfiguration("state_input")
     interface = LaunchConfiguration("interface")
@@ -71,6 +72,12 @@ def generate_launch_description() -> LaunchDescription:
                 "urdf_path",
                 default_value="",
                 description="Fixed-base 29-DOF URDF for the retargeter IK. Required for input_type:=smplh.",
+            ),
+            DeclareLaunchArgument(
+                "retargeter",
+                default_value="g1-smpl",
+                description="Retargeter impl registered under the 'holosoma.retargeter' entry-point group. "
+                "Extensions can register their own and select it here.",
             ),
             DeclareLaunchArgument(
                 "preset",
@@ -113,7 +120,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="holosoma_service",
                 executable="retargeter_node",
                 name="retargeter",
-                arguments=["--urdf-path", urdf, "--rl-rate-hz", rl_rate],
+                arguments=["--urdf-path", urdf, "--rl-rate-hz", rl_rate, "--retargeter", retargeter],
                 output="screen",
                 condition=IfCondition(EqualsSubstitution(input_type, "smplh")),
             ),
