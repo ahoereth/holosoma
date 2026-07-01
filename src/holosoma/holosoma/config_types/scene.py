@@ -120,12 +120,11 @@ class IsaacSimPhysicsConfig:
 
 @dataclass(frozen=True, config=_FORBID_EXTRA)
 class MujocoPhysicsConfig:
-    """Geom-level (+ freejoint) physics properties for the MuJoCo simulator, set on an ``MjSpec``.
+    """MuJoCo geom-level physics, set on an ``MjSpec`` before compile.
 
-    Friction/solref/solimp/condim are geom attributes applied to a scene object's geoms before
-    compile. ``linear_damping``/``angular_damping`` set the object's freejoint DOF damping — the
-    MuJoCo analogue of PhysX velocity damping (a free body's translational/rotational velocity is
-    bled by ``dof_damping`` on its freejoint). ``None`` on any field keeps the asset's value.
+    These are geom attributes (friction/solref/solimp/condim) that apply to any body's geoms,
+    whether a free scene object or a robot link, so this config is shared across both entity kinds.
+    ``None`` on any field keeps the asset's value.
     """
 
     friction: list[float] | None = None
@@ -139,12 +138,6 @@ class MujocoPhysicsConfig:
 
     condim: int | None = None
     """Contact dimensionality (1/3/4/6). ``None`` keeps the asset's value."""
-
-    linear_damping: float | None = None
-    """Freejoint translational DOF damping (drag on linear velocity). ``None`` keeps 0."""
-
-    angular_damping: float | None = None
-    """Freejoint rotational DOF damping (drag on angular velocity). ``None`` keeps 0."""
 
 
 @dataclass(frozen=True, config=_FORBID_EXTRA)
@@ -276,12 +269,12 @@ class SceneFileConfig:
            body must match at least one include pattern to load.
 
         Patterns are ``fnmatch`` globs against the bare body name; a leading ``*/`` is
-        stripped so file-path-style patterns (``*/free_box``) match the same way
-        :meth:`resolve_fixed` / :meth:`resolve_physics` strip theirs.
+        stripped (:meth:`_normalize_pattern`, shared with the ``object_configs`` resolvers)
+        so file-path-style patterns (``*/free_box``) match the same everywhere.
         """
 
         def _matches_any(patterns: list[str]) -> bool:
-            return any(fnmatch.fnmatch(body_name, p[2:] if p.startswith("*/") else p) for p in patterns)
+            return any(fnmatch.fnmatch(body_name, self._normalize_pattern(p)) for p in patterns)
 
         if self.exclude_patterns and _matches_any(self.exclude_patterns):
             return False
@@ -290,6 +283,15 @@ class SceneFileConfig:
         if not self.include_patterns:
             return True
         return _matches_any(self.include_patterns)
+
+    @staticmethod
+    def _normalize_pattern(pattern: str) -> str:
+        """Strip a leading ``*/`` so file-path-style patterns match the bare body name.
+
+        The single normalization for include/exclude filtering AND ``object_configs`` matching,
+        so one pattern string means the same thing in both places.
+        """
+        return pattern[2:] if pattern.startswith("*/") else pattern
 
     def resolve_fixed(self, body_name: str, structural_default: bool) -> bool:
         """Whether ``body_name`` is static, applying any per-object config override.
@@ -300,7 +302,7 @@ class SceneFileConfig:
         non-None value overrides it. Shared by every backend so the rule is identical.
         """
         for pattern, obj_config in (self.object_configs or {}).items():
-            if obj_config.fixed is not None and fnmatch.fnmatch(body_name, pattern.replace("*/", "")):
+            if obj_config.fixed is not None and fnmatch.fnmatch(body_name, self._normalize_pattern(pattern)):
                 return obj_config.fixed
         return structural_default
 
@@ -313,7 +315,7 @@ class SceneFileConfig:
         IsaacSim, or MuJoCo — counterpart to :meth:`resolve_fixed` for the ``fixed`` field.
         """
         for pattern, obj_config in (self.object_configs or {}).items():
-            if obj_config.physics is not None and fnmatch.fnmatch(body_name, pattern.replace("*/", "")):
+            if obj_config.physics is not None and fnmatch.fnmatch(body_name, self._normalize_pattern(pattern)):
                 return obj_config.physics
         return None
 
@@ -325,7 +327,7 @@ class SceneFileConfig:
         by every backend; counterpart to :meth:`resolve_fixed` / :meth:`resolve_physics`.
         """
         for pattern, obj_config in (self.object_configs or {}).items():
-            if obj_config.position_offset is not None and fnmatch.fnmatch(body_name, pattern.replace("*/", "")):
+            if obj_config.position_offset is not None and fnmatch.fnmatch(body_name, self._normalize_pattern(pattern)):
                 return obj_config.position_offset
         return None
 
@@ -389,7 +391,8 @@ class SceneConfig:
     """Composition of scene assets for the simulator."""
 
     replicate_physics: bool = True
-    """Whether to reuse physics properties across duplicated assets."""
+    """Whether to reuse physics properties across duplicated assets (IsaacSim's env cloner only;
+    the other backends have no equivalent knob and ignore it)."""
 
     asset_root: str | None = None
     """Optional root directory for relative asset paths."""

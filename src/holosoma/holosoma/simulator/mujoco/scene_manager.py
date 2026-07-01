@@ -29,7 +29,7 @@ class ActorSpecMeta:
     robot DOFs by name alone.
 
     Names are the actor's *clean* (unprefixed) names; the compiled-model name is
-    ``prefix + name``. The root freejoint is excluded — it may be unnamed (e.g. t1's)
+    ``prefix + name``. The root freejoint is excluded (it may be unnamed, e.g. t1's)
     and is resolved structurally by ``_resolve_freejoint_addrs``.
     """
 
@@ -393,6 +393,11 @@ class MujocoSceneManager:
         # Require a single free body; capture its root-body name for addressing.
         root_body = self._ensure_single_root_body(robot_spec, robot_config.asset.robot_type, add_freejoint=True)
 
+        # Apply the robot's shared link_physics (geom material/density) to every link body via the
+        # same seam objects use, before attach/compile so it lands in root_model before put_model.
+        # No-op unless link_physics/overrides are configured.
+        self._apply_link_physics_to_robot(robot_spec, robot_config)
+
         # Capture the robot's element inventory before attach (see ActorSpecMeta).
         self.robot_spec_meta = self._capture_spec_meta(robot_spec, prefix, root_body)
 
@@ -401,11 +406,12 @@ class MujocoSceneManager:
         self.world_spec.attach(robot_spec, frame=unit_frame, prefix=prefix)
 
         # Store the prefixed root-body name for the simulator's freejoint resolution. (Robot
-        # element membership / name maps come from robot_spec_meta, captured above — not a prefix.)
+        # element membership / name maps come from robot_spec_meta, captured above, not a prefix.)
         self.robot_root_body = f"{prefix}{root_body}"
 
     def add_rigid_object(
         self,
+        name: str,
         obj_config: RigidObjectConfig,
         supported_formats: list[str],
         xml_filter: MujocoXMLFilterCfg | None = None,
@@ -421,8 +427,10 @@ class MujocoSceneManager:
 
         Parameters
         ----------
+        name : str
+            Actor name (the ObjectRegistry key); used as the attach prefix.
         obj_config : RigidObjectConfig
-            Object configuration: name, asset file(s), pose, and ``fixed`` flag.
+            Object configuration: asset file(s), pose, and ``fixed`` flag.
         supported_formats : list[str]
             Asset formats this backend loads, in preference order (the simulator's
             ``get_supported_scene_formats()``).
@@ -434,7 +442,6 @@ class MujocoSceneManager:
         _fmt, asset_rel = select_asset_format(obj_config, supported_formats)
         # Resolve under the per-object asset_root, falling back to the scene's.
         asset_path = resolve_asset_path(asset_rel, obj_config.asset_root or scene_asset_root)
-        name = obj_config.name
         prefix = f"{name}_"
 
         logger.info(f"Adding rigid object '{name}' from: {asset_path} with prefix: {prefix}")
@@ -451,7 +458,7 @@ class MujocoSceneManager:
         # while the spec still holds only this object's elements.
         self._apply_physics_to_body(obj_spec.worldbody.bodies[0], obj_config.physics, name)
 
-        # Free objects attach at a unit (identity) frame — their world pose is set later
+        # Free objects attach at a unit (identity) frame; their world pose is set later
         # via the freejoint qpos. A static object has no qpos, so its pose must be baked
         # into the attach frame here (config orientation is wxyz, which MjSpec frames use).
         frame = self.world_spec.worldbody.add_frame()
@@ -465,6 +472,7 @@ class MujocoSceneManager:
 
     def add_scene_file(
         self,
+        scene_file_name: str,
         scene_file: SceneFileConfig,
         supported_formats: list[str],
         xml_filter: MujocoXMLFilterCfg | None = None,
@@ -475,15 +483,18 @@ class MujocoSceneManager:
         The whole file is attached once at the file's configured world pose, so MjSpec
         composes that pose with each body's authored relative pose (preserving inter-body
         offsets) into the compiled model. Each top-level worldbody body becomes its own
-        actor named ``{scene_file.name}_{body}``: a body with a free joint registers free
+        actor named ``{scene_file_name}_{body}``: a body with a free joint registers free
         (its composed world pose lives in its freejoint qpos0), a jointless body registers
         static (pose read from xpos). The per-body classification comes from the file's own
         structure, never from config.
 
         Parameters
         ----------
+        scene_file_name : str
+            File-scope namespace (the SceneConfig.scene_files key); registered bodies are
+            ``{scene_file_name}_{body}``.
         scene_file : SceneFileConfig
-            Scene-file config: name (namespace), asset path(s), and world pose.
+            Scene-file config: asset path(s) and world pose.
         supported_formats : list[str]
             Asset formats this backend loads, in preference order (the simulator's
             ``get_supported_scene_formats()``).
@@ -494,41 +505,41 @@ class MujocoSceneManager:
         """
         fmt, asset_rel = select_asset_format(scene_file, supported_formats)
         asset_path = resolve_asset_path(asset_rel, scene_file.asset_root or scene_asset_root)
-        prefix = f"{scene_file.name}_"
+        prefix = f"{scene_file_name}_"
 
-        logger.info(f"Adding scene file '{scene_file.name}' from: {asset_path} ({fmt}) with prefix: {prefix}")
+        logger.info(f"Adding scene file '{scene_file_name}' from: {asset_path} ({fmt}) with prefix: {prefix}")
         spec = mujoco.MjSpec.from_file(asset_path)
         if xml_filter and getattr(xml_filter, "enable", False):
             spec = self._filter_worldbody(spec, xml_filter)
 
         bodies = list(spec.worldbody.bodies)
         if not bodies:
-            raise ValueError(f"Scene file '{scene_file.name}' ({asset_path}) has no top-level bodies.")
+            raise ValueError(f"Scene file '{scene_file_name}' ({asset_path}) has no top-level bodies.")
 
-        # Apply the include/exclude SUBSET filter (shared SceneFileConfig.should_include, identical
-        # on every backend). A dropped body is deleted from the spec BEFORE attach so it never
-        # reaches the compiled model — the whole file is attached at once, so there's no per-body
-        # skip after attach. Bodies that pass continue to classification below.
+        # Apply the include/exclude subset filter (shared SceneFileConfig.should_include, identical
+        # on every backend). A dropped body is deleted from the spec before attach so it never
+        # reaches the compiled model (the whole file is attached at once, so there's no per-body
+        # skip after attach). Bodies that pass continue to classification below.
         included = [b for b in bodies if scene_file.should_include(b.name)]
         for body in bodies:
             if body not in included:
                 spec.delete(body)
         if not included:
             raise ValueError(
-                f"Scene file '{scene_file.name}' ({asset_path}): include/exclude patterns selected "
+                f"Scene file '{scene_file_name}' ({asset_path}): include/exclude patterns selected "
                 f"no bodies (include={scene_file.include_patterns}, "
                 f"exclude={scene_file.exclude_patterns}; candidates={[b.name for b in bodies]})."
             )
 
         # Classify each top-level body: free joint => free, jointless => static (the file's
         # structure), with any per-object config override applied. The body is then made to
-        # match — a freejoint dropped from a forced-static body, or added to a forced-free
-        # one — so its joint state and registered type always agree.
+        # match (a freejoint dropped from a forced-static body, or added to a forced-free
+        # one) so its joint state and registered type always agree.
         body_is_static: dict[str, bool] = {}
         for body in included:
             if body.name in body_is_static:
                 raise ValueError(
-                    f"Scene file '{scene_file.name}' has duplicate top-level body '{body.name}'; "
+                    f"Scene file '{scene_file_name}' has duplicate top-level body '{body.name}'; "
                     "body names must be unique within a file."
                 )
             freejoint = next((j for j in body.joints if j.type == mujoco.mjtJoint.mjJNT_FREE), None)
@@ -539,7 +550,7 @@ class MujocoSceneManager:
                 body.add_freejoint()  # override: forced free -> give it a freejoint
             # Per-body physics override (shared resolve_physics rule, same as IsaacGym/IsaacSim),
             # applied to this body before the file is attached.
-            self._apply_physics_to_body(body, scene_file.resolve_physics(body.name), f"{scene_file.name}_{body.name}")
+            self._apply_physics_to_body(body, scene_file.resolve_physics(body.name), f"{scene_file_name}_{body.name}")
             # Per-body world-frame position offset. body.pos is relative to the attach frame, so
             # rotate the world offset into the frame's local space (conjugate of the file
             # orientation) before adding. Identity orientation => a plain add.
@@ -560,25 +571,34 @@ class MujocoSceneManager:
         self.world_spec.attach(spec, frame=frame, prefix=prefix)
 
         for body_name, is_static in body_is_static.items():
-            actor_name = f"{scene_file.name}_{body_name}"
+            actor_name = f"{scene_file_name}_{body_name}"
             self.scene_file_bodies[actor_name] = (f"{prefix}{body_name}", is_static)
 
-    def _apply_physics_to_body(self, body: mujoco.MjSpec.Body, physics: PhysicsConfig | None, name: str) -> None:
-        """Apply a per-object ``PhysicsConfig`` override onto an MjSpec body before compile.
+    def _apply_physics_to_body(
+        self, body: mujoco.MjSpec.Body, physics: PhysicsConfig | None, name: str, *, apply_mass: bool = True
+    ) -> None:
+        """Apply a ``PhysicsConfig`` onto an MjSpec body before compile. Shared by scene objects
+        and robot links.
 
-        Applies the cross-backend core (``mass`` kg / ``density`` kg/m³) plus MuJoCo's own
-        geom-level sub-config (``physics.mujoco``: friction/solref/solimp/condim). The other
-        engines' sub-configs (``physx``/``isaacgym``/``isaacsim``) do not apply to MuJoCo and
+        Applies the cross-backend core (``density`` kg/m³, and ``mass`` kg when ``apply_mass``) plus
+        MuJoCo's own geom-level sub-config (``physics.mujoco``: friction/solref/solimp/condim). The
+        other engines' sub-configs (``physx``/``isaacgym``/``isaacsim``) do not apply to MuJoCo and
         are ignored.
 
-        ``mass`` sets the body's explicit mass (``explicitinertial`` so MuJoCo keeps it rather
-        than recomputing from geom density); ``density`` and the geom props are applied to every
-        geom of the body. ``None`` on any field keeps the asset's authored value.
+        ``mass`` sets the body's explicit mass (``explicitinertial`` so MuJoCo keeps it rather than
+        recomputing from geom density); ``density`` and the geom props are applied to every geom of
+        the body. ``None`` on any field keeps the asset's authored value.
+
+        ``apply_mass=False`` skips the ``mass`` write. It is passed when applying the whole-robot
+        ``link_physics`` default to every link, where one mass on every link is meaningless (the
+        config validator forbids ``mass`` on that default; this is the matching guard at the apply
+        site). A per-link override that sets ``mass`` is applied with the default ``apply_mass=True``
+        on its single target body.
         """
         if physics is None:
             return
 
-        if physics.mass is not None:
+        if apply_mass and physics.mass is not None:
             body.mass = physics.mass
             body.explicitinertial = True
             logger.debug(f"Set explicit mass={physics.mass} on '{name}'")
@@ -596,6 +616,30 @@ class MujocoSceneManager:
                     geom.solimp = list(mj.solimp)
                 if mj.condim is not None:
                     geom.condim = mj.condim
+
+    def _apply_link_physics_to_robot(self, robot_spec: mujoco.MjSpec, robot_config: RobotConfig) -> None:
+        """Apply the robot's ``link_physics`` to every robot link body, before attach/compile.
+
+        Walks the robot spec's bodies (the same all-links traversal ``_configure_robot_collisions``
+        uses) and routes each through the shared :meth:`_apply_physics_to_body`, giving robot links
+        the same MuJoCo geom-material path scene objects get.
+
+        ``link_physics`` is the whole-robot ``body_names='.*'`` default, so it is applied with
+        ``apply_mass=False``: one mass on every link is meaningless (the config validator forbids
+        ``mass`` here; this is the matching guard at the apply site). No-op when ``link_physics`` is
+        unset.
+
+        Runs pre-compile, so this is baked into ``root_model`` before ``WarpBackend.put_model`` and
+        the captured CUDA step graph, avoiding the graph-orphan concern that affects runtime DR.
+        """
+        asset = robot_config.asset
+        if asset.link_physics is None:
+            return
+        worldbody_name = robot_spec.worldbody.name
+        for body in robot_spec.bodies:
+            if not body.name or body.name == worldbody_name:
+                continue
+            self._apply_physics_to_body(body, asset.link_physics, f"{asset.robot_type}/{body.name}", apply_mass=False)
 
     def _ensure_single_root_body(self, spec: mujoco.MjSpec, name: str, add_freejoint: bool = True) -> str:
         """Require a single top-level body; return its root-body name.

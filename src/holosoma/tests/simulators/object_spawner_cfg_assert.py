@@ -133,6 +133,81 @@ def _check_friction_symmetry(select_spawn_cfg) -> None:
     print("OK: URDF/USD friction symmetry — physics_material carried identically on both formats")
 
 
+def _check_robot_link_physics_cfg() -> None:
+    """Robot link_physics to spawn-cfg mapping and its gating, via the same converters objects use.
+
+    The robot is an articulation (not a RigidObject), so it builds its spawn cfg from the converter
+    functions directly (converters.physics_to_rigid_body_props / _collision_props / _mass_props) plus
+    object_spawner.physics_material_cfg, used by isaacsim._setup_scene / _bind_robot_link_material.
+    Checks at the cfg layer (no full sim):
+      - physx to RigidBodyPropertiesCfg (damping/velocity caps), and the robot's fixed=False contract;
+      - isaacsim collision offsets to CollisionPropertiesCfg (contact/rest offset, torsional patch);
+      - gating: collision_props is built only when the isaacsim sub-config is present (else None, so no
+        empty PhysxCollisionAPI stamp on every link); mass_props is built only when density (or mass) is set;
+      - friction/restitution and both combine modes to physics_material_cfg (the bound-material channel).
+    """
+    from holosoma.config_types.scene import IsaacSimPhysicsConfig, PhysicsConfig, PhysXPhysicsConfig
+    from holosoma.simulator.isaacsim.converters import (
+        physics_to_collision_props,
+        physics_to_mass_props,
+        physics_to_rigid_body_props,
+    )
+    from holosoma.simulator.isaacsim.object_spawner import physics_material_cfg
+
+    # A link_physics exercising every robot channel: physx, collision offsets, material with combines.
+    lp = PhysicsConfig(
+        density=250.0,
+        physx=PhysXPhysicsConfig(linear_damping=0.4, angular_damping=0.5, max_linear_velocity=12.0),
+        isaacsim=IsaacSimPhysicsConfig(
+            static_friction=0.6,
+            dynamic_friction=0.55,
+            restitution=0.2,
+            friction_combine_mode="max",
+            restitution_combine_mode="min",
+            contact_offset=0.005,
+            rest_offset=0.0025,
+            torsional_patch_radius=0.05,
+        ),
+    )
+
+    # physx to rigid props (robot is a free-base articulation: fixed=False, not kinematic).
+    rigid = physics_to_rigid_body_props(lp, fixed=False)
+    assert _approx(rigid.linear_damping, 0.4) and _approx(rigid.angular_damping, 0.5), "robot physx damping dropped"
+    assert _approx(rigid.max_linear_velocity, 12.0), "robot physx max_linear_velocity dropped"
+    assert rigid.kinematic_enabled is False, "robot rigid props must be free-base (kinematic_enabled False)"
+
+    # isaacsim offsets to collision props (contact/rest offset, torsional patch).
+    coll = physics_to_collision_props(lp)
+    assert _approx(coll.contact_offset, 0.005), f"robot contact_offset {coll.contact_offset} != 0.005"
+    assert _approx(coll.rest_offset, 0.0025), f"robot rest_offset {coll.rest_offset} != 0.0025"
+    assert _approx(coll.torsional_patch_radius, 0.05), "robot torsional_patch_radius dropped"
+
+    # density to mass props (mass stays None; the validator forbids mass on link_physics).
+    mass = physics_to_mass_props(lp)
+    assert mass is not None and _approx(mass.density, 250.0), "robot link_physics density dropped"
+    assert mass.mass is None, "robot mass_props must not carry mass (validator-forbidden on link_physics)"
+
+    # friction/restitution and both combine modes to material (the channel a per-shape value write can't carry).
+    mat = physics_material_cfg(lp)
+    assert mat is not None and _approx(mat.static_friction, 0.6) and _approx(mat.dynamic_friction, 0.55)
+    assert _approx(mat.restitution, 0.2), "robot material restitution dropped"
+    assert mat.friction_combine_mode == "max", "robot friction_combine_mode dropped"
+    assert mat.restitution_combine_mode == "min", "robot restitution_combine_mode dropped"
+
+    # Gating. isaacsim.py builds collision_props only when the isaacsim sub-config is present;
+    # mass_props only when density/mass set; material only when isaacsim set. The predicates are
+    # mirrored here so a flip is caught at the cfg layer.
+    physx_only = PhysicsConfig(physx=PhysXPhysicsConfig(linear_damping=0.1))
+    assert physics_to_mass_props(physx_only) is None, "physx-only must yield None mass_props (no density)"
+    assert physics_material_cfg(physx_only) is None, "physx-only must yield None material (no isaacsim sub-config)"
+    # The robot collision_props gate is `link_physics.isaacsim is not None` (isaacsim.py): physx-only
+    # means isaacsim is None, yielding None, so no empty PhysxCollisionAPI is stamped on every link.
+    assert physx_only.isaacsim is None, "physx-only sentinel: isaacsim sub-config must be None (gate input)"
+    none_mass = physics_to_mass_props(PhysicsConfig())
+    assert none_mass is None, "empty PhysicsConfig must yield None mass_props (byte-for-byte prior spawn)"
+    print("OK: robot link_physics -> rigid/collision/mass/material cfg mapping + gating verified")
+
+
 def _abs_asset(rel: str) -> str:
     import holosoma
 
@@ -152,50 +227,46 @@ def _check_scene_body_discovery() -> None:
     from holosoma.config_types.scene import SceneFileConfig
     from holosoma.simulator.isaacsim.object_spawner import (
         _discover_scene_body_prim_paths,
-        _select_standalone_source_prim,
+        resolve_asset_root,
     )
     from holosoma.simulator.isaacsim.prim_naming import distinguishing_names
 
     # AUTHORED: the file's enabled-RigidBodyAPI prims ARE the bodies (shipped multibody.usda).
     authored_path = _abs_asset(_MULTIBODY_USD)
-    sf = SceneFileConfig(name="scene", usd_path=authored_path)
+    sf = SceneFileConfig(usd_path=authored_path)
     stage = Usd.Stage.Open(authored_path)
-    authored = _discover_scene_body_prim_paths(stage, sf, authored_path)
+    authored = _discover_scene_body_prim_paths(stage, "scene", sf, authored_path)
     authored_names = sorted(distinguishing_names(authored).values())
     assert authored_names == ["free_box", "static_post"], f"authored discovery: {authored_names}"
 
     # UNAUTHORED + DEFAULT patterns: collapse to ONE body on the defaultPrim ('table'). The legs
     # are NOT split out — geometry is never inspected to guess a multi-body decomposition.
     un_path = _abs_asset(_UNAUTHORED_USD)
-    sf_default = SceneFileConfig(name="t", usd_path=un_path)
+    sf_default = SceneFileConfig(usd_path=un_path)
     un_stage = Usd.Stage.Open(un_path)
-    collapsed = _discover_scene_body_prim_paths(un_stage, sf_default, un_path)
+    collapsed = _discover_scene_body_prim_paths(un_stage, "t", sf_default, un_path)
     collapsed_names = sorted(distinguishing_names(collapsed).values())
     assert collapsed_names == ["table"], f"unauthored default-collapse: {collapsed_names}"
 
     # UNAUTHORED + EXPLICIT patterns: opt into the multi-body split — the geometry-owning leg
     # Xforms become candidate bodies ('table' has only Xform children, so it's NOT a candidate).
-    sf_explicit = SceneFileConfig(name="t", usd_path=un_path, include_patterns=["*/leg_*"])
-    promoted = _discover_scene_body_prim_paths(un_stage, sf_explicit, un_path)
+    sf_explicit = SceneFileConfig(usd_path=un_path, include_patterns=["*/leg_*"])
+    promoted = _discover_scene_body_prim_paths(un_stage, "t", sf_explicit, un_path)
     promoted_names = distinguishing_names(promoted)
     selected = sorted(n for p, n in promoted_names.items() if sf_explicit.should_include(n))
     assert selected == ["leg_a", "leg_b"], f"unauthored explicit-promote: {selected}"
 
-    # Standalone (1->1) single-body selector: one enabled rigid body -> that prim; none -> None
-    # (whole file, RigidBodyAPI stamped at spawn).
-    one = _select_standalone_source_prim(_abs_asset(_SMALL_BOX_USD), "pillar")
-    assert one == "/small_box", f"single-body selector: {one}"
-    none_sel = _select_standalone_source_prim(un_path, "table_obj")
-    assert none_sel is None, f"unauthored standalone must select whole file (None), got {none_sel}"
-
-    # >1 enabled rigid body in a single-object config must fail loud (multibody.usda has two).
-    multi_failed = False
-    try:
-        _select_standalone_source_prim(authored_path, "ambiguous")
-    except ValueError:
-        multi_failed = True
-    assert multi_failed, "single-object config pointed at a multi-body USD must raise"
-    print("OK: scene-body discovery (authored / collapse / promote) + single-body selector verified")
+    # Standalone (1->1) asset-root resolution references the enclosure (defaultPrim), not an
+    # interior physics prim, so geometry and materials always compose. It does not inspect
+    # RigidBodyAPI, so a multi-body USD resolves to its root (the spawn tail collapses to one
+    # body); the single-body contract is enforced downstream, not by target selection.
+    one = resolve_asset_root(_abs_asset(_SMALL_BOX_USD), "pillar")
+    assert one == "/small_box", f"asset-root (defaultPrim): {one}"
+    un_root = resolve_asset_root(un_path, "table_obj")
+    assert un_root == "/table", f"unauthored asset-root (defaultPrim 'table'): {un_root}"
+    multi_root = resolve_asset_root(authored_path, "ok")
+    assert multi_root == "/multibody", f"multi-body asset-root (defaultPrim, not a raise): {multi_root}"
+    print("OK: scene-body discovery (authored / collapse / promote) + asset-root resolution verified")
 
 
 def main() -> int:
@@ -217,6 +288,7 @@ def main() -> int:
         _check_format_symmetry(select_spawn_cfg, sim_utils)
         _check_friction_symmetry(select_spawn_cfg)
         _check_scene_body_discovery()
+        _check_robot_link_physics_cfg()
     except BaseException:
         print("SPAWNER CFG ASSERT FAILED:\n" + traceback.format_exc(), flush=True)
         simulation_app.close()
