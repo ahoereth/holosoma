@@ -60,6 +60,7 @@ from holosoma.config_types.scene import (
     SceneConfig,
     SceneFileConfig,
 )
+from holosoma.simulator.isaacgym.physics import apply_physx_asset_options
 from holosoma.simulator.shared.asset_format import select_asset_format
 from holosoma.utils.path import resolve_asset_path
 
@@ -545,20 +546,11 @@ class URDFSceneLoader:
 
         logger.debug(f"Applying physics config for '{object_name}'")
 
-        # Density is a core (cross-backend) field and a load-time AssetOption.
-        if physics_config.density is not None:
-            asset_config.density = physics_config.density
-            logger.debug(f"Set density={physics_config.density} for '{object_name}'")
-
-        # PhysX solver knobs (damping / velocity limits) live in the shared physx sub-config,
-        # which IsaacGym and IsaacSim interpret identically. None => keep AssetConfig defaults.
-        physx = physics_config.physx
-        if physx is not None:
-            asset_config.angular_damping = physx.angular_damping
-            asset_config.linear_damping = physx.linear_damping
-            asset_config.max_angular_velocity = physx.max_angular_velocity
-            asset_config.max_linear_velocity = physx.max_linear_velocity
-            logger.debug(f"Applied PhysX solver knobs for '{object_name}'")
+        # density + the PhysX solver knobs (damping / velocity limits) go through the same helper the
+        # robot path uses (physics.apply_physx_asset_options), so an object and a robot link map these
+        # load-time options identically. AssetConfig shares gymapi.AssetOptions' field names, so the
+        # helper writes onto it directly. None on density/physx keeps AssetConfig defaults.
+        apply_physx_asset_options(asset_config, physics_config)
 
         return asset_config
 

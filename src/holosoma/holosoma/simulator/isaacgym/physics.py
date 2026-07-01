@@ -7,13 +7,38 @@ and mass configurations.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from isaacgym import gymapi
 from loguru import logger
 
 if TYPE_CHECKING:
     from holosoma.config_types.scene import PhysicsConfig
+
+
+def apply_physx_asset_options(target: Any, physics: PhysicsConfig | None) -> None:
+    """Apply the load-time PhysX asset options (``density`` + the 4 ``physx`` solver knobs) from a
+    ``PhysicsConfig`` onto ``target``.
+
+    ``target`` is anything with the matching settable attributes: a ``gymapi.AssetOptions`` (robot
+    path) or a ``urdf_scene_loader.AssetConfig`` (object path); both name the fields identically.
+    This is the single source of the ``PhysicsConfig`` -> IsaacGym load-time mapping, so a robot link
+    and a scene object map ``density``/``physx`` the same way. ``None`` on ``physics``/``physx`` (or
+    an unset ``density``) leaves ``target``'s existing value untouched.
+
+    Friction/restitution/mass are not here: they are post-create per-shape/per-body writes
+    (``apply_rigid_shape_properties`` / ``apply_mass_from_config``), not load-time AssetOptions.
+    """
+    if physics is None:
+        return
+    if physics.density is not None:
+        target.density = physics.density
+    physx = physics.physx
+    if physx is not None:
+        target.linear_damping = physx.linear_damping
+        target.angular_damping = physx.angular_damping
+        target.max_linear_velocity = physx.max_linear_velocity
+        target.max_angular_velocity = physx.max_angular_velocity
 
 
 def apply_rigid_shape_properties(
