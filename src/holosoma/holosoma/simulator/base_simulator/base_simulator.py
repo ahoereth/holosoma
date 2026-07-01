@@ -20,7 +20,9 @@ from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.simulator_config import SimulatorType, get_simulator_type
 
 if TYPE_CHECKING:
+    from holosoma.sensor_egress.driver import SensorEgressDriver
     from holosoma.simulator.shared.camera_controller import CameraController
+    from holosoma.simulator.shared.camera_sensor import SensorManager
     from holosoma.simulator.shared.simulator_bridge import SimulatorBridge
     from holosoma.simulator.shared.video_recorder import VideoRecorderInterface
     from holosoma.simulator.shared.virtual_gantry import VirtualGantry
@@ -167,6 +169,8 @@ class BaseSimulator:
         self.training_config = tyro_config.training
         self.simulator_config = tyro_config.simulator
         self.scene_config = tyro_config.scene
+        self.sensor_config = tyro_config.sensors
+        self.sensor_egress_config = tyro_config.sensor_egress
         self.robot_config = tyro_config.robot
         self.video_config = tyro_config.logger.video
         self.sim_device = device
@@ -185,6 +189,14 @@ class BaseSimulator:
 
         # Bridge system
         self.bridge: SimulatorBridge | None = None
+
+        # Sensor-egress system (outbound camera publishing; sensor-side sibling of the bridge).
+        # None until _init_sensor_egress runs; stays None when no egress is configured.
+        self.sensor_egress: SensorEgressDriver | None = None
+
+        # Mounted-camera sensors, populated by each backend during its own sensor setup.
+        # None until a backend creates sensors from self.sensor_config.
+        self.sensor_manager: SensorManager | None = None
 
         # To be overridden by subclasses
         self.height_samples = None
@@ -578,6 +590,36 @@ class BaseSimulator:
         if self.bridge is not None:
             self.bridge.step()
 
+    # ----- Sensor-egress System Helper Methods -----
+
+    def _init_sensor_egress(self) -> None:
+        """Build the sensor-egress driver if any egress is configured.
+
+        Called by a backend after its sensors are created (so routes can validate against the
+        registered cameras). No-op when no egress instances are configured, keeping the import of
+        any transport dependency (e.g. ``rclpy``) off the default path.
+        """
+        if not self.sensor_egress_config.instances:
+            return
+        from holosoma.sensor_egress.driver import SensorEgressDriver
+
+        driver = SensorEgressDriver(self, self.sensor_egress_config)
+        if driver.is_active:
+            driver.start()
+            self.sensor_egress = driver
+            logger.info(f"Sensor egress initialized: {len(driver.egress)} sink(s)")
+
+    def publish_sensor_egress(self) -> None:
+        """Publish freshly-rendered frames through the egress driver. Call AFTER render_sensors."""
+        if self.sensor_egress is not None:
+            self.sensor_egress.publish_due()
+
+    def _stop_sensor_egress(self) -> None:
+        """Tear down the egress driver (close nodes, join worker threads). Safe if never started."""
+        if self.sensor_egress is not None:
+            self.sensor_egress.stop()
+            self.sensor_egress = None
+
     # ----- Video Recording Interface -----
     def on_episode_start(self, env_id: int = 0) -> None:
         """Called when an episode starts.
@@ -768,6 +810,73 @@ class BaseSimulator:
             return
         zeros = torch.zeros(poses.shape[0], 6, device=poses.device, dtype=poses.dtype)
         self.set_actor_states(list(names), env_ids, torch.cat([poses, zeros], dim=1))
+
+    # ----- Sensor (camera) interface -----
+
+    def render_sensors(self) -> None:
+        """Render all due cameras once, at control frequency, into their cached buffers.
+
+        Called once per control step from the task loop (after sim tensors refresh, before
+        observations compute), honoring each camera's ``update_decimation``. Consumers then do
+        cheap cached reads via :meth:`get_camera_data`."""
+        raise NotImplementedError("The 'render_sensors' method must be implemented in subclasses.")
+
+    def get_camera_data(self, name: str, data_type: str = "rgb", env_ids: EnvIds | None = None) -> torch.Tensor:
+        """Read a camera's most-recent output.
+
+        Output format:
+
+        - **Shape** ``[len(env_ids), H, W, C]``, environment axis FIRST.
+        - **Layout** HWC, row-major: row 0 = TOP of the image, column 0 = LEFT.
+        - **rgb**: ``torch.uint8`` in ``[0, 255]``, channel order **R, G, B** (C=3).
+        - **depth**: ``torch.float32`` meters, distance-to-image-plane, ``+inf`` for no-hit, C=1.
+        - **device**: ``self.sim_device``.
+        - **Optical frame**: camera looks down its local ``-Z``, ``+Y`` up; the
+          mount offset is applied in the mount-body frame.
+
+        Parameters
+        ----------
+        name : str
+            Sensor name (the ``CameraSensorConfig.name`` key).
+        data_type : str, default="rgb"
+            Modality to read: ``"rgb"`` or ``"depth"``. Must be in the camera's ``data_types``.
+        env_ids : EnvIds | None, default=None
+            Absolute environment indices into ``[0, num_envs)`` to return (every camera renders
+            all envs, so these index the full buffer); ``None`` returns all environments.
+
+        Raises
+        ------
+        NotImplementedError
+            If the backend has no camera support (no ``sensor_manager``).
+        """
+        if self.sensor_manager is None or not self.sensor_manager.has_camera(name):
+            raise NotImplementedError(
+                f"{type(self).__name__} has no camera '{name}'. Created cameras: {self.get_sensor_names()}."
+            )
+        runtime = self.sensor_manager.get(name)
+        if data_type not in runtime.buffers:
+            raise RuntimeError(
+                f"Camera '{name}' has no '{data_type}' frame. Ensure '{data_type}' is in the camera's "
+                f"data_types and render_sensors() has run. Buffered: {sorted(runtime.buffers)}."
+            )
+        buf = runtime.buffers[data_type]
+        return buf if env_ids is None else buf[env_ids]
+
+    def get_sensor_names(self) -> list[str]:
+        """Names of all created sensors, or ``[]`` if none."""
+        if self.sensor_manager is None:
+            return []
+        return self.sensor_manager.names
+
+    def sensor_config_by_name(self, name: str):
+        """The ``CameraSensorConfig`` for ``name`` from the active SensorsConfig.
+
+        Used by the sensor-egress driver to read a camera's intrinsics. Raises if unknown.
+        """
+        cam = self.sensor_config.cameras.get(name)
+        if cam is None:
+            raise KeyError(f"No camera named '{name}' in SensorsConfig. Defined: {list(self.sensor_config.cameras)}.")
+        return cam
 
     # Explicit names-based methods
     def get_actor_states_by_names(self, names: ActorNames, env_ids: EnvIds) -> ActorStates:

@@ -20,6 +20,8 @@ import holosoma.config_values.randomization
 import holosoma.config_values.reward
 import holosoma.config_values.robot
 import holosoma.config_values.scene
+import holosoma.config_values.sensor_egress
+import holosoma.config_values.sensors
 import holosoma.config_values.simulator
 import holosoma.config_values.termination
 import holosoma.config_values.terrain
@@ -33,6 +35,8 @@ from holosoma.config_types.randomization import RandomizationManagerCfg
 from holosoma.config_types.reward import RewardManagerCfg
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
+from holosoma.config_types.sensor_egress import SensorEgressConfig
+from holosoma.config_types.sensors import SensorsConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.termination import TerminationManagerCfg
 from holosoma.config_types.terrain import TerrainManagerCfg
@@ -123,6 +127,16 @@ class ExperimentConfig:
         SceneConfig,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.scene.DEFAULTS)),
     ] = holosoma.config_values.scene.empty
+    sensors: Annotated[
+        SensorsConfig,
+        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.sensors.DEFAULTS)),
+    ] = holosoma.config_values.sensors.none
+    sensor_egress: Annotated[
+        SensorEgressConfig,
+        tyro.conf.arg(
+            constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.sensor_egress.DEFAULTS)
+        ),
+    ] = holosoma.config_values.sensor_egress.none
     observation: Annotated[
         ObservationManagerCfg | None,
         tyro.conf.arg(

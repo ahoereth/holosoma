@@ -100,9 +100,12 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     else:  # AppLauncher auto-detects
         pass
 
-    # Check if video recording is enabled and add --enable_cameras flag
+    # Enable the IsaacSim renderer when cameras are needed: video recording OR any configured
+    # perception sensor (a TiledCamera fails to spawn without --enable_cameras).
     video_enabled = config.logger.video.enabled or config.logger.headless_recording
-    if video_enabled:
+    sensors_cfg = getattr(config, "sensors", None)
+    cameras_enabled = sensors_cfg is not None and bool(getattr(sensors_cfg, "cameras", []))
+    if video_enabled or cameras_enabled:
         args_cli.enable_cameras = True
 
     app_launcher = AppLauncher(args_cli)
@@ -229,6 +232,8 @@ def setup_simulation_environment(
             simulator=config.simulator.config,
             robot=config.robot,
             scene=config.scene,
+            sensors=config.sensors,
+            sensor_egress=config.sensor_egress,
             training=config.training,
             logger=config.logger,
             experiment_dir=None,
@@ -404,8 +409,9 @@ class DirectSimulation:
         """
         logger.debug("Initializing simulator...")
 
-        # Need to manually set headless since it's in training config currently
-        self.simulator.set_headless(False)
+        # Headless lives in training config; honor it (was hardcoded False, which forced the viewer
+        # on and pulled in isaacsim.util.debug_draw even under --training.headless True).
+        self.simulator.set_headless(self.config.training.headless)
 
         # Step 1: Basic setup
         self.simulator.setup()
@@ -480,6 +486,7 @@ class DirectSimulation:
 
         # Direct simulation loop (like holosoma_inference's simulation_thread)
         step_count = 0
+        control_decimation = self.simulator.simulator_config.sim.control_decimation_steps
         start_time = time.time()
         fps_start_time = start_time
 
@@ -490,6 +497,14 @@ class DirectSimulation:
 
                 # Direct simulator step - this triggers bridge.step() inside simulate_at_each_physics_step()
                 self.simulator.simulate_at_each_physics_step()
+
+                # Render mounted cameras once per control step (every control_decimation physics
+                # steps), matching base_task._post_physics_step so SensorManager decimation and the
+                # recorder fps stay calibrated against control_hz. Self-guards to a no-op when no
+                # cameras are configured. The recorder is a separate consumer of the rendered buffers.
+                if step_count % control_decimation == 0:
+                    self.simulator.render_sensors()
+                    self.simulator.publish_sensor_egress()
 
                 # Update viewer at display rate
                 if step_count % viewer_steps == 0:
@@ -524,6 +539,8 @@ class DirectSimulation:
 
         if self.simulator.video_recorder:
             self.simulator.video_recorder.cleanup()
+
+        self.simulator._stop_sensor_egress()
 
         # Cleanup simulation app
         if self.simulation_app:

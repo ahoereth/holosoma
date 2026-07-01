@@ -48,6 +48,7 @@ def build_run_sim_config(
     robot: str,
     terrain: str,
     *,
+    sensors: str | None = None,
     record_dir: str | None = None,
     video_camera: Any = None,
     show_command_overlay: bool = True,
@@ -65,6 +66,8 @@ def build_run_sim_config(
     from holosoma.config_types.simulator import BridgeConfig, VirtualGantryCfg
 
     argv = [f"simulator:{simulator}", f"robot:{robot}", f"terrain:{terrain}", f"scene:{scene}"]
+    if sensors is not None:
+        argv.append(f"sensors:{sensors}")
     config = tyro.cli(RunSimConfig, args=argv)
     sim_cfg = dataclasses.replace(
         config.simulator,
