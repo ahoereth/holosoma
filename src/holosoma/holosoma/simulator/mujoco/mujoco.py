@@ -177,7 +177,7 @@ class MuJoCo(BaseSimulator):
         assert meta is not None, "robot_spec_meta must be captured before building name maps"
         prefix = meta.prefix
 
-        # Robot joints (named, actuated), bodies, and actuators — exact membership
+        # Robot joints (named, actuated), bodies, and actuators: exact membership
         # from the recorded spec, mapped clean<->prefixed by construction.
         for clean_name in (*meta.dof_joint_names, *meta.body_names, *meta.actuator_names):
             prefixed_name = f"{prefix}{clean_name}"
@@ -318,12 +318,9 @@ class MuJoCo(BaseSimulator):
         # Apply post-compilation settings
         self.root_model.opt.timestep = self.sim_dt
 
-        # Resolve per-actor freejoint addressing (depends only on the compiled model + scene
-        # config), then bake per-object freejoint damping. Both run BEFORE backend creation so the
-        # WarpBackend's put_model (and its captured step graph) sees the damped model — writing
-        # dof_damping after put_model would leave the device model (and Warp dynamics) undamped.
+        # Resolve per-actor freejoint addressing (depends only on the compiled model + scene config).
+        # Runs before backend creation so the WarpBackend's put_model sees the final model.
         self._set_object_addressing()
-        self._apply_freejoint_damping()
 
         # Backend selection based on configuration
         if self.simulator_config.mujoco_backend == MujocoBackend.WARP:
@@ -398,8 +395,9 @@ class MuJoCo(BaseSimulator):
 
         # Add individual free rigid bodies from the scene config
         supported_formats = self.get_supported_scene_formats()
-        for obj in self.scene_config.rigid_objects:
+        for name, obj in self.scene_config.rigid_objects.items():
             self.scene_manager.add_rigid_object(
+                name,
                 obj,
                 supported_formats,
                 xml_filter=self.simulator_config.robot_mjcf_filter,
@@ -407,8 +405,9 @@ class MuJoCo(BaseSimulator):
             )
 
         # Add multi-body scene files (1->N): each file expands to N free/static bodies.
-        for scene_file in self.scene_config.scene_files:
+        for scene_file_name, scene_file in self.scene_config.scene_files.items():
             self.scene_manager.add_scene_file(
+                scene_file_name,
                 scene_file,
                 supported_formats,
                 xml_filter=self.simulator_config.robot_mjcf_filter,
@@ -444,7 +443,7 @@ class MuJoCo(BaseSimulator):
         self.num_bodies = len(self.body_names)
 
         # Map each robot body (by prefixed name) to its compiled MuJoCo body id,
-        # in body_names order. This is the cross-backend ``body_ids`` contract
+        # in body_names order. This is the cross-backend ``body_ids`` mapping
         # (body_ids[holosoma_idx] -> backend body id; mirrors IsaacGym/IsaacSim) used to
         # map a 0-based body_names index to the full-model xfrc/applied_forces layout
         # (e.g. virtual gantry). The tensor form gathers robot rows out of the
@@ -507,7 +506,7 @@ class MuJoCo(BaseSimulator):
         """Build per-actor addressing for the unified get/set_actor_states path.
 
         Free actors (robot + free rigid bodies) get ``object_addrs[name] =
-        {qpos_addr, qvel_addr}`` — the freejoint's 7-dof pose / 6-dof velocity slices.
+        {qpos_addr, qvel_addr}``, the freejoint's 7-dof pose / 6-dof velocity slices.
         Static (fixed, jointless) objects have no qpos slice, so they get
         ``static_object_body_ids[name] = body_id`` and their pose is read from xpos.
 
@@ -521,7 +520,9 @@ class MuJoCo(BaseSimulator):
         # Static (SCENE) actors: standalone ``fixed`` objects + scene-file bodies the file
         # marked static. Free/static must be decided the same way as in every backend.
         # Scene-file bodies fold into the same addressing.
-        static_names = {obj.name for obj in self.scene_config.rigid_objects if obj.fixed} | self.scene_file_static_names
+        static_names = {
+            name for name, obj in self.scene_config.rigid_objects.items() if obj.fixed
+        } | self.scene_file_static_names
         scene_file_actors = {name: root for name, (root, _is_static) in self.scene_manager.scene_file_bodies.items()}
 
         actors = {
@@ -538,27 +539,6 @@ class MuJoCo(BaseSimulator):
             else:
                 self.object_addrs[name] = self._resolve_freejoint_addrs(name, root_body)
             logger.info(f"Actor '{name}' addressing resolved (static={name in static_names}).")
-
-    def _apply_freejoint_damping(self) -> None:
-        """Bake each free object's configured freejoint DOF damping into ``model.dof_damping``.
-
-        MuJoCo's analogue of PhysX velocity damping: a free body's translational/rotational
-        velocity is bled by ``dof_damping`` on its freejoint's 6 DOFs (first 3 linear, last 3
-        angular). Applied to ``root_model`` in ``load_assets`` BEFORE backend creation, so the
-        WarpBackend's ``put_model`` copies the damped model into the device + captured step graph
-        (writing it after put_model would leave the Warp dynamics undamped). ``None`` keeps 0.
-        """
-        assert self.root_model
-        for obj in self.scene_config.rigid_objects:
-            mj = obj.physics.mujoco if obj.physics is not None else None
-            if mj is None or obj.fixed or (mj.linear_damping is None and mj.angular_damping is None):
-                continue  # fixed bodies have no freejoint DOFs; nothing to damp
-            dof = self.object_addrs[obj.name]["qvel_addr"]
-            if mj.linear_damping is not None:
-                self.root_model.dof_damping[dof : dof + 3] = mj.linear_damping
-            if mj.angular_damping is not None:
-                self.root_model.dof_damping[dof + 3 : dof + 6] = mj.angular_damping
-            logger.info(f"Applied freejoint damping to '{obj.name}': lin={mj.linear_damping} ang={mj.angular_damping}")
 
     def _resolve_freejoint_addrs(self, name: str, root_body: str) -> dict[str, int]:
         """Return {qpos_addr, qvel_addr} for the freejoint under ``root_body``.
@@ -606,12 +586,12 @@ class MuJoCo(BaseSimulator):
 
         items = [
             (
-                obj.name,
+                name,
                 obj.fixed,
                 self._object_pose(obj.position, obj.orientation, add_origins=True, wxyz=True),
                 self._object_velocity(obj.linear_velocity, obj.angular_velocity),
             )
-            for obj in self.scene_config.rigid_objects
+            for name, obj in self.scene_config.rigid_objects.items()
         ]
         for actor_name, (_root, is_static) in self.scene_manager.scene_file_bodies.items():
             pos, quat_wxyz = self._scene_file_body_world_pose(actor_name, is_static)
@@ -662,10 +642,10 @@ class MuJoCo(BaseSimulator):
         object_addrs (call after _set_object_addressing).
         """
         assert self.root_data
-        for obj in self.scene_config.rigid_objects:
+        for name, obj in self.scene_config.rigid_objects.items():
             if obj.fixed:
                 continue  # static body: no freejoint qpos slice; pose fixed at spawn frame
-            qpos_addr = self.object_addrs[obj.name]["qpos_addr"]
+            qpos_addr = self.object_addrs[name]["qpos_addr"]
             w, x, y, z = obj.orientation  # config is wxyz; MuJoCo qpos quat is wxyz too
             self.root_data.qpos[qpos_addr : qpos_addr + 3] = obj.position
             self.root_data.qpos[qpos_addr + 3 : qpos_addr + 7] = [w, x, y, z]
@@ -879,7 +859,7 @@ class MuJoCo(BaseSimulator):
 
         # Base linear acceleration: backend-specific handling
         base_lin_acc_indices = slice(0, 3)
-        if WarpBackend is not None and isinstance(self.backend, WarpBackend):
+        if isinstance(self.backend, WarpBackend):
             # WarpBackend: direct GPU tensor access
             self.base_linear_acc = self.backend.qacc_t[:, base_lin_acc_indices]  # type: ignore[assignment,attr-defined]
         else:
@@ -915,13 +895,13 @@ class MuJoCo(BaseSimulator):
         # before the initial pose / joint-angle qpos writes that happen here. Re-sync
         # the CPU state to the GPU so every env starts from the configured initial
         # state rather than the MJCF qpos0 defaults still on the GPU.
-        if WarpBackend is not None and isinstance(self.backend, WarpBackend):
+        if isinstance(self.backend, WarpBackend):
             self.backend.initialize_state(self.root_model, self.root_data)
 
         # initialize_state tiles one CPU qpos/model across all envs, so every env's objects sit
         # at the SAME world point. Spread each object to its env origin per its registered
         # per-env pose: free bodies via their freejoint qpos (set_actor_state), static (welded,
-        # no qpos) bodies via their model body_pos (set_static_body_world_pose) — the two
+        # no qpos) bodies via their model body_pos (set_static_body_world_pose): the two
         # complementary placement paths, both keyed off get_actor_initial_poses.
         env_ids = torch.arange(self.num_envs, device=self.sim_device)
 
@@ -1117,7 +1097,7 @@ class MuJoCo(BaseSimulator):
         """Rotate a state tensor's angular-velocity (cols 10:13) from body-local to world frame.
 
         MuJoCo's freejoint qvel stores LINEAR velocity in world frame but ANGULAR velocity in the
-        body's LOCAL frame. The unified actor-state contract (base_simulator) is world-frame for
+        body's LOCAL frame. The unified actor-state representation (base_simulator) is world-frame for
         BOTH (matching IsaacGym/IsaacSim), so convert at this backend boundary using the actor's
         world orientation (xyzw quat in cols 3:7). In-place on a copy; returns it.
         """
@@ -1131,7 +1111,7 @@ class MuJoCo(BaseSimulator):
     def _freejoint_angvel_to_local(states: torch.Tensor) -> torch.Tensor:
         """Inverse of :meth:`_freejoint_angvel_to_world`: world ang-vel (cols 10:13) -> body-local.
 
-        Used on the SET path so a world-frame angular velocity from the unified contract lands
+        Used on the SET path so a world-frame angular velocity from the unified representation lands
         correctly in MuJoCo's body-local freejoint qvel slot (the get/set pair stays symmetric)."""
         if states.shape[0] == 0:
             return states
@@ -1169,7 +1149,7 @@ class MuJoCo(BaseSimulator):
         all_states: list[torch.Tensor] = []
         for obj_name, env_ids in resolved_objects:
             if obj_name in self.static_object_body_ids:
-                # Static body: no qpos slice — read its constant world pose from xpos.
+                # Static body: no qpos slice, read its constant world pose from xpos.
                 states_for_envs = self._static_body_state(obj_name, env_ids)
             else:
                 # Free body / robot: read the live freejoint state, per-env (GPU for
@@ -1182,7 +1162,7 @@ class MuJoCo(BaseSimulator):
         if not all_states:
             return torch.empty(0, 13, device=self.sim_device)
         # Convert each freejoint's body-local angular velocity to the world-frame the unified
-        # actor-state contract promises (static bodies carry zero velocity, so this is a no-op
+        # actor-state representation uses (static bodies carry zero velocity, so this is a no-op
         # for them). Linear velocity and pose are already world-frame.
         return self._freejoint_angvel_to_world(torch.cat(all_states, dim=0))
 
@@ -1191,7 +1171,7 @@ class MuJoCo(BaseSimulator):
 
         Static bodies have no qpos slice; their world pose lives in the model kinematics
         (xpos/xquat). On the WarpBackend those are per-world tensors, so each env's own row
-        is read — a static scene-file body placed at per-env origins reports its true per-env
+        is read: a static scene-file body placed at per-env origins reports its true per-env
         position. On the ClassicBackend (single env) the CPU xpos is broadcast. Velocity is
         zero (welded body).
         """
@@ -1241,9 +1221,9 @@ class MuJoCo(BaseSimulator):
 
         resolved_objects = self.object_registry.resolve_indices(indices)
 
-        # Incoming angular velocity is world-frame (unified contract); MuJoCo's freejoint qvel
+        # Incoming angular velocity is world-frame (unified representation); MuJoCo's freejoint qvel
         # wants it body-local. Convert up front using each row's world quat (cols 3:7) so the
-        # per-actor slices below write the correct local ang-vel — symmetric with the read path.
+        # per-actor slices below write the correct local ang-vel, symmetric with the read path.
         states = self._freejoint_angvel_to_local(states)
 
         state_offset = 0
@@ -1255,7 +1235,7 @@ class MuJoCo(BaseSimulator):
             if obj_name in self.static_object_body_ids:
                 # Static (welded, jointless) body: no qpos slice, so it moves via the model
                 # body_pos/body_quat + forward-kinematics path rather than set_actor_state. This
-                # is a KINEMATIC teleport — the pose is honored (collisions recompute at the new
+                # is a kinematic teleport: the pose is honored (collisions recompute at the new
                 # pose) but the velocity columns (7:13) are ignored (a welded body carries no
                 # qvel). Pose is [pos(0:3), quat(3:7) xyzw]; shape to [len(env_ids), 1, 3/4].
                 body_id = self.static_object_body_ids[obj_name]
@@ -1320,7 +1300,7 @@ class MuJoCo(BaseSimulator):
         return self.object_registry.get_initial_poses_batch(names, env_ids)
 
     def get_actor_initial_velocities(self, names: list[str], env_ids: EnvIds | None = None) -> torch.Tensor:
-        """Get initial velocities for any registered actor — the sibling of get_actor_initial_poses.
+        """Get initial velocities for any registered actor (sibling of get_actor_initial_poses).
 
         Returns [len(names) * len(env_ids), 6] world-frame [vx,vy,vz,wx,wy,wz], same row order as
         get_actor_initial_poses (so the two concatenate into the 13-vector set_actor_states wants).
@@ -1333,15 +1313,15 @@ class MuJoCo(BaseSimulator):
     def write_state_updates(self) -> None:
         """Flush pending state writes so derived quantities reflect them.
 
-        Mirrors the cross-backend batch-flush contract (IsaacGym: no-op; IsaacSim:
+        Mirrors the cross-backend batch flush (IsaacGym: no-op; IsaacSim:
         ``scene.write_data_to_sim()``). For MuJoCo:
           - ClassicBackend: run ``mj_forward`` on the CPU data so xpos/xquat/cvel and
             other derived quantities reflect the qpos/qvel just written.
-          - WarpBackend: a no-op — the next ``step()`` (a captured CUDA graph that
-            begins with forward kinematics) consumes the updated GPU qpos/qvel; we do
-            not run an out-of-graph GPU forward here.
+          - WarpBackend: a no-op. The next ``step()`` (a captured CUDA graph that
+            begins with forward kinematics) consumes the updated GPU qpos/qvel; no
+            out-of-graph GPU forward runs here.
         """
-        if WarpBackend is not None and isinstance(self.backend, WarpBackend):
+        if isinstance(self.backend, WarpBackend):
             return
         assert self.root_model
         assert self.root_data
@@ -1426,8 +1406,8 @@ class MuJoCo(BaseSimulator):
             return
 
         # Incoming angular velocity is world-frame (the robot_root_states / all_root_states
-        # contract); MuJoCo's freejoint qvel wants it body-local. Convert before the backend
-        # write (which scatters cols 10:13 raw into qvel) — symmetric with the view __getitem__
+        # convention); MuJoCo's freejoint qvel wants it body-local. Convert before the backend
+        # write (which scatters cols 10:13 raw into qvel), symmetric with the view __getitem__
         # read path and with set_actor_states_by_index.
         root_states = self._freejoint_angvel_to_local(root_states)
 
@@ -1492,12 +1472,12 @@ class MuJoCo(BaseSimulator):
         # ClassicBackend.set_dof_state reshapes the whole tensor by len(env_ids)
         # ([len(env_ids) * num_dof, 2]). Validate against the active backend so a
         # partial-reset global tensor is not falsely rejected for the warp path.
-        if WarpBackend is not None and isinstance(self.backend, WarpBackend):
+        if isinstance(self.backend, WarpBackend):
             expected_rows = self.num_envs * self.num_dof
         else:
             expected_rows = len(env_ids) * self.num_dof
         if dof_states.shape[0] != expected_rows:
-            is_warp = WarpBackend is not None and isinstance(self.backend, WarpBackend)
+            is_warp = isinstance(self.backend, WarpBackend)
             rows_label = "num_envs" if is_warp else "len(env_ids)"
             raise ValueError(
                 f"Unsupported dof_states first dimension {dof_states.shape[0]}: "
@@ -1549,7 +1529,7 @@ class MuJoCo(BaseSimulator):
         """Find a robot body's 0-based index in ``body_names``.
 
         Returns the holosoma-facing index (0-based over the robot-only ``body_names``,
-        world excluded), matching the cross-backend contract (IsaacGym/IsaacSim) and
+        world excluded), matching the cross-backend convention (IsaacGym/IsaacSim) and
         the layout of the ``_rigid_body_*`` / ``contact_forces`` tensors. This is NOT
         the raw MuJoCo body id. Callers needing the raw MuJoCo body id (e.g. xfrc /
         ``applied_forces``) map through ``body_ids[index]``.
