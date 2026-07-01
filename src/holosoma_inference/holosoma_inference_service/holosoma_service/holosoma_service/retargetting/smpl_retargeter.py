@@ -14,11 +14,33 @@ Output: (29,) G1 joint angles in URDF/Mujoco order, velocity, root orientation.
 
 from __future__ import annotations
 
+from typing import Protocol, runtime_checkable
+
 import mink
 import mujoco
 import numpy as np
 from loguru import logger
 from scipy.spatial.transform import Rotation
+
+
+@runtime_checkable
+class Retargeter(Protocol):
+    """Embodiment-agnostic online retargeter interface.
+
+    A retargeter maps a single frame of body-tracker joint poses to a robot's
+    joint-space target. Implementations are embodiment-specific (e.g.
+    :class:`G1SmplRetargeter`); consumers like ``RetargeterNode`` depend on this
+    Protocol so new embodiments can be registered without subclassing.
+    """
+
+    def retarget(self, joint_poses: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Map one frame of tracker joint poses to (joint angles, velocities, root quat)."""
+        ...
+
+    def reset(self) -> None:
+        """Reset any per-episode retargeting state."""
+        ...
+
 
 # =============================================================================
 # Pico/SMPL Joint Indices (24-joint SMPL ordering)
@@ -184,7 +206,7 @@ def _asset_dir_for(xml_path: str) -> dict:
     so ``mujoco.MjModel.from_xml_string`` can find them without an
     on-disk ``meshdir`` resolving relative to cwd.
 
-    Cache the manifest keyed on xml_path so repeated SMPLRetargeter construction
+    Cache the manifest keyed on xml_path so repeated G1SmplRetargeter construction
     (e.g. WBT policy re-init) doesn't re-read every OBJ/STL from disk every time.
     mujoco does not cache from_xml_string assets across calls, so without this every
     retargeter instance paid ~60 file reads before first retarget().
@@ -210,8 +232,11 @@ def _asset_dir_for(xml_path: str) -> dict:
     return assets
 
 
-class SMPLRetargeter:
-    """Online retargeting from Pico body tracker to G1 29-DOF via mink differential IK."""
+class G1SmplRetargeter:
+    """Online retargeting from Pico body tracker to G1 29-DOF via mink differential IK.
+
+    Implements the :class:`Retargeter` Protocol for the Unitree G1 (29-DOF).
+    """
 
     def __init__(self, urdf_path: str, dt: float = 0.02, *, max_ik_iters: int = 20):
         # -- MuJoCo model (fixed base, 29 DOF) --
@@ -383,7 +408,7 @@ class SMPLRetargeter:
             tracker_leg = float(np.linalg.norm(positions[7] - positions[0]))
             self._height_ratio = self._g1_leg / max(tracker_leg, 1e-6)
             logger.info(
-                "SMPLRetargeter: height_ratio={:.4f} (G1 leg={:.3f}m, tracker leg={:.3f}m)",
+                "G1SmplRetargeter: height_ratio={:.4f} (G1 leg={:.3f}m, tracker leg={:.3f}m)",
                 self._height_ratio,
                 self._g1_leg,
                 tracker_leg,

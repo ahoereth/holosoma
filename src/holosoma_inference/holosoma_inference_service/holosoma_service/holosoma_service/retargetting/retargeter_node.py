@@ -1,4 +1,4 @@
-"""RetargeterNode: CmdSMPLH in -> SMPLRetargeter -> CmdDense out.
+"""RetargeterNode: CmdSMPLH in -> Retargeter (G1SmplRetargeter) -> CmdDense out.
 
 Decouples retargeting (variable-latency mink IK) from the control loop: it
 solves on its own subscription rate and publishes a dense per-joint target
@@ -15,7 +15,12 @@ from holosoma_msgs.msg import CmdDense, CmdSMPLH
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from holosoma_service.retargetting.smpl_retargeter import JOINT_NAMES, NUM_JOINTS, SMPLRetargeter
+from holosoma_service.retargetting.smpl_retargeter import (
+    JOINT_NAMES,
+    NUM_JOINTS,
+    G1SmplRetargeter,
+    Retargeter,
+)
 
 IN_TOPIC = "/holosoma/smplh_command"
 OUT_TOPIC = "/holosoma/dense_tracking_command"
@@ -36,7 +41,7 @@ def _to_transforms(msg: CmdSMPLH) -> np.ndarray:
 class RetargeterNode(Node):
     def __init__(self, urdf_path: str, rl_rate_hz: float, joint_names: list[str]):
         super().__init__("holosoma_retargeter")
-        self._rt = SMPLRetargeter(urdf_path=urdf_path, dt=1.0 / rl_rate_hz)
+        self._rt: Retargeter = G1SmplRetargeter(urdf_path=urdf_path, dt=1.0 / rl_rate_hz)
         self._joint_names = joint_names
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._pub = self.create_publisher(CmdDense, OUT_TOPIC, qos)

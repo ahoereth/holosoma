@@ -1,4 +1,4 @@
-"""Regression test: SMPLRetargeter must strip <freejoint/> before IK.
+"""Regression test: G1SmplRetargeter must strip <freejoint/> before IK.
 
 The shipped g1_29dof.xml carries a <freejoint/> (shared with the policy's
 MuJoCo backend). The retargeter's IK is fixed-base and root-relative; if the
