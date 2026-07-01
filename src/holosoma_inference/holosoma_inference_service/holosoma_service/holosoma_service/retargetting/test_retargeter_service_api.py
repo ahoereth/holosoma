@@ -66,11 +66,16 @@ pytestmark = [
 def _make_smplh(valid: bool = True) -> CmdSMPLH:
     """A non-degenerate SMPL-H frame: identity orientations, joints spread along
     the vertical axis so pelvis->ankle separation (the height-ratio basis) is
-    nonzero and the IK gets a well-posed target."""
+    nonzero and the IK gets a well-posed target.
+
+    ``joint_poses`` is populated even when ``valid=False`` so the invalid frame
+    differs from the valid one *only* in the ``valid`` flag. The node guard is
+    ``if not msg.valid or not msg.joint_poses`` — leaving poses empty would let
+    the empty-poses branch suppress output on its own, so the negative test
+    could not distinguish the ``valid`` contract from a degenerate payload.
+    """
     msg = CmdSMPLH()
     msg.valid = valid
-    if not valid:
-        return msg
     msg.joint_names = list(JOINT_NAMES)
     poses = []
     n = len(JOINT_NAMES)

@@ -62,11 +62,15 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # list exactly what smpl_retargeter + the node import at runtime.
 #   mink+mujoco  -> IK solve; scipy -> rotations; numpy -> arrays;
 #   pyyaml/loguru/pydantic/tyro -> imported on the holosoma_inference path.
+# Pin numpy to the Jazzy system version: holosoma_msgs / rclpy C-extensions were
+# compiled against 1.26.4 at colcon-build time above, so an unpinned resolve to
+# numpy 2.x would swap the ABI out from under them at test runtime. Pinning also
+# keeps the image reproducible against future numpy releases.
 RUN pip install --no-cache-dir \
     "mink" \
     "mujoco>=3.8.1" \
     "scipy" \
-    "numpy" \
+    "numpy==1.26.4" \
     "pyyaml" \
     "loguru" \
     "pydantic" \
