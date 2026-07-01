@@ -10,8 +10,15 @@ a class implementing the :class:`Retargeter` Protocol, constructible with
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from holosoma_inference.compat import entry_points
-from holosoma_service.retargetting.smpl_retargeter import Retargeter
+
+if TYPE_CHECKING:
+    # Import only for typing: smpl_retargeter pulls in mink/mujoco, which the
+    # inference CI env lacks. Keeping it out of runtime import also preserves
+    # the lazy-load contract — heavy impls load only when actually selected.
+    from holosoma_service.retargetting.smpl_retargeter import Retargeter
 
 _GROUP = "holosoma.retargeter"
 # Lazy: keep the entry points, only .load() the one actually requested so a
