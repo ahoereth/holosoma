@@ -115,7 +115,7 @@ class UnitreeSplitControllerNode(Node):
         self._hb_pub.publish(msg)
 
 
-def main(iface: str = "eth0", no_arms: bool = False, no_loco: bool = False) -> None:
+def main(iface: str = "eth0", no_arms: bool = False, no_loco: bool = False, arm_kp_scale: float = 2.0) -> None:
     arm = loco = None
     if not no_loco:
         logger.info("starting loco client …")
@@ -124,7 +124,7 @@ def main(iface: str = "eth0", no_arms: bool = False, no_loco: bool = False) -> N
         loco.set_walk_mode()
     if not no_arms:
         logger.info("starting arm client …")
-        arm = make_mp_arm_client(iface=iface, motion_mode=True)
+        arm = make_mp_arm_client(iface=iface, motion_mode=True, arm_kp_scale=arm_kp_scale)
         arm.ctrl_dual_arm_initialization_pose()
         arm.speed_gradual_max()
 

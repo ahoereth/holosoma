@@ -47,14 +47,25 @@ class G1j29LowState:
 
 
 class G1j29ArmController:
-    def __init__(self, iface: str = "eth0", motion_mode=True, simulation_mode=False, logger=None):
+    def __init__(self, iface: str = "eth0", motion_mode=True, simulation_mode=False, logger=None, arm_kp_scale=1.0):
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
         self.motion_mode = motion_mode
         self.simulation_mode = simulation_mode
 
-        self._kp_gains = KP_HOLOSOMA_MIXED_GAINS
-
+        # Scale shoulder KP to match stiffer setups (arm_kp_scale=2.0 reproduces
+        # dev/orkedar/tracker_service). Elbow/wrist/legs/waist and KD are unchanged.
+        _SHOULDER_JOINTS = {
+            HardwareG1j29JointIndex.k_left_shoulder_pitch,
+            HardwareG1j29JointIndex.k_left_shoulder_roll,
+            HardwareG1j29JointIndex.k_left_shoulder_yaw,
+            HardwareG1j29JointIndex.k_right_shoulder_pitch,
+            HardwareG1j29JointIndex.k_right_shoulder_roll,
+            HardwareG1j29JointIndex.k_right_shoulder_yaw,
+        }
+        self._kp_gains = {
+            j: kp * arm_kp_scale if j in _SHOULDER_JOINTS else kp for j, kp in KP_HOLOSOMA_MIXED_GAINS.items()
+        }
         self._kd_gains = KD_HOLOSOMA_MIXED_GAINS
 
         self.all_motor_q = None
