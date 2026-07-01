@@ -156,12 +156,6 @@ class G1j29ArmController:
             return []
         return [motor.vol for motor in self._latest_debug_state.motor_state]
 
-    def clip_arm_q_target(self, target_q, velocity_limit):
-        current_q = self.get_current_dual_arm_q()
-        delta = target_q - current_q
-        motion_scale = np.max(np.abs(delta)) / (velocity_limit * self.control_dt)
-        return current_q + delta / max(motion_scale, 1.0)
-
     def publish_command(self):
         """Publish the current command message to the robot."""
         if self.motion_mode:
