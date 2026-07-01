@@ -1,7 +1,7 @@
 """ROS2-native integration test for the retargeter service API.
 
-Exercises the *contract* FAR-pi (and any external consumer) depends on, rather
-than co-running the two services: spin the real ``RetargeterNode`` and drive it
+Exercises the *contract* external consumers depend on, rather than co-running
+two services: spin the real ``RetargeterNode`` and drive it
 over actual ROS2 topics, asserting the ``CmdSMPLH -> CmdDense`` surface. This is
 the one service node that is a pure topic-in/topic-out transform (no ONNX, no
 robot SDK), so the whole pub/sub + serialization + callback path is real.
@@ -84,7 +84,7 @@ def _make_smplh(valid: bool = True) -> CmdSMPLH:
 
 
 class _Harness(Node):
-    """External peer: publishes CmdSMPLH, records CmdDense — stands in for FAR-pi."""
+    """External peer: publishes CmdSMPLH, records CmdDense — stands in for a downstream consumer."""
 
     def __init__(self) -> None:
         super().__init__("retargeter_api_test_harness")
