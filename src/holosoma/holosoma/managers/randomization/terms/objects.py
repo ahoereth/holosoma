@@ -31,6 +31,52 @@ def _resolve_object_names(env: Any, object_names: Sequence[str] | None) -> list[
     return env.simulator.object_registry.get_names_by_type(ObjectType.INDIVIDUAL)
 
 
+def _mujoco_object_root_body(simulator: Any, name: str) -> str:
+    """The compiled-model (prefixed) root-body name of registered object ``name``.
+
+    Resolves from whichever scene-manager map holds the object: a STANDALONE rigid object is
+    recorded in ``rigid_object_root_bodies`` (``{name}_{root}``), while a body that came from a
+    1->N scene FILE is recorded in ``scene_file_bodies`` (the body is ``{file}_{body}``, which is
+    the actor name itself). Raises KeyError if ``name`` is neither.
+    """
+    sm = simulator.scene_manager
+    if name in sm.rigid_object_root_bodies:
+        return sm.rigid_object_root_bodies[name]
+    if name in getattr(sm, "scene_file_bodies", {}):
+        return sm.scene_file_bodies[name][0]  # (prefixed_root_body, is_static)
+    raise KeyError(f"Object '{name}' is not a registered standalone or scene-file body.")
+
+
+def _mujoco_object_bodies(simulator: Any, name: str) -> list[tuple[int, str]]:
+    """``(body_id, body_name)`` for every compiled-model body owned by object ``name``.
+
+    Reads the CPU ``mujoco.MjModel`` (``simulator.backend.model``), which both MuJoCo
+    backends expose, so it feeds the WarpBackend and ClassicBackend DR paths alike. Collects
+    the object's root body plus its descendant subtree via ``body_parentid`` — correct for both
+    a standalone object (single root, possibly with nested child bodies) and a scene-file body
+    (its own root in the shared file tree, NOT its file-siblings). Resolving the subtree
+    structurally (not by a ``{name}_`` name prefix) is what keeps scene-file siblings separate.
+    """
+    import mujoco
+
+    model = simulator.backend.model
+    root_body = _mujoco_object_root_body(simulator, name)
+    root_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, root_body)
+    if root_id == -1:
+        raise ValueError(f"Root body '{root_body}' for object '{name}' not found in compiled model.")
+
+    # Subtree = root + every body whose parent chain reaches root (walk parentid up to root/world).
+    subtree = {root_id}
+    for bid in range(model.nbody):
+        anc = bid
+        while anc not in (0, root_id) and anc != model.body_parentid[anc]:
+            anc = int(model.body_parentid[anc])
+            if anc == root_id:
+                subtree.add(bid)
+                break
+    return [(bid, mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid)) for bid in sorted(subtree)]
+
+
 def _jitter_spec(range_cfg: float | DistributionLike) -> DistributionSpec | None:
     """Build a :class:`DistributionSpec` for a pose-jitter component, or ``None`` if it's a no-op.
 
