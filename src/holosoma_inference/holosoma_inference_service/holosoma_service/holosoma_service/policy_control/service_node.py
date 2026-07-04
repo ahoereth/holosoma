@@ -40,6 +40,7 @@ from dataclasses import replace
 import numpy as np
 import rclpy
 import tyro
+from builtin_interfaces.msg import Time
 from holosoma_msgs.msg import Action, CmdDense, Heartbeat, Observation, PolicyMetadata
 from loguru import logger
 from rclpy.node import Node
@@ -106,6 +107,7 @@ class ServiceIONode(Node):
         # --- Input: dense tracking target (WBT only); attached on demand ---
         self._cmd = np.zeros((1, 2 * num_dofs), dtype=np.float32)  # held until first frame
         self._ref = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)  # xyzw
+        self._cmd_stamp = Time()  # source teleop stamp of the held frame (zero until first)
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(CmdDense, DENSE_TOPIC, self._dense_cb, qos)
 
@@ -133,6 +135,7 @@ class ServiceIONode(Node):
         self._cmd = np.concatenate([msg.q, msg.dq]).astype(np.float32).reshape(1, -1)
         r = msg.root_quat
         self._ref = np.array([r.x, r.y, r.z, r.w], dtype=np.float32)
+        self._cmd_stamp = msg.header.stamp  # source teleop stamp (dense client or retargeter-forwarded)
 
     def get_target(self, num_dofs: int, rl_rate_hz: float, urdf_path: str | None):
         return self._cmd, self._ref
@@ -179,14 +182,18 @@ class ServiceIONode(Node):
             self.publish_policy_metadata(policy)
             self._meta_wandb_id = meta_key
 
+        source_stamp = self._cmd_stamp  # teleop stamp of the frame this tick consumed
+
         obs = Observation()
         obs.header.stamp = stamp
+        obs.source_stamp = source_stamp
         obs.wandb_id = wandb_id
         obs.data = np.asarray(actor_obs, dtype=np.float32).reshape(-1).tolist()
         self._obs_pub.publish(obs)
 
         act = Action()
         act.header.stamp = stamp
+        act.source_stamp = source_stamp
         act.wandb_id = wandb_id
         act.data = np.asarray(raw_action, dtype=np.float32).reshape(-1).tolist()
         self._act_pub.publish(act)

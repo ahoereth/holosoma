@@ -16,8 +16,8 @@ Outputs:
 
 | Topic | Type | Description | Rate |
 |---|---|---|---|
-| `/holosoma/observation` | `Observation.msg` | Raw observation vector (`actor_obs`) fed to the policy this tick; sliceable by name via the schema on `/holosoma/policy_metadata`. Tagged with `wandb_id`. | Policy Rate (typ. 50Hz) |
-| `/holosoma/action` | `Action.msg` | Raw policy output (pre-scale network action) this tick. Shares `header.stamp` with the paired `/holosoma/observation`. Tagged with `wandb_id`. | Policy Rate (typ. 50Hz) |
+| `/holosoma/observation` | `Observation.msg` | Raw observation vector (`actor_obs`) fed to the policy this tick; sliceable by name via the schema on `/holosoma/policy_metadata`. `header.stamp` is robot time; `source_stamp` carries the teleop-input stamp of the consumed `CmdDense`. Tagged with `wandb_id`. | Policy Rate (typ. 50Hz) |
+| `/holosoma/action` | `Action.msg` | Raw policy output (pre-scale network action) this tick. Shares `header.stamp` + `source_stamp` with the paired `/holosoma/observation`. Tagged with `wandb_id`. | Policy Rate (typ. 50Hz) |
 | `/holosoma/policy_metadata` | `PolicyMetadata.msg` | Everything needed to reproduce the obs→action→command chain offline: observation-term schema (JSON), `policy_action_scale`, `default_dof_angles`, `dof_names`, `wandb_id`. **Latched** (transient-local), published once per policy activation. | On start + policy swap |
 | `/holosoma/holosoma_executed_cmd` | `JointState.msg` | Executed joint command, always full 29-DoF. **Deprecated** — use `/holosoma/action`. | Policy Rate (typ. 50Hz)  |
 | `/holosoma/heartbeat` | `Heartbeat.msg` | Liveness + status  | 5 Hz |
