@@ -3,7 +3,7 @@
 Service layer for deploying `holosoma` policies. The input/output API is ROS2 messages; a backend turns them into robot motion. The service is not required to run `holosoma_inference`, but can be helpful for integrating it into a larger system.
 
 ## Service API
-Inputs (one of):
+Teleop Inputs (one of):
 
 | Topic | Type | Description | Exp. Rate |
 |---|---|---|---|
@@ -16,10 +16,15 @@ Outputs:
 
 | Topic | Type | Description | Rate |
 |---|---|---|---|
-| `/holosoma/holosoma_executed_cmd` | `JointState.msg` | Executed joint command, always full 29-DoF | Policy Rate (typ. 50Hz)  |
+| `/holosoma/observation` | `Observation.msg` | Raw observation vector (`actor_obs`) fed to the policy this tick; sliceable by name via the schema on `/holosoma/policy_metadata`. Tagged with `wandb_id`. | Policy Rate (typ. 50Hz) |
+| `/holosoma/action` | `Action.msg` | Raw policy output (pre-scale network action) this tick. Shares `header.stamp` with the paired `/holosoma/observation`. Tagged with `wandb_id`. | Policy Rate (typ. 50Hz) |
+| `/holosoma/policy_metadata` | `PolicyMetadata.msg` | Everything needed to reproduce the obs→action→command chain offline: observation-term schema (JSON), `policy_action_scale`, `default_dof_angles`, `dof_names`, `wandb_id`. **Latched** (transient-local), published once per policy activation. | On start + policy swap |
+| `/holosoma/holosoma_executed_cmd` | `JointState.msg` | Executed joint command, always full 29-DoF. **Deprecated** — use `/holosoma/action`. | Policy Rate (typ. 50Hz)  |
 | `/holosoma/heartbeat` | `Heartbeat.msg` | Liveness + status  | 5 Hz |
 
 Note: for  `/holosoma/holosoma_executed_cmd`, the policy backend fills all 29 values. The split-body backend fills the 14 arm joints (indices 15–28) and zeros the rest.
+
+Note: `/holosoma/observation` + `/holosoma/action` + `/holosoma/policy_metadata` make an inference step fully reproducible from a bag alone. The metadata topic is latched (transient-local) so a recorder that subscribes after startup still captures it — record with compatible QoS. On a policy swap the schema is re-published with the new `wandb_id`, so every observation/action row keys to the metadata that describes it.
 
 ## Internal structure
 ```bash

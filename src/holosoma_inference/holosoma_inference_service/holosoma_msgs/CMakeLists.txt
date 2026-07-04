@@ -12,6 +12,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CmdSMPLH.msg"
   "msg/CmdDense.msg"
   "msg/Heartbeat.msg"
+  "msg/Observation.msg"
+  "msg/Action.msg"
+  "msg/PolicyMetadata.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 
