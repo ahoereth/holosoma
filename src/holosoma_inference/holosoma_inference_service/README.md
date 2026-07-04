@@ -8,7 +8,7 @@ Teleop Inputs (one of):
 | Topic | Type | Description | Exp. Rate |
 |---|---|---|---|
 | `/holosoma/smplh_command` | `CmdSMPLH.msg` | SMPL-H 24-joint pose targets, retargeted to dense before the policy | 50Hz |
-| `/holosoma/dense_tracking_command` | `CmdDense.msg` | Dense per-joint 29-DoF target (q/dq + root quat) consumed directly by the policy | 50Hz |
+| `/holosoma/dense_tracking_command` | `CmdDense.msg` | Dense per-joint 29-DoF target (q/dq + root quat) consumed directly by the policy. Dual-role boundary topic: published either by an external client or by the retargeter (from `CmdSMPLH`). | 50Hz |
 | `/holosoma/exoskeleton_command` | `CmdExoskeleton.msg` | Left/right arm joint targets (7+7) plus base twist for the split-body controller | 50Hz |
 | `/holosoma/3pt_command` | `Cmd3pt.msg` | Head + wrist poses with grippers (not supported yet) | 50Hz |
 
@@ -23,6 +23,8 @@ Outputs:
 | `/holosoma/heartbeat` | `Heartbeat.msg` | Liveness + status  | 5 Hz |
 
 Note: for  `/holosoma/holosoma_executed_cmd`, the policy backend fills all 29 values. The split-body backend fills the 14 arm joints (indices 15–28) and zeros the rest.
+
+Note: the dense target need not be recorded separately for policy replay — it is embedded in `/holosoma/observation` (`motion_command` / `motion_ref_ori_b` terms), tick-exact as consumed.
 
 Note: `/holosoma/observation` + `/holosoma/action` + `/holosoma/policy_metadata` make an inference step fully reproducible from a bag alone. The metadata topic is latched (transient-local) so a recorder that subscribes after startup still captures it — record with compatible QoS. On a policy swap the schema is re-published with the new `wandb_id`, so every observation/action row keys to the metadata that describes it.
 
