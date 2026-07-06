@@ -90,6 +90,52 @@ def test_format_array_mismatch_raises():
         encode_frame(_rgb(), "bogus")
 
 
+def test_depth_colorized_to_rgb8_is_raw_rgb_image():
+    # A depth frame in an rgb format is colorized to an [H,W,3] uint8 RGB image, then rgb-encoded.
+    depth = np.full((5, 7, 1), 1.0, np.float32)  # [H,W,1] float meters, as get_camera_data gives
+    enc = encode_frame(depth, "rgb8", modality="depth", depth_range=(0.1, 5.0))
+    assert not enc.compressed and enc.encoding == "rgb8"
+    assert (enc.height, enc.width, enc.step) == (5, 7, 21)  # 3*w; colorized to 3 channels
+    assert len(enc.data) == 5 * 7 * 3
+
+
+def test_depth_colorized_to_jpeg_is_compressed():
+    depth = np.full((8, 8), 1.0, np.float32)
+    enc = encode_frame(depth, "jpeg", modality="depth", jpeg_quality=90, depth_colormap="turbo")
+    assert enc.compressed and enc.compressed_format == "jpeg"
+    assert len(enc.data) > 0
+
+
+def test_depth_colormap_changes_encoded_bytes():
+    # Different colormaps colorize the same depth differently, so the raw rgb bytes differ.
+    depth = np.linspace(0.2, 4.0, 64, dtype=np.float32).reshape(8, 8)
+    turbo = encode_frame(depth, "rgb8", modality="depth", depth_colormap="turbo").data
+    gray = encode_frame(depth, "rgb8", modality="depth", depth_colormap="gray").data
+    assert turbo != gray
+
+
+def test_depth_colorized_near_brighter_than_far_grayscale():
+    # Sanity that the colorization scale reaches the encoder: near reads brighter than far (gray).
+    kw = dict(modality="depth", depth_colormap="gray", depth_range=(0.1, 5.0))
+    near = encode_frame(np.full((4, 4), 0.1, np.float32), "rgb8", **kw)
+    far = encode_frame(np.full((4, 4), 5.0, np.float32), "rgb8", **kw)
+    near_mean = np.frombuffer(near.data, np.uint8).mean()
+    far_mean = np.frombuffer(far.data, np.uint8).mean()
+    assert near_mean > far_mean
+
+
+def test_depth_range_value_changes_encoded_bytes():
+    # depth_range must actually drive normalization: the SAME depth normalizes differently under two
+    # ranges, so the encoded bytes differ. Guards against depth_range being threaded but ignored.
+    depth = np.full((4, 4), 2.0, np.float32)  # a mid-scene depth, well inside both ranges
+    kw = dict(modality="depth", depth_colormap="gray")
+    tight = np.frombuffer(encode_frame(depth, "rgb8", depth_range=(0.1, 3.0), **kw).data, np.uint8)
+    wide = np.frombuffer(encode_frame(depth, "rgb8", depth_range=(0.1, 20.0), **kw).data, np.uint8)
+    # Nearer end of a tight range => 2m sits darker; in a wide range 2m is close to bright. Different.
+    assert not np.array_equal(tight, wide)
+    assert tight.mean() != wide.mean()
+
+
 # ----- camera_info -----
 
 

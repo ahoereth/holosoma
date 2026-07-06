@@ -46,10 +46,30 @@ def test_duplicate_topics_rejected():
 
 
 def test_route_format_modality_mismatch_rejected():
-    with pytest.raises(ValueError, match="needs a depth format"):
-        ROS2ImageRoute(camera="a", topic="/t", modality="depth", format="jpeg")
+    # rgb modality still requires an rgb format (a depth format has nothing to colorize).
     with pytest.raises(ValueError, match="needs an rgb format"):
         ROS2ImageRoute(camera="a", topic="/t", modality="rgb", format="32FC1")
+
+
+def test_depth_route_accepts_rgb_format_for_colorization():
+    # A depth route MAY pick an rgb format: it is colorized to RGB before encoding. Both a raw depth
+    # format and a colorizing rgb format must construct cleanly.
+    raw = ROS2ImageRoute(camera="a", topic="/t", modality="depth", format="32FC1")
+    color = ROS2ImageRoute(camera="a", topic="/t", modality="depth", format="jpeg", depth_colormap="turbo")
+    assert raw.format == "32FC1"
+    assert color.format == "jpeg" and color.depth_colormap == "turbo"
+
+
+def test_route_depth_colormap_validated():
+    with pytest.raises(ValueError, match="depth_colormap"):
+        ROS2ImageRoute(camera="a", topic="/t", modality="depth", format="jpeg", depth_colormap="bogus")
+
+
+def test_route_depth_range_validated():
+    with pytest.raises(ValueError, match="depth_range"):
+        ROS2ImageRoute(camera="a", topic="/t", modality="depth", format="jpeg", depth_range=[5.0, 1.0])
+    with pytest.raises(ValueError, match="depth_range"):
+        ROS2ImageRoute(camera="a", topic="/t", modality="depth", format="jpeg", depth_range=[1.0])
 
 
 def test_route_requires_camera_and_topic():

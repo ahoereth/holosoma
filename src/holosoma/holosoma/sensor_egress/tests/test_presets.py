@@ -13,9 +13,13 @@ import sys
 
 import pytest
 
-from holosoma.config_types.sensor_egress import ROS2ImageEgressConfig
+import numpy as np
+
+from holosoma.config_types.sensor_egress import ROS2ImageEgressConfig, ROS2ImageRoute
+from holosoma.config_types.sensors import CameraSensorConfig, SensorMountConfig, SensorsConfig
 from holosoma.config_values import sensor_egress as egress_values
 from holosoma.config_values import sensors as sensor_values
+from holosoma.sensor_egress.base import CameraIntrinsics, FramePacket
 
 pytestmark = pytest.mark.no_sim
 
@@ -87,6 +91,42 @@ def test_g1_stereo_wrists_sensor_preset_migrated_to_core():
     assert {"head_cam_left", "head_cam_right", "left_wrist_cam", "right_wrist_cam"} <= cams
 
 
+def test_waist_depth_color_preset_colorizes_depth_over_rgb_format():
+    # The colorized-depth preset publishes DEPTH cameras on an RGB (jpeg) format => colorized to RGB.
+    # Cameras must exist in the paired g1-waist sensors preset (else the driver fails loud).
+    inst = next(iter(egress_values.DEFAULTS["ros2-waist-depth-color"].instances.values()))
+    assert isinstance(inst, ROS2ImageEgressConfig)
+    for route in inst.routes.values():
+        assert route.modality == "depth" and route.format == "jpeg"  # depth + rgb format = colorize
+        assert route.depth_colormap == "turbo"
+    waist_cams = set(sensor_values.DEFAULTS["g1-waist"].cameras)
+    assert {r.camera for r in inst.routes.values()} <= waist_cams
+
+
+def test_waist_depth_raw_and_color_preset_shares_one_snapshot_per_camera():
+    # The combined preset publishes each waist camera BOTH ways (raw 32FC1 + colorized jpeg) from a
+    # single node. The two routes per camera share the same (camera, "depth", env) stream key, so
+    # wanted_streams collapses to one triple per camera => the driver does ONE GPU->host copy each,
+    # not two. That single-copy guarantee is the reason to prefer one node over two.
+    inst = next(iter(egress_values.DEFAULTS["ros2-waist-depth-raw+color"].instances.values()))
+    assert isinstance(inst, ROS2ImageEgressConfig)
+    # Four distinct topics (2 cameras x 2 formats), all unique (the config validator also enforces).
+    topics = {r.topic for r in inst.routes.values()}
+    assert len(topics) == len(inst.routes) == 4
+    # Both a raw depth-format route and a colorized rgb-format route are present.
+    formats = {r.format for r in inst.routes.values()}
+    assert "32FC1" in formats and "jpeg" in formats
+    # The colorized routes carry the color knobs; the raw ones stay raw metric depth.
+    assert any(r.format == "jpeg" and r.depth_colormap == "turbo" for r in inst.routes.values())
+    # Cameras exist in the paired sensors preset (else the driver fails loud at startup).
+    waist_cams = set(sensor_values.DEFAULTS["g1-waist"].cameras)
+    assert {r.camera for r in inst.routes.values()} <= waist_cams
+    # The single-copy guarantee: 4 routes but only 2 wanted streams (one per camera).
+    egress = inst.egress_cls(inst, _FakeSimulator(sensor_values.DEFAULTS["g1-waist"]))
+    assert egress.wanted_streams() == {("waist_front_cam", "depth", 0), ("waist_back_cam", "depth", 0)}
+    assert "rclpy" not in sys.modules
+
+
 def test_real_egress_wanted_streams_and_async_default():
     # Construct the REAL ROS2ImageEgress (no start -> no ROS) and check the wiring the driver relies
     # on: wanted_streams from routes, and async_publish on by default.
@@ -94,4 +134,41 @@ def test_real_egress_wanted_streams_and_async_default():
     egress = inst.egress_cls(inst, _FakeSimulator(sensor_values.DEFAULTS["g1-stereo"]))
     assert egress.wanted_streams() == {("head_cam_left", "rgb", 0), ("head_cam_right", "rgb", 0)}
     assert inst.async_publish is True
+    assert "rclpy" not in sys.modules
+
+
+def _depth_frame(camera, value=2.0, h=6, w=6):
+    arr = np.full((h, w, 1), value, np.float32)  # [H,W,1] float meters, as get_camera_data gives
+    intr = CameraIntrinsics(width=w, height=h, vertical_fov=45.0, near=0.01, far=100.0)
+    return FramePacket(camera=camera, modality="depth", env_id=0, array=arr, sim_time=0.0, intrinsics=intr)
+
+
+def test_encode_threads_route_colormap_and_range_without_ros():
+    # ROS2ImageEgress._encode is ROS-free (never touches the node/simulator), so we can verify the
+    # route's depth_colormap/depth_range actually reach encode_frame WITHOUT an rclpy env. Each knob
+    # is isolated (routes differing in ONLY that field) so the test guards BOTH independently: if
+    # _encode dropped one knob to the default, that pair would collide even though the other differs.
+    mount = SensorMountConfig(target_kind="robot_link", target="torso_link")
+    sensors = SensorsConfig(cameras={"waist": CameraSensorConfig(mount=mount, data_types=["depth"])})
+
+    def _route(topic, colormap, drange):
+        return ROS2ImageRoute(
+            camera="waist", topic=topic, modality="depth", format="rgb8", depth_colormap=colormap, depth_range=drange
+        )
+
+    # Same range, different colormap -> isolates route.depth_colormap threading.
+    cmap_a = _route("/t/turbo", "turbo", [0.1, 5.0])
+    cmap_b = _route("/t/gray", "gray", [0.1, 5.0])
+    # Same colormap, different range -> isolates route.depth_range threading.
+    range_a = _route("/t/tight", "gray", [0.1, 3.0])
+    range_b = _route("/t/wide", "gray", [0.1, 20.0])
+    cfg = ROS2ImageEgressConfig(
+        publish_camera_info=False,
+        routes={"ca": cmap_a, "cb": cmap_b, "ra": range_a, "rb": range_b},
+    )
+    egress = cfg.egress_cls(cfg, _FakeSimulator(sensors))  # no start() -> no rclpy
+    frame = _depth_frame("waist")
+    enc = {k: egress._encode(r, frame).data for k, r in cfg.routes.items()}
+    assert enc["ca"] != enc["cb"]  # colormap reaches encode_frame (would collide if defaulted)
+    assert enc["ra"] != enc["rb"]  # depth_range reaches encode_frame (would collide if defaulted)
     assert "rclpy" not in sys.modules

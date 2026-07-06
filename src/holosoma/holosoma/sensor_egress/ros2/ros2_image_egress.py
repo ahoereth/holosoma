@@ -150,17 +150,24 @@ class ROS2ImageEgress(SensorEgress):
             if self.config.async_publish:
                 self._workers[route.topic].submit(packet)
             else:
-                self._publish_encoded(
-                    route, packet, encode_frame(packet.array, route.format, jpeg_quality=self.config.jpeg_quality)
-                )
+                self._publish_encoded(route, packet, self._encode(route, packet))
+
+    def _encode(self, route: ROS2ImageRoute, packet: FramePacket) -> EncodedImage:
+        """Encode a packet for ``route``, colorizing a depth frame when the format is an rgb one."""
+        return encode_frame(
+            packet.array,
+            route.format,
+            modality=route.modality,
+            jpeg_quality=self.config.jpeg_quality,
+            depth_colormap=route.depth_colormap,
+            depth_range=tuple(route.depth_range) if route.depth_range is not None else None,
+        )
 
     def _make_route_sender(self, route: ROS2ImageRoute):
         """Return a worker callback that encodes a FramePacket and publishes it for ``route``."""
 
         def _send(packet: FramePacket) -> None:
-            self._publish_encoded(
-                route, packet, encode_frame(packet.array, route.format, jpeg_quality=self.config.jpeg_quality)
-            )
+            self._publish_encoded(route, packet, self._encode(route, packet))
 
         return _send
 

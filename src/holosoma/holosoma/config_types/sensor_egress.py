@@ -39,6 +39,11 @@ EgressModality = Literal["rgb", "depth"]
 #   - "png"   : sensor_msgs/CompressedImage, lossless RGB.
 #   - "32FC1" : raw sensor_msgs/Image depth, float32 meters (matches get_camera_data).
 #   - "16UC1" : raw sensor_msgs/Image depth, uint16 millimeters.
+#
+# A ``depth`` route MAY pick an rgb format (rgb8/jpeg/png): the depth map is then COLORIZED to RGB
+# (same colormap the viz egress uses) before encoding, for a human-viewable stream. A ``depth`` route
+# with a depth format (32FC1/16UC1) publishes the raw metric depth. An ``rgb`` route may only use an
+# rgb format (there is nothing to colorize).
 ROS2ImageFormat = Literal["rgb8", "jpeg", "png", "32FC1", "16UC1"]
 _RGB_FORMATS = ("rgb8", "jpeg", "png")
 _DEPTH_FORMATS = ("32FC1", "16UC1")
@@ -83,7 +88,16 @@ class ROS2ImageRoute:
     """Which rendered modality to publish; must be in the camera's ``data_types``."""
 
     format: ROS2ImageFormat = "jpeg"
-    """Wire encoding (see :data:`ROS2ImageFormat`). Must match the modality (rgb vs depth)."""
+    """Wire encoding (see :data:`ROS2ImageFormat`). An ``rgb`` route needs an rgb format; a ``depth``
+    route may pick a depth format (raw metric) OR an rgb format (colorized to RGB before encoding)."""
+
+    depth_colormap: str = "inferno"
+    """Colormap used when a ``depth`` route is colorized to RGB (rgb format): inferno (default),
+    turbo, viridis, magma, jet, or gray. Ignored for raw-depth and rgb routes."""
+
+    depth_range: list[float] | None = None
+    """Fixed ``[min_m, max_m]`` depth range (meters) for stable colorization of a colorized ``depth``
+    route; ``None`` means ``[0.01, 5.0]``. ``+inf`` (no hit) maps to the far end. Ignored otherwise."""
 
     @model_validator(mode="after")
     def validate_route(self) -> ROS2ImageRoute:
@@ -92,15 +106,26 @@ class ROS2ImageRoute:
         if not self.topic:
             raise ValueError(f"ROS2ImageRoute for camera '{self.camera}' needs a non-empty topic.")
         rgb_fmt = self.format in _RGB_FORMATS
+        # rgb modality must use an rgb format. depth modality accepts either: a depth format (raw) or
+        # an rgb format (colorized to RGB before encoding) — so only rgb+depth-format is rejected.
         if self.modality == "rgb" and not rgb_fmt:
             raise ValueError(
                 f"ROS2ImageRoute camera '{self.camera}': modality 'rgb' needs an rgb format "
                 f"{_RGB_FORMATS}, got '{self.format}'."
             )
-        if self.modality == "depth" and rgb_fmt:
+        # depth is colorized only when the format is an rgb one; the colormap/range knobs are used
+        # then. Validate the colormap and range regardless so a misconfig fails loud at construction.
+        if self.depth_colormap not in _DEPTH_COLORMAPS:
             raise ValueError(
-                f"ROS2ImageRoute camera '{self.camera}': modality 'depth' needs a depth format "
-                f"{_DEPTH_FORMATS}, got '{self.format}'."
+                f"ROS2ImageRoute camera '{self.camera}': depth_colormap '{self.depth_colormap}' "
+                f"unknown; allowed: {sorted(_DEPTH_COLORMAPS)}."
+            )
+        if self.depth_range is not None and (
+            len(self.depth_range) != 2 or self.depth_range[0] >= self.depth_range[1]
+        ):
+            raise ValueError(
+                f"ROS2ImageRoute camera '{self.camera}': depth_range must be [min_m, max_m] with "
+                f"min<max, got {self.depth_range}."
             )
         return self
 

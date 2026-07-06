@@ -100,13 +100,14 @@ g1_cameras = SensorsConfig(
 # sensing / whole-body awareness fore and aft.
 waist_cameras = SensorsConfig(
     cameras={
-        # forward = body +X, up = body +Z (level), just ahead of the torso.
+        # forward = body +X pitched 70deg down toward -Z, up in the +X/+Z plane; just ahead of the
+        # torso, looking down at the ground ahead of the feet.
         "waist_front_cam": CameraSensorConfig(
             mount=SensorMountConfig(
                 target_kind="robot_link",
                 target="torso_link",
                 position=[0.1, 0.0, 0.0],
-                orientation=[0.5, 0.5, -0.5, -0.5],
+                orientation=[0.69636424, 0.1227878, -0.1227878, -0.69636424],
             ),
             width=128,
             height=128,

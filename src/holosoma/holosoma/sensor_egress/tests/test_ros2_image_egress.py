@@ -150,6 +150,12 @@ def _rgb_packet(camera, h=8, w=8, sim_time=1.5):
     return FramePacket(camera=camera, modality="rgb", env_id=0, array=arr, sim_time=sim_time, intrinsics=intr)
 
 
+def _depth_packet(camera, h=8, w=8, sim_time=1.5):
+    arr = np.full((h, w, 1), 1.0, dtype=np.float32)  # [H,W,1] float meters, as get_camera_data gives
+    intr = CameraIntrinsics(width=w, height=h, vertical_fov=45.0, near=0.01, far=100.0)
+    return FramePacket(camera=camera, modality="depth", env_id=0, array=arr, sim_time=sim_time, intrinsics=intr)
+
+
 def _publish(egress, packet):
     """Hand the egress a single-packet batch (the driver always passes a dict)."""
     egress.publish({packet.key: packet})
@@ -247,6 +253,67 @@ def test_publish_routes_only_matching_camera_modality(fake_ros):
     _publish(egress, _rgb_packet("head"))  # only the head packet
     assert len(_pub_for(node, "/cam/head/compressed").published) == 1
     assert len(_pub_for(node, "/cam/wrist/compressed").published) == 0
+    egress.stop()
+
+
+# ----- colorized depth (depth modality + rgb format) -----
+
+
+def test_depth_route_colorized_publishes_compressed_rgb(fake_ros):
+    import cv2
+    from sensor_msgs.msg import CompressedImage
+
+    # A depth camera routed on an rgb (jpeg) format => the depth map is colorized to RGB, then
+    # published as CompressedImage. The raw float32 depth never reaches the wire on this route.
+    cfg = ROS2ImageEgressConfig(
+        async_publish=False,
+        publish_camera_info=False,
+        routes={
+            "waist": ROS2ImageRoute(
+                camera="waist",
+                topic="/cam/waist/depth_color/compressed",
+                modality="depth",
+                format="jpeg",
+                depth_colormap="turbo",
+                depth_range=[0.1, 4.0],
+            )
+        },
+    )
+    egress = _make(cfg, _cam("waist", data_types=["depth"]))
+    node = _start(egress, fake_ros)
+    pub = _pub_for(node, "/cam/waist/depth_color/compressed")
+    assert pub.msg_type is CompressedImage
+
+    egress.publish({("waist", "depth", 0): _depth_packet("waist")})
+    assert len(pub.published) == 1
+    msg = pub.published[0]
+    assert msg.format == "jpeg"
+    assert msg.header.frame_id == "waist"
+    # Decodes back to a 3-channel RGB image (colorized), not raw depth.
+    bgr = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+    assert bgr.shape == (8, 8, 3)
+    egress.stop()
+
+
+def test_depth_route_raw_still_publishes_float_image(fake_ros):
+    from sensor_msgs.msg import Image
+
+    # A depth route on a depth format (32FC1) is unchanged: raw float32-meter Image, not colorized.
+    cfg = ROS2ImageEgressConfig(
+        async_publish=False,
+        publish_camera_info=False,
+        routes={"waist": ROS2ImageRoute(camera="waist", topic="/cam/waist/depth", modality="depth", format="32FC1")},
+    )
+    egress = _make(cfg, _cam("waist", data_types=["depth"]))
+    node = _start(egress, fake_ros)
+    pub = _pub_for(node, "/cam/waist/depth")
+    assert pub.msg_type is Image
+
+    egress.publish({("waist", "depth", 0): _depth_packet("waist", h=8, w=8)})
+    msg = pub.published[0]
+    assert msg.encoding == "32FC1"
+    assert (msg.height, msg.width, msg.step) == (8, 8, 32)  # 4 bytes * w
+    assert len(msg.data) == 8 * 8 * 4
     egress.stop()
 
 

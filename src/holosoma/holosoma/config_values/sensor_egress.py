@@ -87,6 +87,58 @@ ros2_waist_depth = SensorEgressConfig(
     }
 )
 
+# Like `ros2-waist-depth`, but publishes the waist depth cameras COLORIZED to RGB (turbo colormap)
+# as CompressedImage (jpeg) — a human-viewable depth stream for rviz/teleop rather than raw metric
+# depth. Depth modality + an rgb format triggers colorization; depth_range fixes the color scale.
+# Pair with `sensors:g1-waist`.
+ros2_waist_depth_color = SensorEgressConfig(
+    instances={
+        "waist": ROS2ImageEgressConfig(
+            node_name="sim_cameras_waist_color",
+            routes={
+                "front": ROS2ImageRoute(
+                    camera="waist_front_cam",
+                    topic="/sim_cameras/waist_front/depth_color/compressed",
+                    modality="depth",
+                    format="jpeg",
+                    depth_colormap="turbo",
+                    depth_range=[0.1, 4.0],
+                ),
+                "back": ROS2ImageRoute(
+                    camera="waist_back_cam",
+                    topic="/sim_cameras/waist_back/depth_color/compressed",
+                    modality="depth",
+                    format="jpeg",
+                    depth_colormap="turbo",
+                    depth_range=[0.1, 4.0],
+                ),
+            },
+        )
+    }
+)
+
+# Both at once from ONE node: each waist camera published as raw metric depth (32FC1) AND colorized
+# RGB (jpeg) — the machine-readable stream for perception plus the human-viewable stream for
+# rviz/teleop. The raw and colorized routes for a camera share the same (camera, depth) stream key,
+# so the driver does ONE GPU->host copy per camera and each route just encodes it its own way (no
+# extra render/copy cost over either single-format preset). Routes are reused verbatim from the two
+# presets above (frozen, safe to share). Pair with `sensors:g1-waist`.
+_waist_raw_routes = ros2_waist_depth.instances["waist"].routes
+_waist_color_routes = ros2_waist_depth_color.instances["waist"].routes
+ros2_waist_depth_raw_and_color = SensorEgressConfig(
+    instances={
+        "waist": ROS2ImageEgressConfig(
+            node_name="sim_cameras_waist",
+            routes={
+                "front_raw": _waist_raw_routes["front"],
+                "back_raw": _waist_raw_routes["back"],
+                "front_color": _waist_color_routes["front"],
+                "back_color": _waist_color_routes["back"],
+            },
+        )
+    }
+)
+
 # Visualize all configured cameras (every modality): record an mp4 at teardown. Pair with any
 # sensors preset; cameras=None watches them all. Add --sensor_egress.instances.viz.live_window True
 # for a live cv2 window instead of (or in addition to) the file.
@@ -101,6 +153,8 @@ DEFAULTS: dict[str, SensorEgressConfig] = {
     "ros2-image": ros2_image,
     "ros2-stereo": ros2_stereo,
     "ros2-waist-depth": ros2_waist_depth,
+    "ros2-waist-depth-color": ros2_waist_depth_color,
+    "ros2-waist-depth-raw+color": ros2_waist_depth_raw_and_color,
     "viz": viz,
     "ros2-stereo+viz": ros2_stereo_and_viz,
 }

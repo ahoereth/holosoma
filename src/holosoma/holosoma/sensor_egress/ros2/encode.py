@@ -11,6 +11,11 @@ Format → wire mapping (see ``ROS2ImageFormat`` in config_types/sensor_egress.p
   png   -> sensor_msgs/CompressedImage, format "png"   (cv2 wants BGR; lossless)
   32FC1 -> raw sensor_msgs/Image, encoding "32FC1"     (float32 meters, as get_camera_data gives)
   16UC1 -> raw sensor_msgs/Image, encoding "16UC1"     (uint16 millimeters; +inf/no-hit -> 0)
+
+Modality decides how the array is read before it hits a format: an ``rgb`` frame goes straight to the
+rgb encoders; a ``depth`` frame goes to the raw depth encoders for a depth format, or is COLORIZED to
+an RGB image (via :func:`~holosoma.sensor_egress.depth_color.colorize_depth`) and then rgb-encoded for
+an rgb format. The colorized path is what gives a human-viewable depth stream over jpeg/png/rgb8.
 """
 
 from __future__ import annotations
@@ -18,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+
+from holosoma.sensor_egress.depth_color import DEFAULT_DEPTH_RANGE, colorize_depth
 
 _RGB_FORMATS = ("rgb8", "jpeg", "png")
 _DEPTH_FORMATS = ("32FC1", "16UC1")
@@ -41,9 +48,26 @@ class EncodedImage:
     step: int = 0  # bytes per row for raw Image; 0 for compressed
 
 
-def encode_frame(array: np.ndarray, fmt: str, *, jpeg_quality: int = 50) -> EncodedImage:
-    """Encode one frame array to ``fmt``. Raises ValueError on a format/array mismatch."""
+def encode_frame(
+    array: np.ndarray,
+    fmt: str,
+    *,
+    modality: str = "rgb",
+    jpeg_quality: int = 50,
+    depth_colormap: str = "inferno",
+    depth_range: tuple[float, float] | None = None,
+) -> EncodedImage:
+    """Encode one frame array to ``fmt``. Raises ValueError on a format/array mismatch.
+
+    ``modality`` (``"rgb"`` | ``"depth"``) says how to read ``array`` before encoding: an rgb frame is
+    an ``[H,W,3]`` uint8 image; a depth frame is ``[H,W]``/``[H,W,1]`` float32 meters. A depth frame
+    bound for an rgb format is COLORIZED to RGB first (``depth_colormap``/``depth_range``); a depth
+    frame bound for a depth format is encoded raw. ``depth_range`` ``None`` uses the shared default.
+    """
     if fmt in _RGB_FORMATS:
+        if modality == "depth":
+            # Colorize float depth to an [H,W,3] uint8 RGB image, then encode like any rgb frame.
+            array = colorize_depth(array, depth_range or DEFAULT_DEPTH_RANGE, depth_colormap)
         return _encode_rgb(array, fmt, jpeg_quality=jpeg_quality)
     if fmt in _DEPTH_FORMATS:
         return _encode_depth(array, fmt)

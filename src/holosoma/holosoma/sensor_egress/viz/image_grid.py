@@ -3,7 +3,9 @@
 Used by the viz egress to show several mounted-camera views in one window/frame. It tiles whatever
 flat list it is handed, in order; the caller decides which cameras and in what order. RGB in, RGB
 out (the display/encode boundary converts to BGR). Lives under the viz package since that is its
-only consumer.
+only consumer. Depth colorization is shared with the ROS2 egress in
+``holosoma.sensor_egress.depth_color``; :func:`colorize_depth` is re-exported here for callers that
+still import it from this module.
 """
 
 from __future__ import annotations
@@ -14,63 +16,12 @@ import re
 import cv2
 import numpy as np
 
-from holosoma.config_types.sensor_egress import _DEPTH_COLORMAPS
+from holosoma.sensor_egress.depth_color import colorize_depth
+
+__all__ = ["colorize_depth", "tile_images"]
 
 _BORDER = 2  # white gutter (px) added around every cell, so adjacent views are visibly separated
 _BORDER_COLOR = (255, 255, 255)  # white; symmetric in RGB/BGR so the display boundary needn't care
-
-# Name -> cv2 colormap constant for depth colorization. Kept beside the helper that uses it; the
-# config layer (config_types.sensor_egress._DEPTH_COLORMAPS) validates names against the same set.
-_COLORMAPS = {
-    "inferno": cv2.COLORMAP_INFERNO,
-    "turbo": cv2.COLORMAP_TURBO,
-    "viridis": cv2.COLORMAP_VIRIDIS,
-    "magma": cv2.COLORMAP_MAGMA,
-    "jet": cv2.COLORMAP_JET,
-}
-
-# Keep the two definitions in lockstep: every config-accepted name must be renderable here. "gray"
-# is the one exception (it is grayscale (handled directly in colorize_depth), not a cv2 colormap)
-# so the cv2 map is exactly the config set minus "gray". Fails loud at import if they drift.
-assert set(_COLORMAPS) | {"gray"} == set(_DEPTH_COLORMAPS), (
-    f"_COLORMAPS {sorted(_COLORMAPS)} + 'gray' must match _DEPTH_COLORMAPS {sorted(_DEPTH_COLORMAPS)}"
-)
-
-
-def colorize_depth(
-    depth: np.ndarray,
-    depth_range: tuple[float, float],
-    colormap: str = "inferno",
-) -> np.ndarray:
-    """Colorize a depth map (meters) to an ``HxWx3`` uint8 RGB image for display.
-
-    Depth is float32 meters, ``+inf`` for no-hit. It is clamped to
-    ``depth_range`` and normalized so NEAR -> bright (255) and FAR -> dark (0), then a colormap is
-    applied; ``+inf``/no-hit reads as the far end (0). The output is RGB (cv2.applyColorMap emits
-    BGR, so we reorder) so it flows through ``tile_images`` like any other panel.
-
-    Parameters
-    ----------
-    depth : np.ndarray
-        ``[H,W]`` or ``[H,W,1]`` float depth in meters (``+inf`` = no-hit).
-    depth_range : tuple[float, float]
-        ``(min_m, max_m)`` clamp/normalize range; min maps to bright, max (and no-hit) to dark.
-    colormap : str
-        ``"gray"`` for grayscale, else a key of :data:`_COLORMAPS` (default ``"inferno"``).
-    """
-    dep = np.asarray(depth, dtype=np.float32)
-    if dep.ndim == 3:
-        dep = dep[..., 0]
-    lo, hi = depth_range
-    # +inf/no-hit and NaN -> the far plane so they read as "background", never as near.
-    dep = np.nan_to_num(dep, nan=hi, posinf=hi, neginf=hi)
-    # Clamp to range, normalize to [0,1] with near->1, then to uint8 [0,255] (near bright).
-    norm = 1.0 - (np.clip(dep, lo, hi) - lo) / (hi - lo)
-    gray = (norm * 255.0).round().astype(np.uint8)
-    if colormap == "gray":
-        return np.repeat(gray[..., None], 3, axis=2)
-    bgr = cv2.applyColorMap(gray, _COLORMAPS[colormap])  # cv2 outputs BGR
-    return np.ascontiguousarray(bgr[..., ::-1])  # -> RGB to match the recorder's RGB-in convention
 
 
 def _letterbox(img: np.ndarray, cell_h: int, cell_w: int, pad_value: int) -> np.ndarray:
