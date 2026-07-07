@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import copy
 import dataclasses
+import math
 import os
 import xml.etree.ElementTree as ET
 from typing import Any
