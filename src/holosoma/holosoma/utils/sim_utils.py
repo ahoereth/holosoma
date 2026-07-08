@@ -541,6 +541,7 @@ class DirectSimulation:
             self.simulator.video_recorder.cleanup()
 
         self.simulator._stop_sensor_egress()
+        self.simulator._stop_bridge()
 
         # Cleanup simulation app
         if self.simulation_app:

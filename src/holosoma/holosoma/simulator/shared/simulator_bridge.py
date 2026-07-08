@@ -169,3 +169,13 @@ class SimulatorBridge:
             "robot_bridge_initialized": self.robot_bridge is not None,
             "has_joystick": self.robot_bridge is not None and self.robot_bridge.joystick is not None,
         }
+
+    def close(self) -> None:
+        """Tear down the bridge and its resources.
+
+        Stops the clock publisher and, for the multiprocess Unitree bridge, joins its spawned DDS
+        child (a plain in-process bridge has no ``close`` and is skipped). Safe to call more than once.
+        """
+        if self.robot_bridge is not None and hasattr(self.robot_bridge, "close"):
+            self.robot_bridge.close()
+        self.clock_pub.close()

@@ -590,6 +590,12 @@ class BaseSimulator:
         if self.bridge is not None:
             self.bridge.step()
 
+    def _stop_bridge(self) -> None:
+        """Tear down the bridge if enabled (joins the multiprocess Unitree DDS child). Safe if unset."""
+        if self.bridge is not None:
+            self.bridge.close()
+            self.bridge = None
+
     # ----- Sensor-egress System Helper Methods -----
 
     def _init_sensor_egress(self) -> None:

@@ -160,7 +160,7 @@ class ROS2ImageEgress(SensorEgress):
             modality=route.modality,
             jpeg_quality=self.config.jpeg_quality,
             depth_colormap=route.depth_colormap,
-            depth_range=tuple(route.depth_range) if route.depth_range is not None else None,
+            depth_range=(route.depth_range[0], route.depth_range[1]) if route.depth_range is not None else None,
         )
 
     def _make_route_sender(self, route: ROS2ImageRoute):

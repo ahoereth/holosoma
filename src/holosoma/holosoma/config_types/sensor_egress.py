@@ -120,9 +120,7 @@ class ROS2ImageRoute:
                 f"ROS2ImageRoute camera '{self.camera}': depth_colormap '{self.depth_colormap}' "
                 f"unknown; allowed: {sorted(_DEPTH_COLORMAPS)}."
             )
-        if self.depth_range is not None and (
-            len(self.depth_range) != 2 or self.depth_range[0] >= self.depth_range[1]
-        ):
+        if self.depth_range is not None and (len(self.depth_range) != 2 or self.depth_range[0] >= self.depth_range[1]):
             raise ValueError(
                 f"ROS2ImageRoute camera '{self.camera}': depth_range must be [min_m, max_m] with "
                 f"min<max, got {self.depth_range}."

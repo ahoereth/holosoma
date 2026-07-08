@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 from importlib.metadata import entry_points
+from typing import cast
 
 from loguru import logger
 
@@ -123,8 +124,8 @@ ros2_waist_depth_color = SensorEgressConfig(
 # so the driver does ONE GPU->host copy per camera and each route just encodes it its own way (no
 # extra render/copy cost over either single-format preset). Routes are reused verbatim from the two
 # presets above (frozen, safe to share). Pair with `sensors:g1-waist`.
-_waist_raw_routes = ros2_waist_depth.instances["waist"].routes
-_waist_color_routes = ros2_waist_depth_color.instances["waist"].routes
+_waist_raw_routes = cast("ROS2ImageEgressConfig", ros2_waist_depth.instances["waist"]).routes
+_waist_color_routes = cast("ROS2ImageEgressConfig", ros2_waist_depth_color.instances["waist"]).routes
 ros2_waist_depth_raw_and_color = SensorEgressConfig(
     instances={
         "waist": ROS2ImageEgressConfig(
