@@ -100,14 +100,14 @@ class Ros2DepthConsumer(Sensor):
         self._far_clip = far_clip
         self._timeout = timeout
         self._frame_delay_s = frame_delay_ms / 1000.0
-        # Match the training-time depth resize exactly: torchvision bicubic with
-        # antialiasing (far-tracking observations.image_features). cv2 uses a
-        # different bicubic kernel and never antialiases on downsample, so it would
-        # feed the policy differently-filtered depth than it trained on. Built once.
+        # Match the image_server's resize EXACTLY so the policy sees the same
+        # filtered depth it trained on: torchvision Resize(BICUBIC), constructed
+        # identically to image_server._resize_clip_expand_transpose's
+        # resize_transform (no explicit antialias arg — inherit the torchvision
+        # default, matching the producer rather than betting on a specific value).
         self._resize = T.Resize(
             (resized_height, resized_width),
             interpolation=T.InterpolationMode.BICUBIC,
-            antialias=True,
         )
         # Ring buffer of (monotonic_stamp, (N, 1, H, W)) sets, newest last. A
         # depth of 1 reproduces the original freshest-frame behavior; otherwise

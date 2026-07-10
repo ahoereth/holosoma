@@ -30,10 +30,13 @@ class _FakePolicy:
         self._velocity_input = object()  # not an InterfaceInput -> key_state copy skipped
         self.calls: list[str] = []
         self._orig_dispatch_calls: list = []
+        # Run-status flag the switch guard reads; start/stop flip it like the real policy.
+        self.use_policy_action = False
 
     # lifecycle hooks exercised by _activate
     def _handle_stop_policy(self):
         self.calls.append("stop")
+        self.use_policy_action = False
 
     def _resolve_control_gains(self):
         self.calls.append("gains")
@@ -43,6 +46,7 @@ class _FakePolicy:
 
     def _handle_start_policy(self):
         self.calls.append("start")
+        self.use_policy_action = True
 
     # the original dispatch MultiModePolicy captures + wraps
     def _dispatch_command(self, cmd):
@@ -116,6 +120,37 @@ def test_select_already_active_is_noop():
     n_before = len(switches)
     assert mm.select("mode0") is False  # already active
     assert len(switches) == n_before  # no extra on_switch
+
+
+def test_select_refused_while_active_policy_running():
+    # Safety guard: cannot switch out from under a running policy — stop first.
+    mm, policies, names, _ = _build(3)
+    policies[0].use_policy_action = True  # active policy is running
+    assert mm.select("mode1") is False
+    assert mm.active_index == 0  # unchanged
+
+
+def test_select_force_overrides_running_guard():
+    mm, policies, names, _ = _build(3)
+    policies[0].use_policy_action = True
+    assert mm.select("mode1", force=True) is True
+    assert mm.active_index == 1
+
+
+def test_switch_to_next_refused_while_running():
+    # The switch_mode toggle routes through select, so it is guarded too.
+    mm, policies, names, _ = _build(3)
+    policies[0].use_policy_action = True
+    mm.switch_to_next()
+    assert mm.active_index == 0  # refused
+
+
+def test_select_allowed_after_stop():
+    mm, policies, names, _ = _build(3)
+    policies[0].use_policy_action = True
+    policies[0]._handle_stop_policy()  # operator stops first
+    assert mm.select("mode1") is True
+    assert mm.active_index == 1
 
 
 def test_switch_mode_command_routes_through_patched_dispatch():

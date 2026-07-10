@@ -84,6 +84,15 @@ class MultiModePolicy:
 
     An optional ``on_switch`` callback (``fn(index, name) -> None``) fires after
     every activation (initial + each switch) so the node can publish policy status.
+
+    Run-status safety today is coarse: a switch never auto-starts the target (D5)
+    and ``select`` refuses to switch while the active policy is running. This is a
+    safety interlock, not a formal FSM. TODO(fsm): a proper run-status FSM should
+    live PER POLICY TYPE — each policy variant declaring/validating its own legal
+    transitions (STIFF_HOLD → GET_READY → RUNNING, and what a switch/start/stop is
+    allowed to do from each) — with this wrapper deferring to that contract rather
+    than reading raw ``use_policy_action``. Owner: coordinate with the run-status
+    FSM author (jtomasle) since it touches the shared base command layer.
     """
 
     def __init__(self, policies, names, active_index: int = 0, on_switch=None):
@@ -146,8 +155,12 @@ class MultiModePolicy:
             policy._dispatch_command = patched_dispatch
 
     def switch_to_next(self):
-        """Advance to the next policy in the ring (the ``switch_mode`` toggle)."""
-        self._activate((self.active_index + 1) % len(self.policies))
+        """Advance to the next policy in the ring (the ``switch_mode`` toggle).
+
+        Routes through ``select`` so the running-policy guard applies here too:
+        the toggle is refused while the active policy is running (stop first).
+        """
+        self.select((self.active_index + 1) % len(self.policies))
 
     def select(self, target, force: bool = False) -> bool:
         """Switch to a policy by ``name`` (str) or ``index`` (int).
