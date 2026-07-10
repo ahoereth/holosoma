@@ -436,11 +436,17 @@ class BasePolicy:
         self.onnx_input_names = input_names
         self.onnx_output_names = output_names
 
-        # Extract metadata from ONNX model (hard fault if fails)
+        # Extract metadata from ONNX model. Our exporter JSON-encodes values
+        # (kp/kd are arrays); tolerate non-JSON props (e.g. onnx's standard
+        # producer_name/version strings) by keeping the raw string instead of
+        # faulting the whole load.
         onnx_model = onnx.load(model_path)
         metadata = {}
         for prop in onnx_model.metadata_props:
-            metadata[prop.key] = json.loads(prop.value)
+            try:
+                metadata[prop.key] = json.loads(prop.value)
+            except (json.JSONDecodeError, TypeError):
+                metadata[prop.key] = prop.value
 
         # Extract KP/KD from metadata (will be None if not present)
         self.onnx_kp = np.array(metadata["kp"]) if "kp" in metadata else None
