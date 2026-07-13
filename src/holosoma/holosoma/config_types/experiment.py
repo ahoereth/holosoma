@@ -35,7 +35,7 @@ from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.termination import TerminationManagerCfg
 from holosoma.config_types.terrain import TerrainManagerCfg
-from holosoma.config_values.registry import UseRegistry
+from holosoma.utils.config_registry import UseRegistry
 
 
 def now_timestamp() -> str:

@@ -12,8 +12,8 @@ from pathlib import Path
 
 from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.config_values.experiment import get_annotated_experiment_config
-from holosoma.config_values.registry import parse_config
 from holosoma.train_agent import training_context
+from holosoma.utils.config_registry import parse_config
 
 REPO_ROOT = Path(__file__).parent.parent.parent.absolute()
 

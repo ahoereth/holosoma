@@ -8,7 +8,7 @@ from holosoma.config_types.robot import (
     RobotInitState,
 )
 from holosoma.config_types.scene import PhysicsConfig, PhysXPhysicsConfig
-from holosoma.config_values.registry import ConfigRegistry, deprecated_defaults_alias
+from holosoma.utils.config_registry import ConfigRegistry, deprecated_defaults_alias
 
 ROBOT_REGISTRY = ConfigRegistry(RobotConfig, group="holosoma.config.robot")
 

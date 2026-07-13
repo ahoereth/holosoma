@@ -8,7 +8,7 @@ from holosoma.config_types.algo import (
     PPOConfig,
     PPOModuleDictConfig,
 )
-from holosoma.config_values.registry import ConfigRegistry
+from holosoma.utils.config_registry import ConfigRegistry
 
 ALGO_REGISTRY = ConfigRegistry((PPOAlgoConfig, FastSACAlgoConfig), group="holosoma.config.algo")
 
@@ -110,7 +110,7 @@ fast_sac = ALGO_REGISTRY.add(
     ),
 )
 
-from holosoma.config_values.registry import (  # noqa: E402
+from holosoma.utils.config_registry import (  # noqa: E402
     deprecated_defaults_alias as _deprecated_defaults_alias,
 )
 

@@ -318,7 +318,7 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
 
 def main() -> None:
     from holosoma.config_values.experiment import get_annotated_experiment_config
-    from holosoma.config_values.registry import parse_config
+    from holosoma.utils.config_registry import parse_config
 
     # Pass the factory uncalled so parse_config builds it after plugins load.
     tyro_cfg = parse_config(get_annotated_experiment_config)

@@ -8,10 +8,10 @@ import textwrap
 import pytest
 from loguru import logger
 
-from holosoma_inference.config import registry
 from holosoma_inference.config.config_types.robot import RobotConfig
 from holosoma_inference.config.config_values.robot import ROBOT_REGISTRY, g1_29dof
-from holosoma_inference.config.registry import ConfigRegistry
+from holosoma_inference.utils import config_registry as registry
+from holosoma_inference.utils.config_registry import ConfigRegistry
 
 # Discover all real registries once so resolution sees the full menu set regardless of order.
 registry.load_plugins()
@@ -125,7 +125,7 @@ def test_file_preset_module_is_registered_during_execution(tmp_path):
 def test_registry_from_annotated_reads_marker():
     from typing_extensions import Annotated
 
-    from holosoma_inference.config.registry import UseRegistry, registry_from_annotated
+    from holosoma_inference.utils.config_registry import UseRegistry, registry_from_annotated
 
     assert registry_from_annotated(Annotated[RobotConfig, UseRegistry(ROBOT_REGISTRY)]) is ROBOT_REGISTRY
     # Unmarked hints resolve to None (no type-based inference).

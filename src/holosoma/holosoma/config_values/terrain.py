@@ -1,5 +1,5 @@
 from holosoma.config_types.terrain import MeshType, TerrainManagerCfg, TerrainTermCfg
-from holosoma.config_values.registry import ConfigRegistry
+from holosoma.utils.config_registry import ConfigRegistry
 
 TERRAIN_REGISTRY = ConfigRegistry(TerrainManagerCfg, group="holosoma.config.terrain")
 
@@ -71,7 +71,7 @@ terrain_load_obj = TERRAIN_REGISTRY.add(
     ),
 )
 
-from holosoma.config_values.registry import (  # noqa: E402
+from holosoma.utils.config_registry import (  # noqa: E402
     deprecated_defaults_alias as _deprecated_defaults_alias,
 )
 

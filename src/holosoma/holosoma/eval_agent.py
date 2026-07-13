@@ -8,7 +8,7 @@ from loguru import logger
 from holosoma.agents.base_algo.base_algo import BaseAlgo
 from holosoma.config_types.eval_callback import EvalCallbacksConfig
 from holosoma.config_types.experiment import ExperimentConfig
-from holosoma.config_values.registry import parse_config
+from holosoma.utils.config_registry import parse_config
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.eval_utils import (
     CheckpointConfig,

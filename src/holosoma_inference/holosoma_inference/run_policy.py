@@ -19,8 +19,8 @@ from loguru import logger
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
 from holosoma_inference.config.config_values.inference import get_annotated_inference_config
-from holosoma_inference.config.registry import parse_config
 from holosoma_inference.policies.dual_mode import DualModePolicy, _select_policy_class
+from holosoma_inference.utils.config_registry import parse_config
 from holosoma_inference.utils.misc import restore_terminal_settings
 
 

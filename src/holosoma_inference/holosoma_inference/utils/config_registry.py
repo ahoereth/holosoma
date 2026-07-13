@@ -1,7 +1,7 @@
 """Registry helpers for named config presets."""
 
 # NOTE FOR AGENTS/MAINTAINERS: This module is intentionally mirrored with
-# holosoma_inference.config.registry. Keep behavior changes in sync unless a difference is
+# holosoma.utils.config_registry. Keep behavior changes in sync unless a difference is
 # package-specific.
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any, Callable, TypeVar
 import tyro
 from loguru import logger
 
-from holosoma.utils.compat import entry_points
+from holosoma_inference.pycompat import entry_points
 
 T = TypeVar("T")
 
@@ -35,6 +35,22 @@ def deprecated_defaults_alias(module_name: str, registry: ConfigRegistry) -> Cal
         raise AttributeError(f"module {module_name!r} has no attribute {name!r}")
 
     return __getattr__
+
+
+def deprecated_get_defaults(module_name: str, registry: ConfigRegistry) -> Callable[[], ConfigRegistry]:
+    """Return a deprecated ``get_defaults()`` function for ``registry``."""
+
+    def get_defaults() -> ConfigRegistry:
+        warnings.warn(
+            f"{module_name}.get_defaults() is deprecated; use the module's *_REGISTRY "
+            f"(call load_plugins() first to include entry-point/import-file presets).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        load_plugins()
+        return registry
+
+    return get_defaults
 
 
 # Registry modules append instances here when imported. load_plugins() imports config value modules
@@ -90,11 +106,11 @@ _loaded_files: set[str] = set()
 
 def _discover_registries() -> None:
     """Import config value modules so their registries exist."""
-    from holosoma import config_values
+    from holosoma_inference.config import config_values
 
     for info in pkgutil.iter_modules(config_values.__path__):
         # Leaf modules import any package-specific presets they need.
-        if info.ispkg or info.name == "registry":
+        if info.ispkg:
             continue
         importlib.import_module(f"{config_values.__name__}.{info.name}")
 
@@ -177,8 +193,8 @@ _REGISTRY_ATTR = "_holosoma_config_registry"
 def UseRegistry(registry: ConfigRegistry) -> Any:  # noqa: N802 - annotation marker, reads as a type constructor
     """Bind a config field to ``registry``. Use as ``Annotated`` metadata in either position::
 
-        simulator: Annotated[SimulatorConfig, UseRegistry(RUN_SIM_REGISTRY)]
-        simulators: dict[str, Annotated[SimulatorConfig, UseRegistry(RUN_SIM_REGISTRY)]]
+        inference: Annotated[InferenceConfig, UseRegistry(INFERENCE_REGISTRY)]
+        inferences: dict[str, Annotated[InferenceConfig, UseRegistry(INFERENCE_REGISTRY)]]
 
     A scalar field gets a tyro subcommand menu built from the registry's current contents. A
     dynamic ``dict[str, X]`` field is populated by ``parse_config`` from ``<field>.<key>:<variant>``
@@ -220,7 +236,7 @@ def parse_config(
     Returns:
         The parsed config instance.
     """
-    from holosoma.utils.tyro_utils import (
+    from holosoma_inference.config.tyro_utils import (
         TYRO_CONIFG,
         dynamic_dict_decl_pattern,
         find_dynamic_dict_fields,
@@ -268,7 +284,7 @@ def _merge_dynamic_default(config_type: Any, default: Any, dynamic_defaults: dic
     if not dynamic_defaults:
         return default
 
-    from holosoma.utils.tyro_utils import _strip_annotated
+    from holosoma_inference.config.tyro_utils import _strip_annotated
 
     if default is not None:
         return dataclasses.replace(default, **dynamic_defaults)

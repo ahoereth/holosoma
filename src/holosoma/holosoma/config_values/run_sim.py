@@ -12,7 +12,7 @@ import dataclasses
 
 import holosoma.config_values.simulator
 from holosoma.config_types.simulator import BridgeConfig, SimulatorConfig, VirtualGantryCfg
-from holosoma.config_values.registry import ConfigRegistry
+from holosoma.utils.config_registry import ConfigRegistry
 
 RUN_SIM_REGISTRY = ConfigRegistry(SimulatorConfig, group="holosoma.config.run_sim")
 
@@ -88,7 +88,7 @@ mjwarp = RUN_SIM_REGISTRY.add(
     ),
 )
 
-from holosoma.config_values.registry import (  # noqa: E402
+from holosoma.utils.config_registry import (  # noqa: E402
     deprecated_defaults_alias as _deprecated_defaults_alias,
 )
 

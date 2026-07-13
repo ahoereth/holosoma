@@ -13,11 +13,11 @@ from typing_extensions import Annotated, TypeAlias
 from holosoma.config_types.logger import DisabledLoggerConfig, LoggerConfig, WandbLoggerConfig
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.simulator import SimulatorConfig
-from holosoma.config_values import registry
 from holosoma.config_values.logger import LOGGER_REGISTRY
-from holosoma.config_values.registry import ConfigRegistry, UseRegistry
 from holosoma.config_values.robot import g1_29dof
 from holosoma.config_values.run_sim import RUN_SIM_REGISTRY
+from holosoma.utils import config_registry as registry
+from holosoma.utils.config_registry import ConfigRegistry, UseRegistry
 
 # Ensure all real config_values registries are discovered before any test runs, so
 # registry_for_value_type / parse_config see the full menu set regardless of test order.
@@ -230,7 +230,7 @@ def test_registry_from_annotated_reads_marker():
     from typing_extensions import Annotated
 
     from holosoma.config_values.logger import LOGGER_REGISTRY
-    from holosoma.config_values.registry import UseRegistry, registry_from_annotated
+    from holosoma.utils.config_registry import UseRegistry, registry_from_annotated
 
     hint = Annotated[LoggerConfig, UseRegistry(LOGGER_REGISTRY)]
     assert registry_from_annotated(hint) is LOGGER_REGISTRY
@@ -239,7 +239,7 @@ def test_registry_from_annotated_reads_marker():
 def test_registry_from_annotated_unmarked_is_none():
     from typing_extensions import Annotated
 
-    from holosoma.config_values.registry import registry_from_annotated
+    from holosoma.utils.config_registry import registry_from_annotated
 
     # Bare type, and Annotated without a UseRegistry marker, both resolve to None.
     assert registry_from_annotated(RobotConfig) is None
@@ -251,9 +251,9 @@ def test_registry_from_annotated_disambiguates_shared_type():
     # explicitly, so there is no ambiguity to resolve by type.
     from typing_extensions import Annotated
 
-    from holosoma.config_values.registry import UseRegistry, registry_from_annotated
     from holosoma.config_values.run_sim import RUN_SIM_REGISTRY
     from holosoma.config_values.simulator import SIMULATOR_REGISTRY
+    from holosoma.utils.config_registry import UseRegistry, registry_from_annotated
 
     assert registry_from_annotated(Annotated[SimulatorConfig, UseRegistry(RUN_SIM_REGISTRY)]) is RUN_SIM_REGISTRY
     assert registry_from_annotated(Annotated[SimulatorConfig, UseRegistry(SIMULATOR_REGISTRY)]) is SIMULATOR_REGISTRY
@@ -367,7 +367,7 @@ def test_parse_hyphenated_variant_matches():
 
 def test_optional_dict_field_is_scanned():
     from holosoma.config_values.logger import LOGGER_REGISTRY
-    from holosoma.config_values.registry import registry_from_annotated
+    from holosoma.utils.config_registry import registry_from_annotated
     from holosoma.utils.tyro_utils import find_dynamic_dict_fields
 
     @dataclasses.dataclass(frozen=True)

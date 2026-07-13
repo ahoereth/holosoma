@@ -7,7 +7,7 @@ from typing_extensions import Annotated
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
 from holosoma_inference.config.config_values import observation, robot, task
-from holosoma_inference.config.registry import (
+from holosoma_inference.utils.config_registry import (
     ConfigRegistry,
     deprecated_defaults_alias,
     deprecated_get_defaults,

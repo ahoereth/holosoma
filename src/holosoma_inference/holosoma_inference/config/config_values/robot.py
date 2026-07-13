@@ -7,7 +7,7 @@ for different robot types.
 from __future__ import annotations
 
 from holosoma_inference.config.config_types.robot import RobotConfig
-from holosoma_inference.config.registry import (
+from holosoma_inference.utils.config_registry import (
     ConfigRegistry,
     deprecated_defaults_alias,
     deprecated_get_defaults,

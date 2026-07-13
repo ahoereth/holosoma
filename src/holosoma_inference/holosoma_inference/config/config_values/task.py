@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from holosoma_inference.config.config_types.task import TaskConfig
-from holosoma_inference.config.registry import (
+from holosoma_inference.utils.config_registry import (
     ConfigRegistry,
     deprecated_defaults_alias,
     deprecated_get_defaults,

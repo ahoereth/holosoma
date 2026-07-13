@@ -23,7 +23,7 @@ from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.terrain import TerrainManagerCfg
 from holosoma.config_types.video import VideoConfig
-from holosoma.config_values.registry import UseRegistry
+from holosoma.utils.config_registry import UseRegistry
 
 
 def default_training_config() -> TrainingConfig:

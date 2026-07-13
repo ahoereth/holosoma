@@ -5,7 +5,7 @@ from holosoma.config_types.simulator import (
     SimulatorConfig,
     SimulatorInitConfig,
 )
-from holosoma.config_values.registry import ConfigRegistry
+from holosoma.utils.config_registry import ConfigRegistry
 
 SIMULATOR_REGISTRY = ConfigRegistry(SimulatorConfig, group="holosoma.config.simulator")
 
@@ -110,7 +110,7 @@ mjwarp = SIMULATOR_REGISTRY.add(
     ),
 )
 
-from holosoma.config_values.registry import (  # noqa: E402
+from holosoma.utils.config_registry import (  # noqa: E402
     deprecated_defaults_alias as _deprecated_defaults_alias,
 )
 

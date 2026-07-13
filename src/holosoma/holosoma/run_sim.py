@@ -86,7 +86,7 @@ def main() -> None:
     logger.info("Holosoma Direct Simulation Runner")
     logger.info("Compositional configuration via subcommands (like eval_agent.py)")
 
-    from holosoma.config_values.registry import parse_config
+    from holosoma.utils.config_registry import parse_config
 
     config = parse_config(
         RunSimConfig,
