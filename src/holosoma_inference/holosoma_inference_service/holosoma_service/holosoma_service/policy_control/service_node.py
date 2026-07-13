@@ -377,6 +377,45 @@ def _apply_noninteractive_defaults(config):
     return _map_registered(config, lambda cfg: replace(cfg, task=replace(cfg.task, skip_stiff_prompt=True)))
 
 
+def _resolve_extra_policies(keys, task_jsons):
+    """Resolve each ``--policy <key>`` to its registered InferenceConfig + task overrides.
+
+    ``keys`` are inference-registry names (a leading ``inference:`` from the tyro
+    subcommand form is tolerated); ``task_jsons`` are 1:1 JSON strings of task-field
+    overrides (model_path / interface / velocity_input / state_input / ...). Each
+    resolved extra is a LEAF (its own nested ``policies`` / ``secondary`` stripped),
+    to be injected as ``config.policies`` on the index-0 owner. Everything the JSON
+    does NOT override (rl_rate, policy_type, depth, gains, ...) comes from the
+    preset's registered default ``task``. Exits loudly on an unknown key or an
+    arity mismatch — a bad multi-policy launch must fail fast, not silently drop a
+    policy.
+    """
+    import json as _json
+
+    from holosoma_inference.config.config_values.inference import get_defaults
+
+    if not keys:
+        return []
+    if len(task_jsons) not in (0, len(keys)):
+        raise SystemExit(
+            f"--policy count ({len(keys)}) must equal --policy-task-json count "
+            f"({len(task_jsons)}) or be 0"
+        )
+    defaults = get_defaults()
+    resolved = []
+    for i, key in enumerate(keys):
+        name = key.split("inference:", 1)[-1] if key.startswith("inference:") else key
+        base = defaults.get(name)
+        if base is None:
+            raise SystemExit(
+                f"--policy '{key}': unknown inference key '{name}'. Known: {sorted(defaults)}"
+            )
+        overrides = _json.loads(task_jsons[i]) if i < len(task_jsons) and task_jsons[i] else {}
+        task = replace(base.task, **overrides) if overrides else base.task
+        resolved.append(replace(base, task=task, secondary=None, policies=()))
+    return resolved
+
+
 def main() -> None:
     # Under `ros2 launch` / `ros2 run`, argv carries ROS args (e.g.
     # "--ros-args -r __node:=..."). tyro would reject those, so strip them
@@ -394,6 +433,20 @@ def main() -> None:
     # "disable" toggle. argparse pre-parse is the same workaround run_policy uses.
     pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--secondary", default=None, help="Set to 'none' to disable dual-mode.")
+    # N-policy serving: each --policy <inference:key> registers an EXTRA switchable
+    # policy (a peer of the index-0 hardware owner); its paired --policy-task-json
+    # field-overrides that preset's task (model_path/interface/velocity_input/
+    # state_input/...). far-pi's run_policy_service.sh emits these 1:1. Pre-parsed
+    # (like --secondary) because tyro cannot cleanly populate the policies tuple.
+    pre.add_argument(
+        "--policy", action="append", default=[], help="Extra switchable policy inference key (repeatable)."
+    )
+    pre.add_argument(
+        "--policy-task-json",
+        action="append",
+        default=[],
+        help="JSON task overrides for the matching --policy (repeatable, 1:1 order).",
+    )
     known, remaining = pre.parse_known_args()
     disable_secondary = known.secondary is not None and known.secondary.lower() == "none"
     sys.argv = [sys.argv[0]] + remaining
@@ -402,6 +455,11 @@ def main() -> None:
 
     if disable_secondary:
         config = replace(config, secondary=None)
+    # Inject extra policies AFTER tyro parses the owner. registered_policies()
+    # rejects secondary+policies together, so clear secondary when policies are set.
+    extra_policies = _resolve_extra_policies(known.policy, known.policy_task_json)
+    if extra_policies:
+        config = replace(config, secondary=None, policies=tuple(extra_policies))
     rclpy.init()
 
     # Route the Unitree SDK through its multiprocess proxy so its CycloneDDS
