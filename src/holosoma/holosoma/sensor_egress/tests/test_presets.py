@@ -11,15 +11,15 @@ from __future__ import annotations
 
 import sys
 
+import numpy as np
 import pytest
 
-import numpy as np
-
-from holosoma.config_types.sensor_egress import ROS2ImageEgressConfig, ROS2ImageRoute
+from holosoma.config_types.sensor_egress import ROS2ImageEgressConfig, ROS2ImageRoute, ROS2OdometryEgressConfig
 from holosoma.config_types.sensors import CameraSensorConfig, SensorMountConfig, SensorsConfig
 from holosoma.config_values import sensor_egress as egress_values
 from holosoma.config_values import sensors as sensor_values
 from holosoma.sensor_egress.base import CameraIntrinsics, FramePacket
+from holosoma.utils.safe_torch_import import torch
 
 pytestmark = pytest.mark.no_sim
 
@@ -141,6 +141,70 @@ def _depth_frame(camera, value=2.0, h=6, w=6):
     arr = np.full((h, w, 1), value, np.float32)  # [H,W,1] float meters, as get_camera_data gives
     intr = CameraIntrinsics(width=w, height=h, vertical_fov=45.0, near=0.01, far=100.0)
     return FramePacket(camera=camera, modality="depth", env_id=0, array=arr, sim_time=0.0, intrinsics=intr)
+
+
+def test_odom_preset_is_self_sourced_and_camera_free():
+    # ros2-odom is a camera-free, self-sourced egress: it needs no sensors preset and wants no
+    # camera stream, so it can run in an odom-only pipeline.
+    inst = next(iter(egress_values.DEFAULTS["ros2-odom"].instances.values()))
+    assert isinstance(inst, ROS2OdometryEgressConfig)
+    assert inst.egress_cls.__name__ == "ROS2OdometryEgress"
+    egress = inst.egress_cls(inst, _FakeSimulator(SensorsConfig(cameras={})))  # no start() -> no rclpy
+    assert egress.self_sourced is True
+    assert egress.wanted_streams() == set()
+    assert inst.topic == "/odom"
+    assert "rclpy" not in sys.modules
+
+
+def test_stereo_and_odom_preset_mixes_image_and_odometry_egress():
+    insts = egress_values.DEFAULTS["ros2-stereo+odom"].instances
+    kinds = sorted(type(i).__name__ for i in insts.values())
+    assert kinds == ["ROS2ImageEgressConfig", "ROS2OdometryEgressConfig"]
+
+
+class _OdomFakeSim:
+    """Minimal sim exposing what ROS2OdometryEgress reads: robot_root_states + time()."""
+
+    def __init__(self, root_states):
+        self.robot_root_states = root_states
+        self._t = 0.0
+
+    def time(self):
+        return self._t
+
+
+def test_odom_reads_base_state_and_rotates_velocity_to_body_frame():
+    # Identity orientation: body-frame == world-frame, so the twist equals the raw world velocities.
+    # pos=[1,2,3], quat=xyzw identity, lin_vel_world=[0.5,0,0], ang_vel_world=[0,0,0.2].
+    root = torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.2]])
+    inst = ROS2OdometryEgressConfig()
+    egress = inst.egress_cls(inst, _OdomFakeSim(root))
+    pos, quat, lin, ang, t = egress._read_base_state()
+    assert pos == [1.0, 2.0, 3.0]
+    assert quat == [0.0, 0.0, 0.0, 1.0]  # xyzw, copied straight through
+    assert lin == pytest.approx([0.5, 0.0, 0.0])
+    assert ang == pytest.approx([0.0, 0.0, 0.2])
+    assert t == 0.0
+
+
+def test_odom_velocity_rotation_uses_body_frame_under_yaw():
+    # 90deg yaw: a world +x linear velocity is a body +(-y)... verify against quat_rotate_inverse
+    # directly so the test pins "twist is in the child/body frame", not a hand-computed constant.
+    import math
+
+    from holosoma.utils.rotations import quat_rotate_inverse
+
+    half = math.pi / 4  # 90deg yaw -> quat (x,y,z,w) = (0,0,sin45,cos45)
+    qz, qw = math.sin(half), math.cos(half)
+    root = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, qz, qw, 1.0, 0.0, 0.0, 0.0, 0.0, 0.3]])
+    inst = ROS2OdometryEgressConfig()
+    egress = inst.egress_cls(inst, _OdomFakeSim(root))
+    _, _, lin, ang, _ = egress._read_base_state()
+    quat = root[0, 3:7].unsqueeze(0)
+    exp_lin = quat_rotate_inverse(quat, root[0, 7:10].unsqueeze(0), w_last=True).squeeze(0).tolist()
+    exp_ang = quat_rotate_inverse(quat, root[0, 10:13].unsqueeze(0), w_last=True).squeeze(0).tolist()
+    assert lin == pytest.approx(exp_lin, abs=1e-6)
+    assert ang == pytest.approx(exp_ang, abs=1e-6)
 
 
 def test_encode_threads_route_colormap_and_range_without_ros():

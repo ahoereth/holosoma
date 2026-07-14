@@ -81,6 +81,24 @@ class FailingEgressConfig(FakeEgressConfig):
         return FailingEgress
 
 
+class SelfSourcedEgress(FakeEgress):
+    """A self-sourced egress: wants no camera stream, ticked every step with an empty batch."""
+
+    @property
+    def self_sourced(self):
+        return True
+
+    def wanted_streams(self):
+        return set()
+
+
+@dataclass(frozen=True, config=ConfigDict(extra="forbid"))
+class SelfSourcedEgressConfig(FakeEgressConfig):
+    @property
+    def egress_cls(self):
+        return SelfSourcedEgress
+
+
 @dataclass(frozen=True, config=ConfigDict(extra="forbid"))
 class OtherEgressConfig(EgressInstanceConfig):
     """A second, distinct egress type — used to prove one SensorEgressConfig holds a mix."""
@@ -291,6 +309,51 @@ def test_validation_rejects_out_of_range_env():
     cfg = SensorEgressConfig(instances={"a": FakeEgressConfig(streams=[("head", "rgb", 5)])})
     with pytest.raises(ValueError, match="env 5"):
         SensorEgressDriver(sim, cfg)
+
+
+def test_self_sourced_egress_ticked_every_step_with_empty_batch():
+    # A self-sourced egress is published every publish_due call regardless of camera rendering, and
+    # receives an EMPTY batch (it reads its own data off the sim). No camera read happens for it.
+    sim = _FakeSimulator(_sensors(_cam("head")), {("head", "rgb"): _rgb()})
+    cfg = SensorEgressConfig(instances={"odom": SelfSourcedEgressConfig(streams=[])})
+    driver = SensorEgressDriver(sim, cfg)
+    driver.start()
+    sim.sensor_manager.last_due = set()  # nothing rendered this step
+    driver.publish_due()
+    driver.publish_due()
+    egress = driver.egress[0]
+    assert egress.batches == [{}, {}]  # ticked both steps, empty each time
+    assert sim.reads == []  # never triggered a camera snapshot
+
+
+def test_self_sourced_ticks_even_without_sensor_manager():
+    # An odom-only run has no cameras, so sensor_manager is None. The self-sourced egress must still
+    # tick (the old early-return on sensor_manager is None would have starved it).
+    sim = _FakeSimulator(_sensors(), {})
+    sim.sensor_manager = None
+    cfg = SensorEgressConfig(instances={"odom": SelfSourcedEgressConfig(streams=[])})
+    driver = SensorEgressDriver(sim, cfg)
+    driver.start()
+    driver.publish_due()
+    assert driver.egress[0].batches == [{}]
+
+
+def test_self_sourced_and_camera_egress_coexist():
+    # Mixed run: a camera egress publishes only fresh frames; the self-sourced one ticks regardless.
+    sim = _FakeSimulator(_sensors(_cam("head")), {("head", "rgb"): _rgb()})
+    cfg = SensorEgressConfig(
+        instances={
+            "cam": FakeEgressConfig(streams=[("head", "rgb", 0)]),
+            "odom": SelfSourcedEgressConfig(streams=[]),
+        }
+    )
+    driver = SensorEgressDriver(sim, cfg)
+    driver.start()
+    sim.sensor_manager.last_due = {"head"}
+    driver.publish_due()
+    cam_egress, odom_egress = driver.egress
+    assert [(p.camera, p.modality) for p in cam_egress.received] == [("head", "rgb")]
+    assert odom_egress.batches == [{}]
 
 
 def test_stop_tears_down_all():

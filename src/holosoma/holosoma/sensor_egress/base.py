@@ -99,6 +99,18 @@ class SensorEgress(ABC):
         sim = self.simulator.simulator_config.sim
         return sim.fps / sim.control_decimation_steps
 
+    @property
+    def self_sourced(self) -> bool:
+        """Whether this egress sources its own data off the simulator instead of camera frames.
+
+        ``False`` (default): a camera egress driven by rendered frames — the driver calls
+        :meth:`publish` only on steps where a stream in :meth:`wanted_streams` rendered, passing that
+        batch. ``True``: the egress reads what it needs directly off the simulator (e.g. base pose for
+        odometry); the driver ticks it every control step with an empty batch, regardless of cameras.
+        Such an egress returns an empty :meth:`wanted_streams` (it needs no camera snapshot).
+        """
+        return False
+
     @abstractmethod
     def wanted_streams(self) -> set[StreamKey]:
         """The ``(camera, modality, env_id)`` triples this egress needs.

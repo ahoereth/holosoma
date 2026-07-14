@@ -187,6 +187,52 @@ class ROS2ImageEgressConfig(EgressInstanceConfig):
 
 
 @dataclass(frozen=True, config=_FORBID_EXTRA)
+class ROS2OdometryEgressConfig(EgressInstanceConfig):
+    """One ROS2 node publishing the robot base pose/velocity as ``nav_msgs/Odometry``.
+
+    Self-sourced: reads base pose/velocity straight off ``simulator.robot_root_states`` each control
+    step (no camera frames), the sim analog of the robot's onboard sport/odom estimate. A stopgap
+    that rides the sensor-egress rclpy transport; a first-class base-state egress can replace it
+    later.
+    """
+
+    node_name: str = "sim_odometry"
+    """ROS2 node name created for this sink."""
+
+    topic: str = "/odom"
+    """Topic to publish the ``nav_msgs/Odometry`` on."""
+
+    frame_id: str = "odom"
+    """``header.frame_id``: the fixed frame the pose is expressed in (odometry origin)."""
+
+    child_frame_id: str = "base_link"
+    """``child_frame_id``: the moving body frame the twist is expressed in."""
+
+    qos: str = "best_effort"
+    """QoS profile: ``best_effort`` (default) or ``reliable``."""
+
+    env_id: int = 0
+    """Which environment's base state to publish. Default 0 (the single real-time robot)."""
+
+    @property
+    def egress_cls(self) -> type[SensorEgress]:
+        # Deferred import: keeps rclpy out of CLI-build import.
+        from holosoma.sensor_egress.ros2.ros2_odometry_egress import ROS2OdometryEgress
+
+        return ROS2OdometryEgress
+
+    @model_validator(mode="after")
+    def validate_odometry(self) -> ROS2OdometryEgressConfig:
+        if self.qos not in ("best_effort", "reliable"):
+            raise ValueError(f"ROS2OdometryEgressConfig.qos must be 'best_effort' or 'reliable', got '{self.qos}'.")
+        if not self.topic:
+            raise ValueError("ROS2OdometryEgressConfig.topic must be a non-empty topic.")
+        if self.env_id < 0:
+            raise ValueError(f"ROS2OdometryEgressConfig.env_id must be >= 0, got {self.env_id}.")
+        return self
+
+
+@dataclass(frozen=True, config=_FORBID_EXTRA)
 class VizEgressConfig(EgressInstanceConfig):
     """Local visualization egress: tile mounted-camera views into a live cv2 window and/or an mp4.
 

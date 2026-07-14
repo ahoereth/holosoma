@@ -38,6 +38,10 @@ class SensorEgressDriver:
             self._wanted |= e.wanted_streams()
         # Per-egress wanted set, cached so publish_due routes without re-querying each step.
         self._wanted_by_egress: list[set[StreamKey]] = [e.wanted_streams() for e in self.egress]
+        # Self-sourced egress (odometry, …) read straight off the simulator and are ticked every
+        # control step with an empty batch, independent of camera rendering; cached to skip the
+        # per-step attribute lookup.
+        self._self_sourced: list[SensorEgress] = [e for e in self.egress if e.self_sourced]
         self._validate_against_sensors()
 
     @property
@@ -76,8 +80,22 @@ class SensorEgressDriver:
             e.start()
 
     def publish_due(self) -> None:
-        """Snapshot every freshly-rendered wanted stream once and hand each egress its batch."""
-        if not self.egress or self.simulator.sensor_manager is None:
+        """Snapshot every freshly-rendered wanted stream once and hand each egress its batch.
+
+        Self-sourced egress (odometry, …) are ticked every call with an empty batch regardless of
+        cameras; camera egress are handed only their streams that rendered this step.
+        """
+        if not self.egress:
+            return
+
+        # Self-sourced egress read off the simulator themselves — tick them every step, even when no
+        # camera rendered (or none is configured, so sensor_manager is None).
+        for egress in self._self_sourced:
+            _safe_publish(egress, {})
+
+        # Camera fan-out needs the sensor manager's per-step "which cameras rendered" set; skip it
+        # (but NOT the self-sourced tick above) when there are no cameras.
+        if self.simulator.sensor_manager is None:
             return
         fresh = self.simulator.sensor_manager.last_due  # set[str] of camera names rendered this step
         sim_time = self.simulator.time()
@@ -98,8 +116,11 @@ class SensorEgressDriver:
                     camera=cam, modality=mod, env_id=env, array=host[env], sim_time=sim_time, intrinsics=intr
                 )
 
-        # Hand each egress only the streams it wanted that rendered this step; skip if none.
+        # Hand each camera egress only the streams it wanted that rendered this step; skip if none.
+        # Self-sourced egress already ticked above, so exclude them here.
         for egress, wanted in zip(self.egress, self._wanted_by_egress):
+            if egress.self_sourced:
+                continue
             batch = {k: packets[k] for k in wanted if k in packets}
             if batch:
                 _safe_publish(egress, batch)

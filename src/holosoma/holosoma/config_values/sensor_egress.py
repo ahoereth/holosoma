@@ -21,6 +21,7 @@ from loguru import logger
 from holosoma.config_types.sensor_egress import (
     ROS2ImageEgressConfig,
     ROS2ImageRoute,
+    ROS2OdometryEgressConfig,
     SensorEgressConfig,
     VizEgressConfig,
 )
@@ -140,6 +141,11 @@ ros2_waist_depth_raw_and_color = SensorEgressConfig(
     }
 )
 
+# One ROS2 node publishing the robot base pose/velocity as nav_msgs/Odometry on /odom. Camera-free
+# (self-sourced off robot_root_states), so it needs no sensors preset. The sim stand-in for the
+# robot's onboard sport/odom estimate.
+ros2_odom = SensorEgressConfig(instances={"odom": ROS2OdometryEgressConfig()})
+
 # Visualize all configured cameras (every modality): record an mp4 at teardown. Pair with any
 # sensors preset; cameras=None watches them all. Add --sensor_egress.instances.viz.live_window True
 # for a live cv2 window instead of (or in addition to) the file.
@@ -147,6 +153,10 @@ viz = SensorEgressConfig(instances={"viz": VizEgressConfig(live_window=True)})
 
 # A mixed preset: stream the stereo head over ROS2 and record everything to disk in one run.
 ros2_stereo_and_viz = SensorEgressConfig(instances={**ros2_stereo.instances, "viz": VizEgressConfig(live_window=True)})
+
+# Stereo head cameras AND base odometry over ROS2 from one run — the camera + pose feeds a
+# perception/nav consumer needs together. Reuses the frozen stereo instance verbatim.
+ros2_stereo_and_odom = SensorEgressConfig(instances={**ros2_stereo.instances, "odom": ROS2OdometryEgressConfig()})
 
 # Core presets, seeded directly (not via entry points).
 DEFAULTS: dict[str, SensorEgressConfig] = {
@@ -156,8 +166,10 @@ DEFAULTS: dict[str, SensorEgressConfig] = {
     "ros2-waist-depth": ros2_waist_depth,
     "ros2-waist-depth-color": ros2_waist_depth_color,
     "ros2-waist-depth-raw+color": ros2_waist_depth_raw_and_color,
+    "ros2-odom": ros2_odom,
     "viz": viz,
     "ros2-stereo+viz": ros2_stereo_and_viz,
+    "ros2-stereo+odom": ros2_stereo_and_odom,
 }
 
 
