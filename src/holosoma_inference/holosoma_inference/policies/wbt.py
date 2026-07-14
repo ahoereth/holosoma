@@ -34,6 +34,15 @@ class TargetSource(Protocol):
 
 
 class WholeBodyTrackingPolicy(BasePolicy):
+    # Command contract for the multi-policy status/switch layer (service_node
+    # _control_type): every WBT tracker consumes a DENSE per-body/joint target
+    # (CmdDense on the dense topic), NOT /cmd_vel velocity. Declared explicitly so
+    # trackers whose actor_obs uses masked_mimic / joint_space target terms rather
+    # than the literal `motion_command` term (e.g. HolosomaMaskedMimicPolicy) are
+    # still reported as WBT instead of falling through the obs heuristic to
+    # LOCOMOTION. Subclasses inherit this.
+    CONTROL_TYPE = "WBT"
+
     def __init__(self, config: InferenceConfig):
         self.config = config
 

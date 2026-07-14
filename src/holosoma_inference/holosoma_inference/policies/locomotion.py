@@ -7,6 +7,13 @@ from .base import BasePolicy
 
 
 class LocomotionPolicy(BasePolicy):
+    # Command contract for the multi-policy status/switch layer (service_node
+    # _control_type): locomotion policies are velocity-driven (/cmd_vel Twist),
+    # NOT dense target trackers. Declared explicitly so subclasses (e.g.
+    # DepthDistillationPolicy) report LOCOMOTION deterministically rather than
+    # relying on the "no motion_command term" obs heuristic.
+    CONTROL_TYPE = "LOCOMOTION"
+
     def __init__(self, config):
         super().__init__(config)
         self.is_standing = False
