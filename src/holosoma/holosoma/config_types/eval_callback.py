@@ -15,10 +15,18 @@ class RecordingConfig:
     """Whether to enable trajectory recording."""
 
     output_path: str = "eval_recording.npz"
-    """Path to save NPZ recording."""
+    """Path to save NPZ recording (single-env mode)."""
 
     env_id: int = 0
-    """Environment ID to record."""
+    """Environment ID to record (single-env mode)."""
+
+    tasks_json: str = ""
+    """Optional path to a JSON list of per-env tasks for MULTI-task recording in
+    ONE eval process (one IsaacSim, N envs, one frozen command per env). Each
+    entry: {"name": str, "vx": float, "vy": float, "yaw": float}. When set, env i
+    is driven with task i's command and saved to <output_dir>/<name>.npz (one
+    single-env-format NPZ per task, so the analysis pipeline is unchanged).
+    ``output_path``'s parent dir is used as <output_dir>. Empty = single-env mode."""
 
 
 @dataclass(frozen=True)
