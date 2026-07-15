@@ -203,3 +203,72 @@ def test_set_every_on_removed_hook_raises() -> None:
     handle.remove()
     with pytest.raises(HookRegistryError, match="removed hook"):
         handle.set_every(2)
+
+
+# ----- callback-arity guard (add() rejects a signature that can't take the phase payload) -----
+
+
+def test_add_rejects_required_arg_on_zero_payload_phase() -> None:
+    hooks = HookRegistry()
+
+    def needs_env(env_id: int) -> None: ...
+
+    # POST_STEP emits no args, so a required positional param can never be filled.
+    # The ``type: ignore[call-overload]`` is load-bearing: mypy also rejects this mismatch via
+    # add()'s typed overloads, so if the overloads regress this ignore goes unused and CI notices.
+    with pytest.raises(HookRegistryError, match="requires 1 positional arg"):
+        hooks.add(Phase.POST_STEP, needs_env, name="bad")  # type: ignore[call-overload]
+
+
+def test_add_rejects_zero_arg_callback_on_episode_phase() -> None:
+    hooks = HookRegistry()
+
+    def takes_nothing() -> None: ...
+
+    # EPISODE_START emits env_id, but the callback accepts no positional args.
+    # ``type: ignore[call-overload]`` load-bearing (see test above): the overloads reject this too.
+    with pytest.raises(HookRegistryError, match="accepts at most 0"):
+        hooks.add(Phase.EPISODE_START, takes_nothing, name="bad")  # type: ignore[call-overload]
+
+
+def test_add_accepts_defaulted_arg_on_zero_payload_phase() -> None:
+    # The video recorder's ``capture_frame(env_id: int = 0)`` shape: the default covers the
+    # zero-arg FRAME/STEP emit, so it is a valid registration (not a mismatch).
+    hooks = HookRegistry()
+    calls: list[int] = []
+
+    def capture_frame(env_id: int = 0) -> None:
+        calls.append(env_id)
+
+    hooks.add(Phase.POST_STEP, capture_frame, name="video.capture_frame")
+    hooks.emit(Phase.POST_STEP)
+    assert calls == [0]  # default supplied, no crash
+
+
+def test_add_accepts_varargs_on_any_phase() -> None:
+    hooks = HookRegistry()
+
+    def anything(*args: object) -> None: ...
+
+    hooks.add(Phase.POST_STEP, anything, name="a")
+    hooks.add(Phase.EPISODE_END, anything, name="b")  # *args absorbs env_id too
+
+
+def test_add_arity_guard_ignores_self_on_bound_method() -> None:
+    # inspect.signature on a bound method excludes ``self``, so a one-arg method matches an
+    # episode phase and a defaulted-arg method matches a zero-payload phase.
+    hooks = HookRegistry()
+
+    class Participant:
+        def on_episode_start(self, env_id: int) -> None: ...
+        def capture_frame(self, env_id: int = 0) -> None: ...
+
+    p = Participant()
+    hooks.add(Phase.EPISODE_START, p.on_episode_start, name="ep")
+    hooks.add(Phase.FRAME_END, p.capture_frame, name="frame")
+
+
+def test_add_arity_guard_tolerates_uninspectable_callback() -> None:
+    # Some C-level callables reject inspect.signature; the guard must not block them.
+    hooks = HookRegistry()
+    hooks.add(Phase.EPISODE_END, print, name="builtin")  # print(*args) — accepts env_id

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, overload
 
-from typing_extensions import Self
+from typing_extensions import Literal, Self
 
 from holosoma.config_types.frequency import DecimationLike, is_frequency_string, resolve_decimation
 
@@ -39,6 +40,18 @@ class Phase(str, Enum):
         obj.payload = payload
         obj.periodic = periodic
         return obj
+
+
+# Callback shapes keyed to each phase's payload, so :meth:`HookRegistry.add`'s typed overloads
+# reject an arity mismatch (e.g. a one-arg callback on a zero-payload phase) at type-check time.
+# A callback with only-defaulted params still satisfies the zero-arg alias, matching the runtime
+# ``inspect``-based check in ``add``.
+FrameCallback = Callable[[], Any]
+"""Callback for a zero-payload periodic phase (``FRAME_BEGIN``/``PRE_STEP``/``POST_STEP``/``FRAME_END``)."""
+EpisodeCallback = Callable[[int], Any]
+"""Callback for an episode phase (``EPISODE_START``/``EPISODE_END``); receives ``env_id``."""
+CloseCallback = Callable[[], Any]
+"""Callback for ``CLOSE`` (zero payload, fires once at teardown)."""
 
 
 class HookRegistryError(RuntimeError):
@@ -126,6 +139,36 @@ class HookRegistry:
         self._closed = False
         self._base_rates: dict[Phase, float] = dict(base_rates or {})
 
+    @overload
+    def add(
+        self,
+        phase: Literal[Phase.FRAME_BEGIN, Phase.PRE_STEP, Phase.POST_STEP, Phase.FRAME_END],
+        callback: FrameCallback,
+        *,
+        name: str | None = None,
+        every: DecimationLike = 1,
+    ) -> HookHandle: ...
+
+    @overload
+    def add(
+        self,
+        phase: Literal[Phase.EPISODE_END, Phase.EPISODE_START],
+        callback: EpisodeCallback,
+        *,
+        name: str | None = None,
+        every: DecimationLike = 1,
+    ) -> HookHandle: ...
+
+    @overload
+    def add(
+        self,
+        phase: Literal[Phase.CLOSE],
+        callback: CloseCallback,
+        *,
+        name: str | None = None,
+        every: DecimationLike = 1,
+    ) -> HookHandle: ...
+
     def add(
         self,
         phase: Phase,
@@ -136,6 +179,13 @@ class HookRegistry:
     ) -> HookHandle:
         """Register a hook callback for a lifecycle phase.
 
+        The callback's signature must accept the phase's payload (see :class:`Phase`): zero args for
+        the periodic ``FRAME_*``/``*_STEP`` phases and ``CLOSE``, one ``env_id`` for the episode
+        phases. The typed overloads reject a mismatch at type-check time; :meth:`_check_arity` also
+        checks it at registration, so a wrong-arity callback fails loudly at ``add`` rather than with a
+        ``TypeError`` on the first ``emit``. A parameter with a default still satisfies a phase that
+        passes fewer args (e.g. ``capture_frame(env_id: int = 0)`` on the zero-payload ``FRAME_END``).
+
         ``every`` sub-samples emissions: an int decimation runs the callback once per ``every``
         emissions; a frequency string (``"30Hz"``, ``">30Hz"``, ``"<30Hz"``) is resolved against the
         phase's base tick rate into that decimation. Frequency strings require a periodic phase and a
@@ -143,15 +193,50 @@ class HookRegistry:
         every emission.
         """
         self._assert_mutable(phase)
+        resolved_name = name or self._default_name(callback)
+        self._check_arity(phase, callback, resolved_name)
         record = _HookRecord(
             phase=phase,
             callback=callback,
-            name=name or self._default_name(callback),
+            name=resolved_name,
             every=self._resolve_every(phase, every, name),
         )
         self._records[phase].append(record)
         self._rebuild(phase)
         return HookHandle(self, record)
+
+    @staticmethod
+    def _check_arity(phase: Phase, callback: Callable[..., Any], name: str) -> None:
+        """Fail at registration if ``callback`` can't take the args ``emit`` will pass for ``phase``.
+
+        ``emit`` calls ``callback(*payload)`` with ``len(phase.payload)`` positional args. A callback is
+        compatible when it requires no more than that many positional params (extras must have defaults)
+        and can accept that many (via fixed params or ``*args``). Built-ins and C callables whose
+        signature ``inspect`` can't read are left to runtime.
+        """
+        try:
+            params = list(inspect.signature(callback).parameters.values())
+        except (TypeError, ValueError):
+            return  # Signature not introspectable (e.g. some C callables); defer to runtime.
+
+        n = len(phase.payload)
+        positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        required = sum(1 for p in positional if p.default is p.empty)
+        has_varargs = any(p.kind is p.VAR_POSITIONAL for p in params)
+        max_positional = len(positional)
+
+        if required > n:
+            raise HookRegistryError(
+                f"hook {name!r} on phase {phase.value!r}: callback requires {required} positional "
+                f"arg(s) but the phase emits {n} ({', '.join(phase.payload) or 'none'}). "
+                f"Give the extra param(s) a default or drop them."
+            )
+        if not has_varargs and n > max_positional:
+            raise HookRegistryError(
+                f"hook {name!r} on phase {phase.value!r}: phase emits {n} arg(s) "
+                f"({', '.join(phase.payload)}) but the callback accepts at most {max_positional}. "
+                f"Accept the payload (add the param or *args)."
+            )
 
     def _resolve_every(self, phase: Phase, every: DecimationLike, name: str | None) -> int:
         """Turn a hook's ``every`` into an int decimation, resolving frequency strings vs the base rate."""
