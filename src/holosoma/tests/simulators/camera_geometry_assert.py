@@ -119,7 +119,7 @@ def main() -> int:
 
     headless = args.headless == "true"
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
-    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors="front-cam")
+    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors=_camera_presets.front_cam)
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 
@@ -146,15 +146,18 @@ def main() -> int:
     sim.create_envs(n, env_origins, base_init)
     sim.prepare_sim()
 
-    # Pin the robot to a known upright pose at each env origin so the camera aligns with the
-    # panel placed ahead (IsaacGym jitters the spawn xy; other backends are already at origin).
+    # Pin the robot to a known upright pose at each env origin so the (pelvis-mounted) camera aligns
+    # with the panel placed ahead (IsaacGym jitters the spawn xy; other backends are already at origin).
     import torch as _torch
 
-    robot_states = sim.get_actor_states(["robot"], _torch.arange(n, device=device)).clone()
-    robot_states[:, :3] = env_origins + _torch.tensor(list(init.pos), device=device)
-    robot_states[:, 3:7] = _torch.tensor(list(init.rot), device=device)
-    robot_states[:, 7:] = 0.0
-    sim.set_actor_states(["robot"], _torch.arange(n, device=device), robot_states)
+    def _pin_robot() -> None:
+        robot_states = sim.get_actor_states(["robot"], _torch.arange(n, device=device)).clone()
+        robot_states[:, :3] = env_origins + _torch.tensor(list(init.pos), device=device)
+        robot_states[:, 3:7] = _torch.tensor(list(init.rot), device=device)
+        robot_states[:, 7:] = 0.0
+        sim.set_actor_states(["robot"], _torch.arange(n, device=device), robot_states)
+
+    _pin_robot()
     step(sim, 2)
 
     names = sim.get_sensor_names()
@@ -163,9 +166,15 @@ def main() -> int:
         return 1
 
     step(sim, max(2, steps_for_seconds(sim, 0.05)))
+    # Re-pin immediately before capture: the robot is un-actuated, so the settle steps above let the
+    # pelvis drift/tilt and drag its mounted camera off the panel (an env3-only flake — the projection
+    # math is env-independent, so a real FOV bug fails all envs). Root writes are immediate on every
+    # backend and render_sensors() does its own fetch/step_graphics, so pinning here fixes the pose the
+    # camera renders from without an extra settle.
+    _pin_robot()
     sim.render_sensors()
 
-    cam_name, cam = next(iter(config.sensors.cameras.items()))
+    cam_name, cam = next(iter(config.sensor.items()))
     # Camera-to-panel-face distance: panel center at x=_PANEL_DISTANCE, minus the camera mount x
     # offset, minus the panel half-thickness (0.01 m).
     cam_to_panel = _camera_presets._PANEL_DISTANCE - cam.mount.position[0] - 0.01

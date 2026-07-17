@@ -68,7 +68,7 @@ def main() -> int:
 
     headless = args.headless == "true"
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
-    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors="world-cam")
+    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors=_camera_presets.world_cam)
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 
@@ -121,11 +121,21 @@ def main() -> int:
             w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
         ]
 
+    # Keep the robot OUT of the world camera's forward sightline. The camera sits on the camera↔panel
+    # axis (y=0) looking +X; the robot spawns on that same axis, so advancing it +X toward the panel —
+    # or the un-actuated robot collapsing under gravity during the settle step — puts a limb between
+    # the (fixed) camera and the panel and occludes it, which is exactly what this test must NOT
+    # conflate with camera motion. Shove the robot 1.5 m to the side (clear of the ~0.6 m half-width
+    # 60° frustum at the ~1 m panel distance) so it still moves/yaws to prove the world camera doesn't
+    # follow it, without ever occluding the panel.
+    robot_y_offset = -1.5
+
     def _place(x_offset: float, rot_xyzw) -> None:
         all_ids = torch.arange(n, device=device)
         states = sim.get_actor_states(["robot"], all_ids).clone()
         states[:, :3] = env_origins + torch.tensor(list(init.pos), device=device)
         states[:, 0] += x_offset
+        states[:, 1] += robot_y_offset
         states[:, 3:7] = torch.tensor(rot_xyzw, device=device)
         states[:, 7:] = 0.0
         sim.set_actor_states(["robot"], all_ids, states)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -12,6 +12,7 @@ from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorInitConfig
 from holosoma.managers.terrain import TerrainManager
+from holosoma.simulator.base_simulator.hooks import HookRegistry, Phase
 from holosoma.simulator.shared.object_registry import ObjectRegistry, ObjectType
 from holosoma.simulator.shared.scene_types import SceneInterface
 from holosoma.simulator.types import ActorIndices, ActorNames, ActorPoses, ActorStates, EnvIds
@@ -20,7 +21,6 @@ from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.simulator_config import SimulatorType, get_simulator_type
 
 if TYPE_CHECKING:
-    from holosoma.sensor_egress.driver import SensorEgressDriver
     from holosoma.simulator.shared.camera_controller import CameraController
     from holosoma.simulator.shared.camera_sensor import SensorManager
     from holosoma.simulator.shared.simulator_bridge import SimulatorBridge
@@ -170,13 +170,26 @@ class BaseSimulator:
         self.simulator_config = tyro_config.simulator
         self.scene_config = tyro_config.scene
         self.sensor_config = tyro_config.sensors
-        self.sensor_egress_config = tyro_config.sensor_egress
         self.robot_config = tyro_config.robot
         self.video_config = tyro_config.logger.video
         self.sim_device = device
         self.headless = False
         self.debug_viz_enabled = self.simulator_config.debug_viz
         self.object_registry = ObjectRegistry(device)
+        self.hooks = HookRegistry(base_rates=self._hook_base_rates())
+        # Register camera rendering FIRST (before the plugins below), so on FRAME_END cameras render
+        # before any camera-consumer plugin (egress/viz/video) reads. No-ops until a backend builds
+        # sensor_manager during setup; harmless when no cameras are configured.
+        self.hooks.add(Phase.FRAME_END, self.render_sensors, name="sensors.render")
+        # Build plugins from tyro_config.plugin and keep the instances alive (key -> plugin).
+        # Constructing each here registers its hooks on self.hooks, so they fire on later
+        # emit(). The `none` preset disables a slot.
+        self.installed_plugins: dict[str, Any] = {
+            key: cfg.get_cls()(cfg, self) for key, cfg in tyro_config.plugin.items()
+        }
+        if self.installed_plugins:
+            logger.info(f"Installed plugins: {sorted(self.installed_plugins)}")
+        self._closed = False
 
         # Virtual gantry system
         self.virtual_gantry: VirtualGantry | None = None
@@ -190,12 +203,8 @@ class BaseSimulator:
         # Bridge system
         self.bridge: SimulatorBridge | None = None
 
-        # Sensor-egress system (outbound camera publishing; sensor-side sibling of the bridge).
-        # None until _init_sensor_egress runs; stays None when no egress is configured.
-        self.sensor_egress: SensorEgressDriver | None = None
-
-        # Mounted-camera sensors, populated by each backend during its own sensor setup.
-        # None until a backend creates sensors from self.sensor_config.
+        # Mounted-camera sensors, populated by each backend during its own sensor setup (None until
+        # then, and when no cameras are configured). The render_sensors hook above no-ops until it exists.
         self.sensor_manager: SensorManager | None = None
 
         # To be overridden by subclasses
@@ -575,106 +584,39 @@ class BaseSimulator:
             from holosoma.simulator.shared.simulator_bridge import SimulatorBridge
 
             self.bridge = SimulatorBridge(self, self.simulator_config.bridge)
+            self.bridge.register_hooks(self.hooks)
             logger.info("Bridge system initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize bridge system: {e}")
             raise
 
-    def _step_bridge(self) -> None:
-        """Step bridge system if enabled.
+    def _hook_base_rates(self) -> dict[Phase, float]:
+        """Base tick rate (Hz) of each periodic phase, so hooks can request a rate via ``every="30Hz"``.
 
-        Should be called by subclasses during each physics step,
-        typically before physics simulation. Handles bridge state
-        publishing and command processing.
+        Per-substep phases tick at ``fps``; per-frame phases at the control rate ``fps / control_decimation``.
         """
-        if self.bridge is not None:
-            self.bridge.step()
+        sim = self.simulator_config.sim
+        fps = float(sim.fps)
+        control_hz = fps / sim.control_decimation_steps
+        return {
+            Phase.PRE_STEP: fps,
+            Phase.POST_STEP: fps,
+            Phase.FRAME_BEGIN: control_hz,
+            Phase.FRAME_END: control_hz,
+        }
+
+    def close(self) -> None:
+        """Tear down simulator-owned runtime participants."""
+        if self._closed:
+            return
+        self._closed = True
+        self.hooks.emit(Phase.CLOSE)
 
     def _stop_bridge(self) -> None:
         """Tear down the bridge if enabled (joins the multiprocess Unitree DDS child). Safe if unset."""
         if self.bridge is not None:
             self.bridge.close()
             self.bridge = None
-
-    # ----- Sensor-egress System Helper Methods -----
-
-    def _init_sensor_egress(self) -> None:
-        """Build the sensor-egress driver if any egress is configured.
-
-        Called by a backend after its sensors are created (so routes can validate against the
-        registered cameras). No-op when no egress instances are configured, keeping the import of
-        any transport dependency (e.g. ``rclpy``) off the default path.
-        """
-        if not self.sensor_egress_config.instances:
-            return
-        from holosoma.sensor_egress.driver import SensorEgressDriver
-
-        driver = SensorEgressDriver(self, self.sensor_egress_config)
-        if driver.is_active:
-            driver.start()
-            self.sensor_egress = driver
-            logger.info(f"Sensor egress initialized: {len(driver.egress)} sink(s)")
-
-    def publish_sensor_egress(self) -> None:
-        """Publish freshly-rendered frames through the egress driver. Call AFTER render_sensors."""
-        if self.sensor_egress is not None:
-            self.sensor_egress.publish_due()
-
-    def _stop_sensor_egress(self) -> None:
-        """Tear down the egress driver (close nodes, join worker threads). Safe if never started."""
-        if self.sensor_egress is not None:
-            self.sensor_egress.stop()
-            self.sensor_egress = None
-
-    # ----- Video Recording Interface -----
-    def on_episode_start(self, env_id: int = 0) -> None:
-        """Called when an episode starts.
-
-        This method provides a hook for video recording and other episode-based
-        functionality. Subclasses can override this method to add additional
-        episode start logic while calling super() to maintain video recording.
-
-        Parameters
-        ----------
-        env_id : int, default=0
-            The environment ID where the episode is starting.
-        """
-        if self.virtual_gantry is not None and env_id == 0:
-            # Follow robot on start (may want this configurable later)
-            self.virtual_gantry.set_position_to_robot()
-
-        if self.video_recorder is not None:
-            self.video_recorder.on_episode_start(env_id)
-
-    def on_episode_end(self, env_id: int = 0) -> None:
-        """Called when an episode ends.
-
-        This method provides a hook for video recording and other episode-based
-        functionality. Subclasses can override this method to add additional
-        episode end logic while calling super() to maintain video recording.
-
-        Parameters
-        ----------
-        env_id : int, default=0
-            The environment ID where the episode is ending.
-        """
-        if self.video_recorder is not None:
-            self.video_recorder.on_episode_end(env_id)
-
-    def capture_video_frame(self, env_id: int = 0) -> None:
-        """Capture a video frame during simulation.
-
-        This method should be called during each simulation step when video
-        recording is active. It delegates to the video recorder if one is
-        configured and currently recording.
-
-        Parameters
-        ----------
-        env_id : int, default=0
-            The environment ID where the frame is being captured.
-        """
-        if self.video_recorder is not None:
-            self.video_recorder.capture_frame(env_id)
 
     # ----- Actor/Object Access Interface -----
     # These methods provide unified access to objects registered with ObjectType enum
@@ -827,7 +769,13 @@ class BaseSimulator:
         cheap cached reads via :meth:`get_camera_data`."""
         raise NotImplementedError("The 'render_sensors' method must be implemented in subclasses.")
 
-    def get_camera_data(self, name: str, data_type: str = "rgb", env_ids: EnvIds | None = None) -> torch.Tensor:
+    def get_camera_data(
+        self,
+        name: str,
+        data_type: str = "rgb",
+        env_ids: EnvIds | None = None,
+        device: torch.device | str | None = None,
+    ) -> torch.Tensor:
         """Read a camera's most-recent output.
 
         Output format:
@@ -836,7 +784,7 @@ class BaseSimulator:
         - **Layout** HWC, row-major: row 0 = TOP of the image, column 0 = LEFT.
         - **rgb**: ``torch.uint8`` in ``[0, 255]``, channel order **R, G, B** (C=3).
         - **depth**: ``torch.float32`` meters, distance-to-image-plane, ``+inf`` for no-hit, C=1.
-        - **device**: ``self.sim_device``.
+        - **device**: ``device`` if given, else ``self.sim_device``.
         - **Optical frame**: camera looks down its local ``-Z``, ``+Y`` up; the
           mount offset is applied in the mount-body frame.
 
@@ -849,6 +797,12 @@ class BaseSimulator:
         env_ids : EnvIds | None, default=None
             Absolute environment indices into ``[0, num_envs)`` to return (every camera renders
             all envs, so these index the full buffer); ``None`` returns all environments.
+        device : torch.device | str | None, default=None
+            Where to return the tensor. ``None`` keeps the sim device (no copy). Any other device
+            (e.g. ``"cpu"``) returns a cached cross-device copy of the FULL buffer: the first caller
+            per ``(data_type, device)`` this render pays the transfer, later callers reuse it (so
+            several egress consumers reading the same camera on host cost one device->host sync, not
+            one each). The returned tensor is **read-only** — do not mutate it in place; it is shared.
 
         Raises
         ------
@@ -865,7 +819,7 @@ class BaseSimulator:
                 f"Camera '{name}' has no '{data_type}' frame. Ensure '{data_type}' is in the camera's "
                 f"data_types and render_sensors() has run. Buffered: {sorted(runtime.buffers)}."
             )
-        buf = runtime.buffers[data_type]
+        buf = runtime.buffer_on(data_type, device)
         return buf if env_ids is None else buf[env_ids]
 
     def get_sensor_names(self) -> list[str]:
@@ -875,13 +829,13 @@ class BaseSimulator:
         return self.sensor_manager.names
 
     def sensor_config_by_name(self, name: str):
-        """The ``CameraSensorConfig`` for ``name`` from the active SensorsConfig.
+        """The ``CameraSensorConfig`` for ``name`` from the active mounted-camera dict.
 
-        Used by the sensor-egress driver to read a camera's intrinsics. Raises if unknown.
+        Used by camera-consumer hooks (egress) to read a camera's intrinsics. Raises if unknown.
         """
-        cam = self.sensor_config.cameras.get(name)
+        cam = self.sensor_config.get(name)
         if cam is None:
-            raise KeyError(f"No camera named '{name}' in SensorsConfig. Defined: {list(self.sensor_config.cameras)}.")
+            raise KeyError(f"No camera named '{name}'. Defined cameras: {list(self.sensor_config)}.")
         return cam
 
     # Explicit names-based methods

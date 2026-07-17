@@ -40,17 +40,19 @@ from dataclasses import replace
 
 import numpy as np
 import rclpy
-import tyro
 from holosoma_msgs.msg import CmdDense, Heartbeat
 from loguru import logger
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 
-from holosoma_inference.config.config_values.inference import get_annotated_inference_config
-from holosoma_inference.config.utils import TYRO_CONFIG
+from holosoma_inference.config.config_values.inference import (
+    INFERENCE_REGISTRY,
+    get_annotated_inference_config,
+)
 from holosoma_inference.policies.dual_mode import MultiModePolicy, _select_policy_class
 from holosoma_inference.sensors.base import Sensor
+from holosoma_inference.utils.config_registry import load_plugins, parse_config
 from holosoma_service.policy_control.injected_inputs import (
     CMD_VEL_TOPIC,
     STATE_INPUT_TOPIC,
@@ -392,8 +394,6 @@ def _resolve_extra_policies(keys, task_jsons):
     """
     import json as _json
 
-    from holosoma_inference.config.config_values.inference import get_defaults
-
     if not keys:
         return []
     if len(task_jsons) not in (0, len(keys)):
@@ -401,14 +401,15 @@ def _resolve_extra_policies(keys, task_jsons):
             f"--policy count ({len(keys)}) must equal --policy-task-json count "
             f"({len(task_jsons)}) or be 0"
         )
-    defaults = get_defaults()
+    load_plugins()
     resolved = []
     for i, key in enumerate(keys):
         name = key.split("inference:", 1)[-1] if key.startswith("inference:") else key
-        base = defaults.get(name)
+        base = INFERENCE_REGISTRY.get(name)
         if base is None:
             raise SystemExit(
-                f"--policy '{key}': unknown inference key '{name}'. Known: {sorted(defaults)}"
+                f"--policy '{key}': unknown inference key '{name}'. "
+                f"Known: {sorted(INFERENCE_REGISTRY)}"
             )
         overrides = _json.loads(task_jsons[i]) if i < len(task_jsons) and task_jsons[i] else {}
         task = replace(base.task, **overrides) if overrides else base.task
@@ -426,11 +427,7 @@ def main() -> None:
 
     sys.argv = remove_ros_args(args=sys.argv)
 
-    # TODO: clean up stacking argparse on top of tyro.cli
-    # Pre-parse --secondary none (mirrors run_policy.py behaviour).
-    # tyro cannot natively set a preset-populated Optional[X] back to None via
-    # CLI — it generates nested subcommands for the default's fields with no
-    # "disable" toggle. argparse pre-parse is the same workaround run_policy uses.
+    # Handle the top-level secondary disable flag before parsing the config.
     pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--secondary", default=None, help="Set to 'none' to disable dual-mode.")
     # N-policy serving: each --policy <inference:key> registers an EXTRA switchable
@@ -451,7 +448,7 @@ def main() -> None:
     disable_secondary = known.secondary is not None and known.secondary.lower() == "none"
     sys.argv = [sys.argv[0]] + remaining
 
-    config = tyro.cli(get_annotated_inference_config(), config=TYRO_CONFIG)
+    config = parse_config(get_annotated_inference_config)
 
     if disable_secondary:
         config = replace(config, secondary=None)

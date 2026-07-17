@@ -101,7 +101,9 @@ def main() -> int:
     headless = args.headless == "true"
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
     # front-cam-depth: the forward camera producing both rgb (to locate the panel) and depth.
-    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors="front-cam-depth")
+    config = build_run_sim_config(
+        sim_arg, "panel-target", args.robot, args.terrain, sensors=_camera_presets.front_cam_depth
+    )
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 
@@ -142,7 +144,7 @@ def main() -> int:
     step(sim, max(2, steps_for_seconds(sim, 0.05)))
     sim.render_sensors()
 
-    cam_name, cam = next(iter(config.sensors.cameras.items()))
+    cam_name, cam = next(iter(config.sensor.items()))
     cam_to_panel = _camera_presets._PANEL_DISTANCE - cam.mount.position[0] - 0.01  # camera->panel FACE (m)
 
     fails: list[str] = []

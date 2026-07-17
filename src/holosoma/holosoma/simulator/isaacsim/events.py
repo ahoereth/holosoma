@@ -10,14 +10,15 @@ The mass/CoM/inertia writers take a list of per-component :class:`DistributionSp
 term boundary) and write through ``asset.root_physx_view``; CoM/inertia reset to the asset's captured
 defaults (``asset.data.default_*``) before applying, so repeated calls compose from the original.
 
-The MATERIAL writer (:func:`randomize_rigid_body_material`) is different in kind: PhysX caps the
-number of unique physics materials per scene (~64k), so a per-shape continuous draw is impossible.
-Instead it fills ``num_buckets`` materials with the distribution's QUANTILE values
-(:func:`~holosoma.utils.sampler.quantiles`) and lets each shape uniformly pick a bucket
-(matching IsaacLab's mechanism). Uniform-selecting over quantile values reproduces the requested
-distribution as an ``n``-atom staircase, so the per-shape MARGINAL matches the continuous backends
-APPROXIMATELY (exact agreement is impossible — bucketing-vs-continuous plus per-shape-vs-per-env
-granularity differ across backends); raise ``num_buckets`` to tighten the approximation.
+The MATERIAL writer (:func:`randomize_rigid_body_material`) is different in kind because PhysX caps
+the number of unique physics materials per scene (~64k). It has two orthogonal knobs. ``num_buckets``
+controls VALUE QUANTIZATION: an int fills ``num_buckets`` materials with the distribution's QUANTILE
+values (:func:`~holosoma.utils.sampler.quantiles`) and picks a bucket (matching IsaacLab's mechanism),
+bounding unique materials at ``num_buckets`` — an ``n``-atom staircase matching the continuous
+backends APPROXIMATELY (raise to tighten); ``None`` draws continuously. ``per_env`` controls
+GRANULARITY: ``False`` (default) draws per shape (IsaacLab-native, for object/robot material terms),
+``True`` draws one value per env broadcast across its shapes — matching the IsaacGym per-env friction
+path and capping unique materials at ~``num_envs`` when continuous.
 """
 
 from __future__ import annotations
@@ -262,34 +263,42 @@ def randomize_rigid_body_material(
     static_friction: DistributionLike | None,
     dynamic_friction: DistributionLike | None,
     restitution: DistributionLike | None,
-    num_buckets: int,
+    num_buckets: int | None,
     sampler: TermSampler,
     make_consistent: bool = True,
+    per_env: bool = False,
 ):
-    """Randomize per-shape friction/restitution via a distribution-filled bucket table.
+    """Randomize friction/restitution, bucketed or continuous, per shape or per env.
 
     Each channel is a config range value ([lo, hi] / spec dict / DistributionSpec), or ``None`` to leave
     that channel at its spawned value.
 
-    Replicates IsaacLab's ``randomize_rigid_body_material`` mechanism (sample ``num_buckets``
-    materials once, then assign each shape a uniformly-random bucket) — required because PhysX caps
-    unique materials per scene. The ONE change: instead of filling buckets with ``sample_uniform``,
-    fill each channel (static friction / dynamic friction / restitution) with the QUANTILE values of
-    its :class:`DistributionSpec` via :func:`~holosoma.utils.sampler.quantiles`. Uniform
-    bucket selection over quantile values reproduces the requested distribution as an ``n``-atom
-    staircase, so a gaussian / log_uniform material config matches the continuous backends'
-    per-shape marginal APPROXIMATELY (raise ``num_buckets`` to tighten it).
+    ``num_buckets`` controls VALUE QUANTIZATION (how the PhysX per-scene material cap ~64k is respected):
+    - an int (the default path): replicates IsaacLab's mechanism (build ``num_buckets`` materials once,
+      assign a bucket), so total unique materials stay bounded at ``num_buckets`` regardless of
+      env/shape count. The ONE change from IsaacLab: fill each channel with the QUANTILE values of its
+      :class:`DistributionSpec` (via :func:`~holosoma.utils.sampler.quantiles`) instead of
+      ``sample_uniform``, so a gaussian / log_uniform config matches the continuous backends' marginal
+      APPROXIMATELY as an ``n``-atom staircase (raise ``num_buckets`` to tighten it).
+    - ``None``: draw a CONTINUOUS value per channel (a true marginal).
+
+    ``per_env`` controls GRANULARITY (independent of quantization):
+    - ``False`` (default): draw independently PER SHAPE — the IsaacLab-native behavior, kept for the
+      object/robot material terms.
+    - ``True``: draw ONE value per env and broadcast it across that env's shapes, matching the IsaacGym
+      per-env friction path (and MuJoCo's ``shared_across_entities``). The friction term uses this so
+      one robot has a single contact-friction coefficient on every backend. Per-env also caps unique
+      materials at ~``num_envs`` when continuous, keeping it under the PhysX limit.
 
     A channel spec of ``None`` is NOT randomized — that column keeps each shape's spawned value
     (so a config can randomize, e.g., friction only and leave restitution as authored). Returns
     early if all three are ``None``.
 
-    ``make_consistent`` clamps dynamic friction <= static friction per bucket (PhysX expects this),
+    ``make_consistent`` clamps dynamic friction <= static friction (PhysX expects this),
     matching IsaacLab's optional flag; enabled by default here since friction DR always wants it.
 
-    Reproducibility: both the per-channel bucket shuffle and the per-shape bucket selection go through
-    the keyed ``sampler`` (distinct axes), so a seeded run produces the same realized material every
-    time — unlike a global-RNG shuffle, which would vary run-to-run despite a keyed selection.
+    Reproducibility: every draw (bucket fill shuffle, bucket pick, or continuous value) goes through
+    the keyed ``sampler`` on distinct axes, so a seeded run produces the same realized material.
     """
 
     def _spec(leaf: DistributionLike | None) -> DistributionSpec | None:
@@ -298,7 +307,8 @@ def randomize_rigid_body_material(
     static_friction_spec = _spec(static_friction)
     dynamic_friction_spec = _spec(dynamic_friction)
     restitution_spec = _spec(restitution)
-    if static_friction_spec is None and dynamic_friction_spec is None and restitution_spec is None:
+    channel_specs = (static_friction_spec, dynamic_friction_spec, restitution_spec)
+    if all(spec is None for spec in channel_specs):
         return
 
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
@@ -309,24 +319,31 @@ def randomize_rigid_body_material(
         env_ids = env_ids.cpu()
 
     materials = asset.root_physx_view.get_material_properties()
-
-    # Build the per-shape sample column-by-column. For a randomized channel: fill a bucket column
-    # with the spec's quantile values, shuffle it with a KEYED permutation (distinct stream coord per
-    # channel so the columns are not rank-aligned — matches IsaacLab's independent per-column draw —
-    # and the realized material is reproducible per seed; quantiles stays deterministic), then pick one
-    # bucket per shape via the keyed selection (stream coord 3, distinct from the channel stream coords
-    # 0/1/2). For a None channel: keep each shape's CURRENT value (that column is left untouched).
     total_num_shapes = asset.root_physx_view.max_shapes
-    # Per-(env, shape) bucket pick: stream coord 3 (distinct from the channel stream coords 0/1/2) +
-    # the shape ids as a [1, n_shapes] coord -> [n_env, n_shapes].
-    shape_ids = torch.arange(total_num_shapes)
-    bucket_ids = sampler.draw_int(0, num_buckets - 1, env_ids=env_ids, coords=(3, shape_ids[None, :]))
     samples = materials[env_ids].clone()  # (n_env, n_shapes, 3); start from current, overwrite chosen cols
-    for k, spec in enumerate((static_friction_spec, dynamic_friction_spec, restitution_spec)):
+
+    # ``per_env`` picks the shape coordinate: absent -> one draw per env, broadcast across shapes;
+    # present (a [1, n_shapes] coord) -> an independent per-(env, shape) draw. The trailing shape
+    # broadcast/assignment is identical either way.
+    shape_ids = torch.arange(total_num_shapes)
+    shape_coord: tuple = () if per_env else (shape_ids[None, :],)
+
+    for k, spec in enumerate(channel_specs):
         if spec is None:
             continue
-        column = quantiles(spec, num_buckets, "cpu")[sampler.permute(num_buckets, (k,))]
-        samples[..., k] = column[bucket_ids]
+        if num_buckets is None:
+            # Continuous: channel stream coords 0/1/2 keep the three columns decorrelated.
+            drawn = sampler.draw(spec, env_ids=env_ids, coords=(k, *shape_coord))  # [n_env] or [n_env, n_shapes]
+        else:
+            # Bucketed: fill a per-channel bucket column with the spec's quantile values, shuffle it
+            # with a KEYED permutation (distinct stream coord per channel so columns are not
+            # rank-aligned — matches IsaacLab's independent per-column draw, reproducible per seed),
+            # then pick a bucket via the keyed selection (stream coord 3, distinct from 0/1/2). Total
+            # unique materials stay bounded at num_buckets.
+            column = quantiles(spec, num_buckets, "cpu")[sampler.permute(num_buckets, (k,))]
+            bucket_ids = sampler.draw_int(0, num_buckets - 1, env_ids=env_ids, coords=(3, *shape_coord))
+            drawn = column[bucket_ids]
+        samples[..., k] = drawn[:, None] if per_env else drawn  # broadcast per-env value over shapes
 
     if make_consistent and (static_friction_spec is not None or dynamic_friction_spec is not None):
         samples[..., 1] = torch.min(samples[..., 0], samples[..., 1])  # dynamic <= static (PhysX)

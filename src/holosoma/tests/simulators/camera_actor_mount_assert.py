@@ -35,7 +35,7 @@ def main() -> int:
 
     headless = args.headless == "true"
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
-    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors="actor-cam")
+    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors=_camera_presets.actor_cam)
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 
@@ -71,7 +71,7 @@ def main() -> int:
 
     fails: list[str] = []
     img = sim.get_camera_data("panel_cam", "rgb")  # [N,H,W,3] uint8
-    cam = next(iter(config.sensors.cameras.values()))
+    cam = next(iter(config.sensor.values()))
     if tuple(img.shape) != (n, cam.height, cam.width, 3) or img.dtype != torch.uint8:
         fails.append(f"{args.simulator}: actor-mount frame shape/dtype {tuple(img.shape)} {img.dtype}")
     for e in range(n):

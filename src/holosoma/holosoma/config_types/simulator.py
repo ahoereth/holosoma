@@ -124,9 +124,10 @@ class SimEngineConfig:
     """Physics steps per control step: sets the CONTROL (policy) rate to ``fps / control_decimation``
     Hz. Each control step the policy emits one action that is HELD while the sim runs this many
     physics steps, then the next observation/action is taken. Higher = cheaper, lower-frequency
-    control. Int (every Nth physics step), or a frequency string ("50Hz") that means the same rate
-    expressed against ``fps`` (e.g. fps=200, "50Hz" -> 4). Holds the value AS WRITTEN; read the
-    resolved integer step count via :attr:`control_decimation_steps`."""
+    control. Int (every Nth physics step), or a frequency string expressed against ``fps``: a bare
+    "50Hz" requires an exact decimation (e.g. fps=200 -> 4) and errors if not exactly achievable,
+    while ">50Hz"/"<50Hz" round to the nearest rate at or above/below the target. Holds the value AS
+    WRITTEN; read the resolved integer step count via :attr:`control_decimation_steps`."""
 
     substeps: int
     """Solver substeps WITHIN each physics step — subdivides the ``1/fps`` step for finer/stabler
@@ -240,6 +241,13 @@ class BridgeConfig:
     # ROS settings
     use_ros: bool = False
     """Whether to use ROS for communication."""
+
+    publish_odom: bool = False
+    """Publish base odometry over the SDK (SportModeState on rt/odommodestate) each step.
+
+    Off by default. Turn on when the sim should feed base odometry through the Unitree SDK bridge
+    (so a downstream telemetry read_odom_state -> /telemetry/odom is identical to hardware). Only
+    SDKs with a base-state channel act on it; others (booster) treat publish_odom as a no-op."""
 
 
 @dataclass(frozen=True)

@@ -54,7 +54,9 @@ def main() -> int:
     headless = args.headless == "true"
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
     # slow-fast-cam: fast_cam (decimation=1) and slow_cam (decimation=3) at the same mount, both rgb.
-    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors="slow-fast-cam")
+    config = build_run_sim_config(
+        sim_arg, "panel-target", args.robot, args.terrain, sensors=_camera_presets.slow_fast_cam
+    )
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 
@@ -91,7 +93,7 @@ def main() -> int:
         print(f"[{args.simulator}] FAIL: expected fast_cam+slow_cam, got {sim.get_sensor_names()}")
         return 1
 
-    _first_cam = next(iter(config.sensors.cameras.values()))
+    _first_cam = next(iter(config.sensor.values()))
     h, w = _first_cam.height, _first_cam.width
     # A dict (concatenate=False) group: fast_cam as CHW float01 rgb, slow_cam as plain rgb.
     rgb_tf = {"layout": "CHW", "scale": "float01"}

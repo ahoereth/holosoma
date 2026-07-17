@@ -170,10 +170,11 @@ class IsaacSim(BaseSimulator):
             self._setup_scene()
         print("[INFO]: Scene manager: ", self.scene)
 
+        viewer_config: ViewerCfg
         if self.simulator_config.viewer.enable_tracking:
-            viewer_config: ViewerCfg = ViewerCfg(origin_type="asset_root", asset_name="robot", eye=(0.0, -1.5, 1.5))
+            viewer_config = ViewerCfg(origin_type="asset_root", asset_name="robot", eye=(0.0, -1.5, 1.5))
         else:
-            viewer_config: ViewerCfg = ViewerCfg()
+            viewer_config = ViewerCfg()
 
         if self.sim.render_mode >= self.sim.RenderMode.PARTIAL_RENDERING:
             self.viewport_camera_controller: ViewportCameraController | None = ViewportCameraController(
@@ -529,7 +530,6 @@ class IsaacSim(BaseSimulator):
         # Register the TiledCameras (built pre-clone above) into the shared SensorManager. Done
         # here at the end of scene build (IsaacSim builds its scene in __init__, not load_assets).
         self._create_sensors()
-        self._init_sensor_egress()
 
     # ----- Camera sensors (TiledCamera; child prim of the mount body, auto-follow) -----
 
@@ -562,7 +562,7 @@ class IsaacSim(BaseSimulator):
         Mount quat is the config-layer ``[w,x,y,z]`` (IsaacLab OffsetCfg.rot is also w-first).
         """
         self._tiled_cameras = {}
-        for cam_name, cam in self.sensor_config.cameras.items():
+        for cam_name, cam in self.sensor_config.items():
             parent = self._camera_mount_prim_path(cam.mount)
             # Map holosoma data_types -> IsaacLab annotators.
             annotators = [{"rgb": "rgb", "depth": "distance_to_image_plane"}[d] for d in cam.data_types]
@@ -577,6 +577,8 @@ class IsaacSim(BaseSimulator):
                 spawn=self._pinhole_cfg_for(cam),
                 width=cam.width,
                 height=cam.height,
+                # No-hit / beyond-far depth handling, done natively by the TiledCamera.
+                depth_clipping_behavior=(cam.isaacsim.depth_clipping_behavior if cam.isaacsim is not None else "none"),
             )
             self._tiled_cameras[cam_name] = TiledCamera(cam_cfg)
             self.scene.sensors[cam_name] = self._tiled_cameras[cam_name]
@@ -608,7 +610,7 @@ class IsaacSim(BaseSimulator):
 
     def _create_sensors(self) -> None:
         """Register the TiledCameras (built pre-clone) into the shared SensorManager."""
-        cameras = self.sensor_config.cameras
+        cameras = self.sensor_config
         if not cameras:
             return
         from holosoma.simulator.shared.camera_sensor import SensorManager
@@ -633,12 +635,13 @@ class IsaacSim(BaseSimulator):
                 rgb = out["rgb"][..., :3]  # [N,H,W,3], drop alpha
                 if rgb.dtype != torch.uint8:
                     rgb = rgb.clamp(0, 255).to(torch.uint8)
-                runtime.buffers["rgb"] = rgb
+                runtime.set_buffer("rgb", rgb)
             if "depth" in runtime.config.data_types:
-                # distance_to_image_plane is float32 meters, image-plane, +inf no-hit. Ensure a
-                # trailing channel dim -> [N,H,W,1].
+                # distance_to_image_plane is float32 meters, image-plane. No-hit handling (raw +inf,
+                # clamp to far, or zero) is done by the TiledCamera itself via depth_clipping_behavior
+                # (see _tiled_camera_cfg). Ensure a trailing channel dim -> [N,H,W,1].
                 depth = out["distance_to_image_plane"].to(torch.float32)
-                runtime.buffers["depth"] = depth if depth.ndim == 4 else depth.unsqueeze(-1)
+                runtime.set_buffer("depth", depth if depth.ndim == 4 else depth.unsqueeze(-1))
 
     def _get_base_body_name(self, preference_order: list[str]) -> str:
         """Get the base body name with fallback logic.
@@ -966,6 +969,7 @@ class IsaacSim(BaseSimulator):
             attachment_body_names=gantry_cfg.attachment_body_names,
             cfg=gantry_cfg,
         )
+        self.virtual_gantry.register_hooks(self.hooks)
 
         # Initialize bridge system using base class helper
         self._init_bridge()
@@ -973,6 +977,7 @@ class IsaacSim(BaseSimulator):
         # Setup video recording after scene is ready
         if self.video_recorder:
             self.video_recorder.setup_recording()
+            self.video_recorder.register_hooks(self.hooks)
 
         # Initialize robot tensors
         self.refresh_sim_tensors()
@@ -1047,13 +1052,6 @@ class IsaacSim(BaseSimulator):
         has_video_recording = self.video_recorder is not None and self.video_recorder.is_recording
         is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors() or has_video_recording
 
-        # Apply virtual gantry forces before physics step
-        if self.virtual_gantry:
-            self.virtual_gantry.step()
-
-        # Step bridge for updated torques before physics step using base class helper
-        self._step_bridge()
-
         self.scene.write_data_to_sim()
 
         # simulate
@@ -1082,10 +1080,6 @@ class IsaacSim(BaseSimulator):
             current_base_vel = self.robot_root_states[:, 7:10]
             self.base_linear_acc = (current_base_vel - self.prev_base_lin_vel) / self.sim_dt
             self.prev_base_lin_vel = current_base_vel.clone()
-
-        # Call video recorder capture frame if recording is active
-        if self.video_recorder:
-            self.capture_video_frame()
 
     def setup_viewer(self):
         self.viewer = self.viewport_camera_controller

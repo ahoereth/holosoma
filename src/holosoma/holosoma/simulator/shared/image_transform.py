@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from holosoma.utils.safe_torch_import import torch
 
 if TYPE_CHECKING:
-    from holosoma.config_types.sensors import ImageTransformConfig
+    from holosoma.config_types.sensor import ImageTransformConfig
 
 
 def apply_image_transform(image: torch.Tensor, config: ImageTransformConfig, modality: str) -> torch.Tensor:

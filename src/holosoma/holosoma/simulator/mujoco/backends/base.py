@@ -409,15 +409,15 @@ class IMujocoBackend(abc.ABC):
         Parameters
         ----------
         cameras : list[CameraRuntime]
-            All registered cameras; the backend resolves each native resource from ``config.name``.
+            All registered cameras; the backend resolves each native resource from ``runtime.name``.
         """
         ...
 
     @abc.abstractmethod
     def render_cameras(self, cameras: list[CameraRuntime]) -> None:
-        """Render the given cameras and fill each one's canonical output buffers in place.
+        """Render the given cameras and store each one's canonical output buffer.
 
-        Writes ``runtime.buffers[data_type]`` per requested modalityt:
+        Writes each modality via ``runtime.set_buffer(data_type, tensor)``:
         ``rgb`` [N,H,W,3] uint8, ``depth`` [N,H,W,1] float32 meters (+inf no-hit), on ``self.device``.
 
         Parameters

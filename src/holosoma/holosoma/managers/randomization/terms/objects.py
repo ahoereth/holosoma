@@ -28,7 +28,7 @@ from holosoma.simulator import mujoco_required_field
 from holosoma.simulator.shared.field_decorators import MUJOCO_FIELD_ATTR
 from holosoma.simulator.shared.object_registry import ObjectType
 from holosoma.utils.rotations import quat_from_angle_axis, quat_mul
-from holosoma.utils.sampler import DistributionLike, DistributionSpec, TermSampler
+from holosoma.utils.sampler import DistributionLike, DistributionSpec, TermSampler, quantiles
 from holosoma.utils.simulator_config import SimulatorType
 
 
@@ -130,6 +130,29 @@ def _coerce_material_cfg(material: MaterialRandomizationConfig | dict) -> Materi
     return MaterialRandomizationConfig(**material)
 
 
+def _draw_material_channel(
+    sampler: TermSampler,
+    spec: DistributionLike,
+    env_ids: torch.Tensor,
+    obj_ids: torch.Tensor,
+    stream: int,
+    num_buckets: int | None,
+) -> torch.Tensor:
+    """Draw a per-(env, object) material value, continuous or quantized onto ``num_buckets``.
+
+    ``None``: one continuous keyed draw per (env, object) on stream ``stream`` -> [n_env, n_obj].
+    An int: fill ``num_buckets`` buckets with the spec's quantile values (keyed permute so the
+    staircase is reproducible-but-shuffled per seed), then pick a bucket per (env, object) via the
+    keyed selection — same quantization the IsaacSim material writer / robot friction term use, so a
+    bucketed object-material config reads consistently across backends.
+    """
+    if num_buckets is None:
+        return sampler.draw(spec, env_ids=env_ids, coords=(stream, obj_ids))
+    column = quantiles(DistributionSpec.parse(spec), num_buckets, "cpu")[sampler.permute(num_buckets, (stream,))]
+    bucket_ids = sampler.draw_int(0, num_buckets - 1, env_ids=env_ids, coords=(stream, obj_ids))
+    return column[bucket_ids]
+
+
 @mujoco_required_field("geom_friction")
 def randomize_object_rigid_body_material_startup(
     env,
@@ -138,6 +161,7 @@ def randomize_object_rigid_body_material_startup(
     sampler: TermSampler,
     material: MaterialRandomizationConfig | dict,
     object_names: Sequence[str] | None = None,
+    num_buckets: int | None = _MATERIAL_NUM_BUCKETS,
     enabled: bool = True,
     **_,
 ) -> None:
@@ -157,8 +181,13 @@ def randomize_object_rigid_body_material_startup(
     or a ``{kind, low, high, mean, std}`` spec dict. Targets every registered free body by default;
     pass ``object_names`` to narrow it. No-ops on a robot-only scene.
 
-    The per-shape marginal is matched across backends up to discretization — IsaacGym/MuJoCo draw
-    friction continuously; IsaacSim buckets into a 64-atom quantile staircase.
+    ``num_buckets`` controls VALUE QUANTIZATION uniformly across backends (mirrors the robot friction
+    term). An int (default 64) quantizes every channel's draw onto that many stratified quantile
+    values — required on IsaacSim to respect PhysX's per-scene material cap, and applied identically on
+    IsaacGym/MuJoCo (which have no cap) so a bucketed config reads consistently everywhere. ``None``
+    draws continuously; use it when the per-object material count is safely under the cap. Granularity
+    is unchanged (per-object on IsaacGym, per-shape on IsaacSim, per-geom on MuJoCo) — objects keep
+    their within-env material variety.
     """
     if not enabled:
         return
@@ -185,13 +214,16 @@ def randomize_object_rigid_body_material_startup(
         # written to the object's shapes — per-object like the mass/inertia branches, so objects
         # within one env get independent materials (matching MuJoCo/IsaacSim's within-env variety).
         # A None channel is left at the spawned value. friction -> single sliding coeff (stream 0);
-        # restitution -> native per-shape restitution (stream 1). -> [E, n_names].
+        # restitution -> native per-shape restitution (stream 1). num_buckets quantizes each draw the
+        # same way as the IsaacSim writer. -> [E, n_names].
         obj_ids = torch.arange(len(names))[None, :]
         fric = (
-            sampler.draw(ig_cfg.friction, env_ids=idx_cpu, coords=(0, obj_ids)) if ig_cfg.friction is not None else None
+            _draw_material_channel(sampler, ig_cfg.friction, idx_cpu, obj_ids, 0, num_buckets)
+            if ig_cfg.friction is not None
+            else None
         )
         rest = (
-            sampler.draw(ig_cfg.restitution, env_ids=idx_cpu, coords=(1, obj_ids))
+            _draw_material_channel(sampler, ig_cfg.restitution, idx_cpu, obj_ids, 1, num_buckets)
             if ig_cfg.restitution is not None
             else None
         )
@@ -231,7 +263,7 @@ def randomize_object_rigid_body_material_startup(
                 static_friction=isim_cfg.static_friction,
                 dynamic_friction=isim_cfg.dynamic_friction,
                 restitution=isim_cfg.restitution,
-                num_buckets=_MATERIAL_NUM_BUCKETS,
+                num_buckets=num_buckets,
                 sampler=sampler,
             )
         return
@@ -240,8 +272,9 @@ def randomize_object_rigid_body_material_startup(
         mj_cfg = material.mujoco
         if mj_cfg is None or (mj_cfg.sliding_friction is None and mj_cfg.solref is None and mj_cfg.solimp is None):
             return
-        # No material cap: continuous per-geom draw via randomize_field (true marginal). Each present
-        # channel writes its own geom field; a distinct axis_base keeps the sampler streams independent.
+        # No material cap here, but num_buckets still applies for cross-backend value consistency
+        # (None = continuous per-geom, the true marginal). Each present channel writes its own geom
+        # field; a distinct axis_base keeps the sampler streams independent.
         from holosoma.simulator.mujoco.backends.randomization import randomize_field
 
         # (geom field, ranges-by-axis, axis_base) for each requested channel. friction -> geom_friction
@@ -270,6 +303,7 @@ def randomize_object_rigid_body_material_startup(
                     entity_ids=geom_ids_t,
                     operation="abs",
                     axis_base=axis_base,
+                    num_buckets=num_buckets,
                 )
         return
 

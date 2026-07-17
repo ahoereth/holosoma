@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from holosoma.config_types.sensors import ImageTransformConfig
+from holosoma.config_types.sensor import ImageTransformConfig
 from holosoma.simulator.shared.image_transform import apply_image_transform
 
 if TYPE_CHECKING:

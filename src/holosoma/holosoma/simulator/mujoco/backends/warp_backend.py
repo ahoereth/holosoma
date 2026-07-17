@@ -40,7 +40,6 @@ import numpy as np
 import torch
 import warp as wp
 from loguru import logger
-from mujoco_warp._src import math as mw_math
 
 from .base import IMujocoBackend, holosoma_to_mj_quat, mj_to_holosoma_quat
 from .warp_bridge import WarpBridge
@@ -49,6 +48,53 @@ if TYPE_CHECKING:
     from holosoma.config_types.full_sim import FullSimConfig
     from holosoma.simulator.mujoco.tensor_views import BaseMujocoView
     from holosoma.simulator.shared.camera_sensor import CameraRuntime
+
+
+# Quaternion helpers on MuJoCo-convention (wxyz, scalar-first) quaternions, reimplemented locally so
+# the WarpBackend does not depend on mujoco_warp's private `_src.math` module (whose internal path
+# varies across mujoco_warp revisions and breaks the optional import — see backends/__init__.py).
+# These are byte-for-byte equivalent to mujoco_warp's rot_vec_quat / quat_to_mat / mul_quat.
+@wp.func
+def _mul_quat(u: wp.quat, v: wp.quat) -> wp.quat:
+    return wp.quat(
+        u[0] * v[0] - u[1] * v[1] - u[2] * v[2] - u[3] * v[3],
+        u[0] * v[1] + u[1] * v[0] + u[2] * v[3] - u[3] * v[2],
+        u[0] * v[2] - u[1] * v[3] + u[2] * v[0] + u[3] * v[1],
+        u[0] * v[3] + u[1] * v[2] - u[2] * v[1] + u[3] * v[0],
+    )
+
+
+@wp.func
+def _rot_vec_quat(vec: wp.vec3, quat: wp.quat) -> wp.vec3:
+    s = quat[0]
+    u = wp.vec3(quat[1], quat[2], quat[3])
+    return 2.0 * (wp.dot(u, vec) * u) + (s * s - wp.dot(u, u)) * vec + 2.0 * s * wp.cross(u, vec)
+
+
+@wp.func
+def _quat_to_mat(quat: wp.quat) -> wp.mat33:
+    q00 = quat[0] * quat[0]
+    q01 = quat[0] * quat[1]
+    q02 = quat[0] * quat[2]
+    q03 = quat[0] * quat[3]
+    q11 = quat[1] * quat[1]
+    q12 = quat[1] * quat[2]
+    q13 = quat[1] * quat[3]
+    q22 = quat[2] * quat[2]
+    q23 = quat[2] * quat[3]
+    q33 = quat[3] * quat[3]
+
+    return wp.mat33(
+        q00 + q11 - q22 - q33,
+        2.0 * (q12 - q03),
+        2.0 * (q13 + q02),
+        2.0 * (q12 + q03),
+        q00 - q11 + q22 - q33,
+        2.0 * (q23 - q01),
+        2.0 * (q13 - q02),
+        2.0 * (q23 + q01),
+        q00 - q11 - q22 + q33,
+    )
 
 
 @wp.kernel
@@ -65,8 +111,8 @@ def _static_geom_local_to_global(
 ):
     """Compose world geom poses for the given geoms and worlds.
 
-    The composition forward kinematics applies to a geom, restricted to the given geoms/worlds and
-    reusing mujoco_warp's own quaternion math.
+    The composition forward kinematics applies to a geom, restricted to the given geoms/worlds,
+    using the local wxyz quaternion helpers above.
     """
     # wp.tid() returns a 2-tuple for a 2D launch, but Warp's stub's first overload types a 0-arg
     # call as scalar int, so mypy reports "int not iterable" on the unpack (misc) and cannot type
@@ -77,10 +123,8 @@ def _static_geom_local_to_global(
     bodyid = geom_bodyid[geomid]
     bpos = xpos[worldid, bodyid]
     bquat = xquat[worldid, bodyid]
-    geom_xpos[worldid, geomid] = bpos + mw_math.rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], bquat)
-    geom_xmat[worldid, geomid] = mw_math.quat_to_mat(
-        mw_math.mul_quat(bquat, geom_quat[worldid % geom_quat.shape[0], geomid])
-    )
+    geom_xpos[worldid, geomid] = bpos + _rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], bquat)
+    geom_xmat[worldid, geomid] = _quat_to_mat(_mul_quat(bquat, geom_quat[worldid % geom_quat.shape[0], geomid]))
 
 
 class WarpBackend(IMujocoBackend):
@@ -216,6 +260,12 @@ class WarpBackend(IMujocoBackend):
                 "body_inertia",
                 "body_ipos",
                 "dof_damping",  # mass/inertia/com/damping DR
+                # cam_pos so a world-mount camera (worldbody child, cam_bodyid==0) can be placed at
+                # each env's origin. The camlight kernel (inside the captured step graph) reads
+                # cam_pos per world to compute cam_xpos, so it MUST be expanded before capture;
+                # offset_world_cameras() then writes each env's origin post-capture (same pre-expand /
+                # post-write pattern as body_pos + set_static_body_world_pose).
+                "cam_pos",
             ]
             with wp.ScopedDevice(self.mjw_device):
                 expand_model_fields(self.mjw_model, nworld=self.num_envs, fields_to_expand=_PER_WORLD_FIELDS)
@@ -328,7 +378,7 @@ class WarpBackend(IMujocoBackend):
 
     def create_renderers(self, cameras: list[CameraRuntime]) -> None:
         # Appearance flags are GLOBAL to the shared render context (not per-camera);
-        # SensorsConfig.validate_warp_render_flags already rejected any cross-camera conflict, so
+        # validate_camera_dict already rejected any cross-camera conflict, so
         # collecting each set (non-None) value is unambiguous regardless of order. None => default.
         render_options: dict = {}
         for cam in cameras:
@@ -427,7 +477,7 @@ class WarpBackend(IMujocoBackend):
                 if "rgb" in cam.config.data_types:
                     mjw.get_rgb(self._render_context, cam_id, self._render_rgb_out[cam_id])
                     rgb_f = wp.to_torch(self._render_rgb_out[cam_id])  # [N,H,W,3] float32 in [0,1]
-                    cam.buffers["rgb"] = (rgb_f.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)
+                    cam.set_buffer("rgb", (rgb_f.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8))
                 if "depth" in cam.config.data_types:
                     # mjw.get_depth writes clamp(val/depth_scale, 0, 1): a normalized [0,1] image,
                     # NOT meters. Pass depth_scale=depth_far so [0,far]->[0,1], then multiply back by
@@ -436,7 +486,7 @@ class WarpBackend(IMujocoBackend):
                     mjw.get_depth(self._render_context, cam_id, self._depth_far, self._render_depth_out[cam_id])
                     dep = wp.to_torch(self._render_depth_out[cam_id]) * self._depth_far  # [N,H,W] meters
                     dep = torch.where(dep <= 0, torch.full_like(dep, float("inf")), dep)
-                    cam.buffers["depth"] = dep.unsqueeze(-1)  # [N,H,W,1]
+                    cam.set_buffer("depth", dep.unsqueeze(-1))  # [N,H,W,1]
 
     def get_ctrl_tensor(self) -> torch.Tensor:
         """Return control tensor for direct zero-copy writing.
@@ -788,6 +838,33 @@ class WarpBackend(IMujocoBackend):
             mjw.forward(self.mjw_model, self.mjw_data)  # refresh xpos/xquat from the new body_pos/quat
 
         self._sync_static_geom_xpos(body_ids, env_ids)
+
+    def offset_world_cameras(self, cam_ids: list[int], env_origins: torch.Tensor) -> None:
+        """Shift world-mount cameras' per-world ``cam_pos`` by each env's origin.
+
+        A ``target_kind="world"`` camera is a worldbody child (``cam_bodyid==0``): unlike a
+        body-attached camera, its pose does not inherit the per-env body offset, so in a multi-env
+        run every world's camera would otherwise sit at the shared spec pose and see only env 0's
+        scene. ``cam_pos`` is expanded per world in ``__init__`` (in ``_PER_WORLD_FIELDS``, before the
+        step-graph capture), and the ``camlight`` kernel that computes ``cam_xpos`` reads it per world
+        each step, so adding ``env_origins`` here — after capture — reaches the live render exactly
+        like ``set_static_body_world_pose`` writes ``body_pos``. No-op at ``num_envs==1``.
+
+        ``cam_ids`` are compiled MuJoCo camera ids (world-mount only); ``env_origins`` is
+        ``[num_envs, 3]``.
+        """
+        if self.num_envs <= 1 or not cam_ids:
+            return
+        import warp as wp
+
+        cam_pos = wp.to_torch(self.mjw_model.cam_pos)  # [num_envs, ncam, 3], shares GPU memory
+        origins = env_origins.to(cam_pos.device, cam_pos.dtype)  # [num_envs, 3]
+        for cam_id in cam_ids:
+            cam_pos[:, cam_id, :] += origins
+        with wp.ScopedDevice(self.mjw_device):
+            import mujoco_warp as mjw
+
+            mjw.forward(self.mjw_model, self.mjw_data)  # recompute cam_xpos from the shifted cam_pos
 
     def _sync_static_geom_xpos(self, body_ids: list[int], env_ids: torch.Tensor | None) -> None:
         """Refresh ``geom_xpos``/``geom_xmat`` for the geoms of welded ``body_ids``, per world.

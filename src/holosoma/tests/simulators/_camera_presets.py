@@ -1,7 +1,10 @@
 """Test-only scene and sensor presets for the camera assertion harness.
 
-Registered into the production CLI DEFAULTS at test time so ``scene:camera-target`` and
-``sensors:front-cam`` resolve on the lazy tyro path.
+Scene presets are registered into the production ``scene:`` CLI menu at test time (so
+``scene:camera-target`` resolves on the lazy tyro path). Sensor presets are plain camera dicts
+(``dict[str, CameraSensorConfig]``, keyed by sensor name) injected directly into the parsed config
+by the harness — they exercise camera *behavior*, not the per-key ``--sensor`` CLI (covered
+elsewhere), and a multi-camera rig can't be named by a single CLI token.
 
 Geometry: robot base frame is +X forward, +Z up. An identity mount orientation looks down the
 optical axis (-Z). A -90 deg pitch about body Y rotates -Z to +X (look forward); quaternion
@@ -13,7 +16,7 @@ from __future__ import annotations
 import math
 
 from holosoma.config_types.scene import PhysicsConfig, RigidObjectConfig, SceneConfig
-from holosoma.config_types.sensors import CameraSensorConfig, SensorMountConfig, SensorsConfig
+from holosoma.config_types.sensor import CameraSensorConfig, SensorMountConfig
 
 _SMALL_BOX = "holosoma/data/scene_objects/boxes/small_box.urdf"
 _SMALL_BOX_USD = "holosoma/data/scene_objects/boxes/small_box.usda"
@@ -40,79 +43,71 @@ camera_target = SceneConfig(
 
 # One camera on the robot base, pitched to look forward (+X), framing the target box at base
 # height. Mount pushed 0.1 m forward to clear the robot torso.
-front_cam = SensorsConfig(
-    cameras={
-        "front_cam": CameraSensorConfig(
-            mount=SensorMountConfig(
-                target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
-            ),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb"],
-        )
-    }
-)
+front_cam = {
+    "front_cam": CameraSensorConfig(
+        mount=SensorMountConfig(
+            target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
+        ),
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb"],
+    )
+}
 
 # Forward camera producing both rgb and depth, used by the depth test.
-front_cam_depth = SensorsConfig(
-    cameras={
-        "front_cam": CameraSensorConfig(
-            mount=SensorMountConfig(
-                target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
-            ),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb", "depth"],
-        )
-    }
-)
+front_cam_depth = {
+    "front_cam": CameraSensorConfig(
+        mount=SensorMountConfig(
+            target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
+        ),
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb", "depth"],
+    )
+}
 
 # Forward camera with a non-square resolution (width 96 != height 64) to catch a width/height
 # transpose. width > height widens the horizontal FOV (from vertical_fov).
 _WIDE_W = 96
 _WIDE_H = 64
-front_cam_wide = SensorsConfig(
-    cameras={
-        "front_cam": CameraSensorConfig(
-            mount=SensorMountConfig(
-                target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
-            ),
-            width=_WIDE_W,
-            height=_WIDE_H,
-            vertical_fov=60.0,
-            data_types=["rgb"],
-        )
-    }
-)
+front_cam_wide = {
+    "front_cam": CameraSensorConfig(
+        mount=SensorMountConfig(
+            target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
+        ),
+        width=_WIDE_W,
+        height=_WIDE_H,
+        vertical_fov=60.0,
+        data_types=["rgb"],
+    )
+}
 
 # Two cameras at the same mount: fast_cam renders every control step (decimation=1), slow_cam every
 # 3rd (decimation=3). Exercises the per-camera update_decimation gate.
-slow_fast_cam = SensorsConfig(
-    cameras={
-        "fast_cam": CameraSensorConfig(
-            mount=SensorMountConfig(
-                target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
-            ),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb"],
-            update_decimation=1,
+slow_fast_cam = {
+    "fast_cam": CameraSensorConfig(
+        mount=SensorMountConfig(
+            target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
         ),
-        "slow_cam": CameraSensorConfig(
-            mount=SensorMountConfig(
-                target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
-            ),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb"],
-            update_decimation=3,
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb"],
+        update_decimation=1,
+    ),
+    "slow_cam": CameraSensorConfig(
+        mount=SensorMountConfig(
+            target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
         ),
-    }
-)
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb"],
+        update_decimation=3,
+    ),
+}
 
 # Flat bright-red panel (0.4 m x 0.4 m, thin) facing the camera, centered on the forward axis at a
 # known distance. The geometry test measures its silhouette (centroid, pixel extent vs FOV).
@@ -155,62 +150,58 @@ panel_offaxis = SceneConfig(
 
 # Two cameras on the robot base seeing different content: "front_cam" frames the panel ahead (+X),
 # "down_cam" (identity mount) looks straight down. Used to assert per-camera attribution.
-dual_cam = SensorsConfig(
-    cameras={
-        "front_cam": CameraSensorConfig(
-            mount=SensorMountConfig(
-                target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
-            ),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb"],
+dual_cam = {
+    "front_cam": CameraSensorConfig(
+        mount=SensorMountConfig(
+            target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0], orientation=_LOOK_FORWARD_WXYZ
         ),
-        "down_cam": CameraSensorConfig(
-            mount=SensorMountConfig(target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0]),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb"],
-        ),
-    }
-)
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb"],
+    ),
+    "down_cam": CameraSensorConfig(
+        mount=SensorMountConfig(target_kind="robot_link", target="pelvis", position=[0.1, 0.0, 0.0]),
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb"],
+    ),
+}
 
 # One camera mounted on the scene object "panel" (target_kind="actor"), exercising the actor-mount
 # resolver. Identity mount looks down the panel's local -Z.
-actor_cam = SensorsConfig(
-    cameras={
-        "panel_cam": CameraSensorConfig(
-            mount=SensorMountConfig(target_kind="actor", target="panel", position=[0.0, 0.0, 0.0]),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb"],
-        )
-    }
-)
+actor_cam = {
+    "panel_cam": CameraSensorConfig(
+        mount=SensorMountConfig(target_kind="actor", target="panel", position=[0.0, 0.0, 0.0]),
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb"],
+    )
+}
 
 # One FREE-FLOATING camera (target_kind="world", no body to follow), fixed in each env's frame at
 # the robot's spawn spot, pitched to look forward (+X) at the panel. It anchors to the env frame,
 # NOT the robot, so moving/yawing the robot must NOT change what it sees. Mirrors the `panel-target`
 # scene geometry (panel 1.0 m ahead at base height); mounted like `front_cam` but on the world.
-world_cam = SensorsConfig(
-    cameras={
-        "world_cam": CameraSensorConfig(
-            mount=SensorMountConfig(target_kind="world", position=[0.1, 0.0, _BASE_Z], orientation=_LOOK_FORWARD_WXYZ),
-            width=64,
-            height=64,
-            vertical_fov=60.0,
-            data_types=["rgb", "depth"],
-        )
-    }
-)
+world_cam = {
+    "world_cam": CameraSensorConfig(
+        mount=SensorMountConfig(target_kind="world", position=[0.1, 0.0, _BASE_Z], orientation=_LOOK_FORWARD_WXYZ),
+        width=64,
+        height=64,
+        vertical_fov=60.0,
+        data_types=["rgb", "depth"],
+    )
+}
 
 SCENE_PRESETS = {
     "camera-target": camera_target,
     "panel-target": panel_target,
     "panel-offaxis": panel_offaxis,
 }
+# Named camera-dict presets, for harnesses that take a ``--sensors`` NAME on the command line
+# (e.g. camera_assert.py) and inject the resolved dict onto the config's ``sensor`` field.
 SENSOR_PRESETS = {
     "front-cam": front_cam,
     "front-cam-depth": front_cam_depth,
@@ -223,11 +214,14 @@ SENSOR_PRESETS = {
 
 
 def register() -> None:
-    """Merge the camera scene + sensor presets into the production CLI DEFAULTS (idempotent)."""
-    from holosoma.config_values import scene, sensors
+    """Merge the camera test SCENE presets into the production ``scene:`` CLI menu (idempotent).
 
-    scene.DEFAULTS.update(SCENE_PRESETS)
-    sensors.DEFAULTS.update(SENSOR_PRESETS)
+    Sensor presets are NOT registered: they are plain camera dicts injected directly by the harness
+    (see module docstring), so there is nothing to add to a CLI menu.
+    """
+    from holosoma.config_values import scene
+
+    scene.SCENE_REGISTRY.update(SCENE_PRESETS)
 
 
 def as_mjwarp(config):

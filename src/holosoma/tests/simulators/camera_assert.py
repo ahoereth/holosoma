@@ -1,6 +1,6 @@
 """Cross-backend camera-sensor assertion harness.
 
-Builds a sim under one backend, creates a mounted camera via the ``sensors:`` config,
+Builds a sim under one backend, creates the mounted camera(s) from the ``--sensors`` preset,
 renders, and asserts:
 
   1. ``get_camera_data`` returns shape ``[num_envs, H, W, 3]``, dtype uint8,
@@ -71,9 +71,8 @@ def main() -> int:
     parser.add_argument(
         "--check-recorder",
         action="store_true",
-        help="attach a VizEgress recorder (sensor_egress, record_video) and assert the egress driver "
-        "was wired up + buffered a frame, regardless of backend; guards the _init_sensor_egress() "
-        "call each backend must make.",
+        help="install a CameraVizPlugin recorder hook (record_video) and assert it was installed + buffered "
+        "a frame, regardless of backend; guards that camera-consumer hooks fire on FRAME_END.",
     )
     parser.add_argument("--result-file", default=None, help="write PASS/FAIL here before teardown")
     args = parser.parse_args()
@@ -84,7 +83,9 @@ def main() -> int:
     headless = args.headless == "true"
 
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
-    config = build_run_sim_config(sim_arg, args.scene, args.robot, args.terrain, sensors=args.sensors)
+    config = build_run_sim_config(
+        sim_arg, args.scene, args.robot, args.terrain, sensors=_camera_presets.SENSOR_PRESETS[args.sensors]
+    )
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 
@@ -96,13 +97,12 @@ def main() -> int:
     )
 
     if args.check_recorder:
-        # Attach a VizEgress recorder via sensor_egress with record_video (not live_window) so the
-        # check runs without a DISPLAY. Keyed by an arbitrary label ("rec"); the driver builds one
-        # egress per instance in _init_sensor_egress().
-        from holosoma.config_types.sensor_egress import SensorEgressConfig, VizEgressConfig
+        # Attach a CameraVizPlugin recorder as a hook plugin with record_video (not live_window) so the
+        # check runs without a DISPLAY. Keyed by an arbitrary label ("rec"); the simulator builds it
+        # in __init__ and it registers its publish on FRAME_END (after the render hook).
+        from holosoma.config_types.plugin import CameraVizPluginConfig
 
-        egress_cfg = SensorEgressConfig(instances={"rec": VizEgressConfig(record_video=True)})
-        config = dataclasses.replace(config, sensor_egress=egress_cfg)
+        config = dataclasses.replace(config, plugin={**config.plugin, "rec": CameraVizPluginConfig(record_video=True)})
 
     env, device, _app = setup_simulation_environment(config, device=device)
     sim = env.sim
@@ -125,18 +125,23 @@ def main() -> int:
     sim.create_envs(n, env_origins, base_init)
     sim.prepare_sim()
 
+    # Hooks (incl. the --check-recorder CameraVizPlugin) were installed by the simulator in __init__ from
+    # FullSimConfig.plugin; nothing to install here.
+    from holosoma.simulator.base_simulator.hooks import Phase
+
     names = sim.get_sensor_names()
     print(f"[{args.simulator}] sensors created: {names}")
     if not names:
         print(f"[{args.simulator}] FAIL: no sensors created from preset '{args.sensors}'")
         return 1
 
-    # Step so the renderer warms up and body poses settle, then render.
+    # Step so the renderer warms up and body poses settle, then fire the control-post-refresh hooks
+    # (cameras render, egress consumers publish) once — the same emission the task loop drives.
     step(sim, max(args.steps, steps_for_seconds(sim, 0.05)))
-    sim.render_sensors()
+    sim.hooks.emit(Phase.FRAME_END)
 
     fails: list[str] = []
-    cam_cfgs = dict(config.sensors.cameras)
+    cam_cfgs = dict(config.sensor)
     for name in names:
         cam = cam_cfgs[name]
         img = sim.get_camera_data(name, "rgb")
@@ -148,21 +153,22 @@ def main() -> int:
         fails += _check_not_blank(img, f"{args.simulator}/{name}")
 
     if args.check_recorder:
-        # _init_sensor_egress() (called in each backend's create_envs/setup) must have built the
-        # driver from the configured VizEgress instance; publish_sensor_egress() after a render must
-        # buffer at least one frame in that egress.
-        driver = sim.sensor_egress
-        if driver is None:
+        # The CameraVizPlugin recorder hook (installed from the `plugin` dict) must have registered on
+        # FRAME_END and buffered a frame from the emission above. Find it among the
+        # installed hooks and assert it captured at least one grid.
+        from holosoma.simulator.plugins.viz.viz_plugin import CameraVizPlugin
+
+        recorders = [h for h in sim.installed_plugins.values() if isinstance(h, CameraVizPlugin)]
+        if not recorders:
             fails.append(
-                f"{args.simulator}: recorder requested (sensor_egress with record_video) but sim.sensor_egress "
-                f"is None; _init_sensor_egress() was not called in this backend's setup."
+                f"{args.simulator}: recorder requested (plugin.rec:viz-record) but no CameraVizPlugin was "
+                f"installed; the simulator did not build hooks from FullSimConfig.plugin in __init__."
             )
         else:
-            sim.publish_sensor_egress()  # snapshot the just-rendered frame into the recorder egress
-            n_frames = max(len(getattr(e, "_frames_video", [])) for e in driver.egress)
-            print(f"[{args.simulator}] recorder buffered {n_frames} frame(s) after one publish")
+            n_frames = max(len(getattr(r, "_frames_video", [])) for r in recorders)
+            print(f"[{args.simulator}] recorder buffered {n_frames} frame(s) after one emission")
             if n_frames < 1:
-                fails.append(f"{args.simulator}: recorder egress created but buffered no frame ({n_frames}).")
+                fails.append(f"{args.simulator}: recorder hook installed but buffered no frame ({n_frames}).")
 
     if args.result_file:
         # Persist the verdict before teardown: IsaacSim teardown can hard-kill the process and

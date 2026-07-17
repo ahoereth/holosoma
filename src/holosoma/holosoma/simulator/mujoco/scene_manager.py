@@ -12,7 +12,7 @@ from loguru import logger
 
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import PhysicsConfig, RigidObjectConfig, SceneFileConfig
-from holosoma.config_types.sensors import CameraSensorConfig
+from holosoma.config_types.sensor import CameraSensorConfig
 from holosoma.config_types.simulator import MujocoXMLFilterCfg, SimulatorConfig
 from holosoma.managers.terrain.base import TerrainTermBase
 from holosoma.simulator.shared.asset_format import select_asset_format
@@ -594,7 +594,7 @@ class MujocoSceneManager:
         Parameters
         ----------
         cameras : dict[str, CameraSensorConfig]
-            Camera configs to create, keyed by sensor name (from ``SensorsConfig.cameras``).
+            Camera configs to create, keyed by sensor name (the --sensor dict keys).
         robot_prefix : str
             The attach prefix used for the robot (default ``"robot_"``), used to resolve a
             ``robot_link`` mount target to its composed body name.

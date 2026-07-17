@@ -354,6 +354,7 @@ class MuJoCo(BaseSimulator):
             attachment_body_names=gantry_cfg.attachment_body_names,
             cfg=gantry_cfg,
         )
+        self.virtual_gantry.register_hooks(self.hooks)
 
         # Initialize bridge system using base class helper
         self._init_bridge()
@@ -361,11 +362,11 @@ class MuJoCo(BaseSimulator):
         # Create mounted camera sensors (cameras were added to the spec pre-compile in
         # _setup_scene; this resolves their compiled ids and renderers). No-op if none.
         self._create_sensors()
-        self._init_sensor_egress()
 
         if self.video_config.enabled:
             self.video_recorder = MuJoCoVideoRecorder(self.video_config, self)
             self.video_recorder.setup_recording()
+            self.video_recorder.register_hooks(self.hooks)
 
         # For debugging
         self.print_mujoco_model_tree()
@@ -421,8 +422,8 @@ class MuJoCo(BaseSimulator):
 
         # Add mounted cameras after all mount bodies exist but still before compile():
         # each camera is a <camera> child of its mount body, so it follows that body natively.
-        if self.sensor_config.cameras:
-            self.scene_manager.add_cameras(self.sensor_config.cameras)
+        if self.sensor_config:
+            self.scene_manager.add_cameras(self.sensor_config)
 
     def _set_robot_properties(self) -> None:
         """Set robot properties including DOF names, body names, and index mappings.
@@ -743,6 +744,12 @@ class MuJoCo(BaseSimulator):
 
         # Create Scene following SceneInterface protocol
         self.scene = MuJoCoScene(self.env_origins, self.sim_device)
+
+        # World-mount cameras are worldbody children, so (unlike body-attached cameras) they don't
+        # inherit the per-env body offset; place each env's world camera at its own origin now that
+        # env_origins exist. WarpBackend only (Classic is single-env); the backend no-ops if it has
+        # no world cameras or num_envs==1.
+        self._offset_world_cameras()
 
         # Initialize state tensors based on actual DOF count
         self.dof_pos = torch.zeros(self.num_envs, self.num_dof, device=self.sim_device)
@@ -1081,19 +1088,8 @@ class MuJoCo(BaseSimulator):
     def simulate_at_each_physics_step(self) -> None:
         """Advance simulation by one step."""
 
-        if self.virtual_gantry:
-            # Apply virtual gantry forces before step
-            self.virtual_gantry.step()
-
-        # Step bridge for updated torques before step using base class helper
-        self._step_bridge()
-
         # Delegate simulation step to backend
         self.backend.step()
-
-        # Call video recorder capture frame if recording is active
-        if self.video_recorder and self.video_recorder.is_recording:
-            self.capture_video_frame()
 
     def _actor_freejoint_addrs(self, obj_name: str) -> tuple[int, int]:
         """Return (qpos_addr, qvel_addr) for an actor's freejoint, or raise if unknown."""
@@ -1574,7 +1570,7 @@ class MuJoCo(BaseSimulator):
         the ``SensorManager`` and hands the cameras to ``backend.create_renderers`` (which resolves
         each compiled ``<camera>`` id into its own name-keyed map). No-op without cameras.
         """
-        cameras = self.sensor_config.cameras
+        cameras = self.sensor_config
         if not cameras:
             return
 
@@ -1597,6 +1593,26 @@ class MuJoCo(BaseSimulator):
             self.sensor_manager.register_camera(cam_name, cam)
 
         self.backend.create_renderers(self.sensor_manager.cameras)
+
+    def _offset_world_cameras(self) -> None:
+        """Place each env's world-mount cameras at its own origin (WarpBackend multi-env only).
+
+        A ``target_kind="world"`` camera is a worldbody child, so it does not pick up the per-env
+        body offset the way a robot/actor-mounted camera does; without this every world's camera sits
+        at the shared spec pose and sees only env 0's scene. Delegates to the backend, which shifts the
+        per-world ``cam_pos``. Classic (single-env) and the no-camera / no-world-camera cases are
+        no-ops; guarded by ``hasattr`` so only the WarpBackend path runs.
+        """
+        if self.sensor_manager is None or not hasattr(self.backend, "offset_world_cameras"):
+            return
+        cam_ids = getattr(self.backend, "_cam_ids", {})
+        world_cam_ids = [
+            cam_ids[name]
+            for name, cam in self.sensor_config.items()
+            if cam.mount.target_kind == "world" and name in cam_ids
+        ]
+        if world_cam_ids:
+            self.backend.offset_world_cameras(world_cam_ids, self.env_origins)
 
     def render_sensors(self) -> None:
         """Render all due cameras into their cached buffers (see ``get_camera_data``)."""

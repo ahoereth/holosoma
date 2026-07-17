@@ -6,8 +6,8 @@ import pydantic
 import pytest
 
 from holosoma.config_types.frequency import resolve_decimation
-from holosoma.config_types.sensor_egress import VizEgressConfig
-from holosoma.config_types.sensors import CameraSensorConfig, SensorMountConfig
+from holosoma.config_types.plugin import CameraVizPluginConfig
+from holosoma.config_types.sensor import CameraSensorConfig, SensorMountConfig
 from holosoma.config_types.simulator import PhysxConfig, SimEngineConfig
 
 pytestmark = pytest.mark.no_sim
@@ -39,9 +39,32 @@ def test_frequency_string_exact_divisor():
     assert resolve_decimation("50Hz", 200, field="x") == 4
 
 
-def test_frequency_string_floors_to_faster_rate():
+def test_bare_frequency_requires_exact_divisor():
+    # 200/60 = 3.33 is not a whole decimation; a bare frequency must be exactly achievable.
+    with pytest.raises(ValueError, match="not exactly achievable"):
+        resolve_decimation("60Hz", 200, field="x")
+
+
+def test_greater_than_floors_to_faster_rate():
     # 200/60 = 3.33 -> floor 3, so the achieved rate (66.7Hz) is >= the 60Hz target.
-    assert resolve_decimation("60Hz", 200, field="x") == 3
+    assert resolve_decimation(">60Hz", 200, field="x") == 3
+
+
+def test_less_than_ceils_to_slower_rate():
+    # 200/60 = 3.33 -> ceil 4, so the achieved rate (50Hz) is <= the 60Hz target.
+    assert resolve_decimation("<60Hz", 200, field="x") == 4
+
+
+def test_comparison_prefixes_on_exact_divisor():
+    # An exact divisor resolves identically regardless of prefix.
+    assert resolve_decimation("50Hz", 200, field="x") == 4
+    assert resolve_decimation(">50Hz", 200, field="x") == 4
+    assert resolve_decimation("<50Hz", 200, field="x") == 4
+
+
+def test_comparison_prefix_whitespace():
+    assert resolve_decimation("  > 60 hz ", 200, field="x") == 3
+    assert resolve_decimation(" <60Hz ", 200, field="x") == 4
 
 
 def test_frequency_string_case_whitespace_and_float():
@@ -50,7 +73,11 @@ def test_frequency_string_case_whitespace_and_float():
 
 
 def test_frequency_faster_than_base_clamps_to_one():
-    assert resolve_decimation("400Hz", 200, field="x") == 1
+    # floor(200/400) = 0 -> clamped to 1. A bare "400Hz" would instead error (not exact).
+    assert resolve_decimation(">400Hz", 200, field="x") == 1
+    assert resolve_decimation("<400Hz", 200, field="x") == 1
+    with pytest.raises(ValueError, match="not exactly achievable"):
+        resolve_decimation("400Hz", 200, field="x")
 
 
 def test_malformed_strings_rejected():
@@ -111,6 +138,6 @@ def test_camera_rejects_malformed_at_construction():
         CameraSensorConfig(mount=_MOUNT, update_decimation="20hz!")
 
 
-def test_viz_egress_keeps_raw_string():
-    rec = VizEgressConfig(update_decimation="10Hz")
+def test_viz_plugin_keeps_raw_string():
+    rec = CameraVizPluginConfig(update_decimation="10Hz")
     assert rec.update_decimation == "10Hz"

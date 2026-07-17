@@ -18,7 +18,7 @@ from .base import IMujocoBackend, holosoma_to_mj_quat, mj_to_holosoma_quat
 
 if TYPE_CHECKING:
     from holosoma.config_types.full_sim import FullSimConfig
-    from holosoma.config_types.sensors import CameraDataType
+    from holosoma.config_types.sensor import CameraDataType
     from holosoma.simulator.mujoco.tensor_views import BaseMujocoView
     from holosoma.simulator.shared.camera_sensor import CameraRuntime
 
@@ -131,7 +131,7 @@ class ClassicBackend(IMujocoBackend):
                     if dt == "depth":
                         t = torch.where(t >= far_clip * 0.99, torch.full_like(t, float("inf")), t)
                     frames.append(t)
-                runtime.buffers[dt] = torch.stack(frames, dim=0).to(self.device)  # [N,H,W,C]
+                runtime.set_buffer(dt, torch.stack(frames, dim=0).to(self.device))  # [N,H,W,C]
 
     def get_ctrl_tensor(self) -> None:
         """Classic backend doesn't support direct tensor writes.

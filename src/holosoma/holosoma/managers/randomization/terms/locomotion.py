@@ -17,7 +17,7 @@ from holosoma.managers.randomization.terms._shared import (
 )
 from holosoma.simulator import mujoco_required_field
 from holosoma.simulator.shared.field_decorators import MUJOCO_FIELD_ATTR
-from holosoma.utils.sampler import DistributionLike, DistributionSpec, TermSampler
+from holosoma.utils.sampler import DistributionLike, DistributionSpec, TermSampler, quantiles
 from holosoma.utils.simulator_config import SimulatorType
 
 
@@ -862,6 +862,27 @@ def randomize_mass_startup(
         )
 
 
+def _draw_bucketed_per_env(
+    sampler: TermSampler,
+    spec: DistributionLike,
+    env_ids: torch.Tensor,
+    num_buckets: int | None,
+) -> torch.Tensor:
+    """Draw one friction value per env, bucketed or continuous, on the PhysX (IsaacGym) path.
+
+    ``num_buckets`` an int: fill that many buckets with the distribution's quantile values (keyed
+    permute so the staircase is reproducible-but-shuffled per seed) and pick one bucket per env via
+    the keyed selection — bounds the unique-material count at ``num_buckets`` regardless of env count.
+    ``None``: one continuous keyed draw per env (~``num_envs`` unique values). Mirrors the IsaacSim
+    material writer's bucket mechanism so both PhysX backends share one quantization policy.
+    """
+    if num_buckets is None:
+        return sampler.draw(spec, env_ids=env_ids)  # [n_env], continuous
+    column = quantiles(DistributionSpec.parse(spec), num_buckets, "cpu")[sampler.permute(num_buckets, (0,))]
+    bucket_ids = sampler.draw_int(0, num_buckets - 1, env_ids=env_ids, coords=(1,))
+    return column[bucket_ids]
+
+
 @mujoco_required_field("geom_friction")
 def randomize_friction_startup(
     env,
@@ -869,6 +890,7 @@ def randomize_friction_startup(
     *,
     sampler: TermSampler,
     friction_range: DistributionLike,
+    num_buckets: int | None = _MATERIAL_NUM_BUCKETS,
     enabled: bool = True,
     **_,
 ) -> None:
@@ -876,21 +898,29 @@ def randomize_friction_startup(
 
     Note: Uses ABSOLUTE operation to set friction values (e.g., [0.5, 1.5]).
 
-    ``friction_range`` is a config range value — a ``[lo, hi]`` pair (uniform) or a spec dict — honored on
-    every backend, MARGINALLY matched (exact agreement is impossible — see below):
-    - **IsaacGym** draws one continuous value per env via the shared sampler (true marginal).
-    - **MuJoCo** draws continuously per geom via ``randomize_field`` (true marginal).
-    - **IsaacSim** MUST bucket (PhysX caps unique materials per scene): it fills 64 buckets with the
-      distribution's quantile values and each shape uniformly picks one, so its per-shape marginal is
-      a 64-atom staircase approximation of the same distribution. ``uniform`` is exact on all three;
-      ``gaussian``/``log_uniform`` match up to the IsaacSim bucket quantization.
+    ``friction_range`` is a config range value — a ``[lo, hi]`` pair (uniform) or a spec dict.
+
+    ``num_buckets`` controls VALUE QUANTIZATION uniformly across all three backends (default 64):
+    friction here draws through the shared keyed sampler, and an int quantizes each draw onto
+    ``num_buckets`` stratified quantile values (an ``n``-atom staircase), while ``None`` draws
+    continuously. Bucketing exists to respect PhysX's per-scene material cap (~64k); the default keeps
+    that guard on the PhysX backends (IsaacGym + IsaacSim) and, for cross-backend value consistency,
+    applies the same staircase on MuJoCo (which has no cap and could otherwise be continuous). Set
+    ``None`` for a continuous marginal where the material count is safely under the cap. ``uniform`` is
+    exact when continuous; ``gaussian``/``log_uniform`` match up to the bucket quantization.
+
+    GRANULARITY is unified too: this term draws ONE friction per env (per robot) on every backend —
+    IsaacGym sets it on each shape, IsaacSim via the material writer's ``per_env=True``, MuJoCo via
+    ``randomize_field``'s ``shared_across_entities=True``. So a single robot contacting the floor has a
+    single contact-friction coefficient (the legged_gym / IsaacGym convention), not a different value
+    per link/geom.
     """
     env._randomize_friction = bool(enabled)
     env._friction_range = friction_range
     if not enabled:
         return
 
-    logger.info(f"[Randomization] Friction: range={friction_range} (operation=abs)")
+    logger.info(f"[Randomization] Friction: range={friction_range} (operation=abs, num_buckets={num_buckets})")
 
     idx = _ensure_env_ids_tensor(env, env_ids)
     if idx.numel() == 0:
@@ -899,11 +929,12 @@ def randomize_friction_startup(
     simulator = env.simulator
 
     if simulator.get_simulator_type() == SimulatorType.ISAACGYM:
-        # IsaacGym sets prop.friction directly (no PhysX material-table cap), so draw one continuous
-        # value per env via the shared sampler — a true distribution marginal, no buckets needed.
+        # IsaacGym sets prop.friction directly. One friction per env -> ~num_envs unique PhysX
+        # materials, so bucket (default) to bound that count under the cap, or draw continuous per env
+        # when num_buckets is None. Same quantization policy as the IsaacSim branch below.
         gym = simulator.gym
         idx_cpu = idx.to(device="cpu", dtype=torch.long)
-        friction_samples = sampler.draw(friction_range, env_ids=idx_cpu)  # [n_env]
+        friction_samples = _draw_bucketed_per_env(sampler, friction_range, idx_cpu, num_buckets)  # [n_env]
         for offset, env_id in enumerate(idx_cpu.tolist()):
             env_ptr = simulator.envs[env_id]
             actor = simulator.robot_handles[env_id]
@@ -932,13 +963,15 @@ def randomize_friction_startup(
             dynamic_friction=friction_range,
             restitution=None,  # leave restitution at each shape's spawned value (friction-only term);
             # matches the IsaacGym/MuJoCo branches, which never touch restitution here.
-            num_buckets=_MATERIAL_NUM_BUCKETS,
+            num_buckets=num_buckets,  # same quantization policy as the IsaacGym branch
+            per_env=True,  # one friction per robot (all shapes share), matching IsaacGym/MuJoCo
             sampler=sampler,
         )
 
     elif simulator.get_simulator_type() == SimulatorType.MUJOCO:
-        # MuJoCo writes geom_friction directly (no material cap): continuous per-geom draw via the
-        # shared sampler, so the range flows straight through.
+        # MuJoCo writes geom_friction directly (no material cap). num_buckets matches the PhysX
+        # backends' quantization; shared_across_entities gives the whole robot ONE friction (per-env
+        # granularity) instead of an independent per-geom draw, matching IsaacGym/IsaacSim.
         from holosoma.simulator.mujoco.backends.randomization import randomize_field
 
         randomize_field(
@@ -948,6 +981,8 @@ def randomize_friction_startup(
             sampler=sampler,
             env_ids=idx,
             operation="abs",
+            num_buckets=num_buckets,
+            shared_across_entities=True,  # one friction per robot (all geoms share), matching IsaacGym
         )
 
     else:  # pragma: no cover - defensive

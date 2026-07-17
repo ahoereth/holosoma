@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from holosoma.config_types.sensors import ImageTransformConfig
+from holosoma.config_types.sensor import ImageTransformConfig
 from holosoma.simulator.shared.image_transform import apply_image_transform
 from holosoma.utils.safe_torch_import import torch
 

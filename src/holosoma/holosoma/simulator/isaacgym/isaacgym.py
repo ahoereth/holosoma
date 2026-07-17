@@ -147,7 +147,7 @@ class IsaacGym(BaseSimulator):
 
         # Cameras (video recorder or perception sensors) need a graphics context even when
         # headless; without it create_camera_sensor returns no image (black frame).
-        self._cameras_enabled = self.video_config.enabled or bool(self.sensor_config.cameras)
+        self._cameras_enabled = self.video_config.enabled or bool(self.sensor_config)
         self.graphics_device_id = self.sim_device_id
         if self.headless and not self._cameras_enabled:
             self.graphics_device_id = -1
@@ -381,12 +381,14 @@ class IsaacGym(BaseSimulator):
             attachment_body_names=gantry_cfg.attachment_body_names,
             cfg=gantry_cfg,
         )
+        self.virtual_gantry.register_hooks(self.hooks)
 
         # Initialize bridge system using base class helper
         self._init_bridge()
 
         if self.video_recorder:
             self.video_recorder.setup_recording()
+            self.video_recorder.register_hooks(self.hooks)
 
         # Initialize command system for keyboard controls
         # Command tensor format: [vx, vy, vz, yaw_rate, walk_stand, waist_yaw, ..., height, ...]
@@ -400,7 +402,6 @@ class IsaacGym(BaseSimulator):
 
         # Register the per-env camera handles into the SensorManager.
         self._create_sensors()
-        self._init_sensor_egress()
 
         # Invoke startup randomization for domain randomization
         # This must happen AFTER all envs are created but BEFORE prepare_sim()
@@ -514,7 +515,7 @@ class IsaacGym(BaseSimulator):
         # follow it. IsaacGym has no batched camera: one sensor per env. The handle lists span all
         # envs (parallel to self.envs), so initialize them once and append per env.
         if env_id == 0:
-            self._camera_handles: dict[str, list[Any]] = {name: [] for name in self.sensor_config.cameras}
+            self._camera_handles: dict[str, list[Any]] = {name: [] for name in self.sensor_config}
         self._build_env_cameras(env_id, env_ptr, robot_handle)
 
     # ----- Camera sensors -----
@@ -542,7 +543,7 @@ class IsaacGym(BaseSimulator):
 
     def _build_env_cameras(self, env_id, env_ptr, robot_handle):
         """Create and body-attach one camera sensor per configured camera, for this env."""
-        for cam_name, cam in self.sensor_config.cameras.items():
+        for cam_name, cam in self.sensor_config.items():
             props = gymapi.CameraProperties()
             props.width = cam.width
             props.height = cam.height
@@ -567,8 +568,20 @@ class IsaacGym(BaseSimulator):
             local_tf = self._mount_to_isaacgym_transform(cam.mount)
             if cam.mount.target_kind == "world":
                 # Free-floating: place at the env-local pose and leave it fixed (no body to follow).
-                # set_camera_transform localizes via env_ptr, so local_tf is in the per-env frame.
-                self.gym.set_camera_transform(cam_handle, env_ptr, local_tf)
+                # Unlike attach_camera_to_body, set_camera_transform takes a WORLD transform (the
+                # env_ptr only selects which env's camera, it does not offset the pose), so add this
+                # env's origin — otherwise every env's world camera lands near the global origin and
+                # only env 0 (origin [0,0,0]) frames its scene; envs 1..N look at empty space.
+                origin = self.env_origins[env_id]
+                world_tf = gymapi.Transform(
+                    p=gymapi.Vec3(
+                        local_tf.p.x + float(origin[0]),
+                        local_tf.p.y + float(origin[1]),
+                        local_tf.p.z + float(origin[2]),
+                    ),
+                    r=local_tf.r,
+                )
+                self.gym.set_camera_transform(cam_handle, env_ptr, world_tf)
             else:
                 body_handle = self._resolve_mount_body_handle(env_ptr, robot_handle, cam.mount)
                 self.gym.attach_camera_to_body(cam_handle, env_ptr, body_handle, local_tf, gymapi.FOLLOW_TRANSFORM)
@@ -591,7 +604,7 @@ class IsaacGym(BaseSimulator):
 
     def _create_sensors(self) -> None:
         """Register the per-env camera handles (built in the env loop) into the SensorManager."""
-        cameras = self.sensor_config.cameras
+        cameras = self.sensor_config
         if not cameras:
             return
         from holosoma.simulator.shared.camera_sensor import SensorManager
@@ -628,7 +641,7 @@ class IsaacGym(BaseSimulator):
                             self.sim, self.envs[e], handles[e], gymapi.IMAGE_COLOR
                         )
                         frames.append(gymtorch.wrap_tensor(gpu_t)[..., :3].clone())  # [H,W,4] RGBA -> RGB
-                    runtime.buffers["rgb"] = torch.stack(frames, dim=0).to(self.device)  # [N,H,W,3]
+                    runtime.set_buffer("rgb", torch.stack(frames, dim=0).to(self.device))  # [N,H,W,3]
                 if "depth" in runtime.config.data_types:
                     frames = []
                     for e in range(self.num_envs):
@@ -639,7 +652,7 @@ class IsaacGym(BaseSimulator):
                             self.sim, self.envs[e], handles[e], gymapi.IMAGE_DEPTH
                         )
                         frames.append((-gymtorch.wrap_tensor(gpu_t)).clone())  # [H,W] +meters, +inf no-hit
-                    runtime.buffers["depth"] = torch.stack(frames, dim=0).unsqueeze(-1).to(self.device)  # [N,H,W,1]
+                    runtime.set_buffer("depth", torch.stack(frames, dim=0).unsqueeze(-1).to(self.device))  # [N,H,W,1]
         finally:
             self.gym.end_access_image_tensors(self.sim)
 
@@ -878,22 +891,10 @@ class IsaacGym(BaseSimulator):
         if not hasattr(self, "step_counter"):
             self.step_counter = 0
 
-        # Apply virtual gantry forces BEFORE physics step to ensure proper constraint behavior
-        # (forces must be part of the current step, not applied reactively after)
-        if self.virtual_gantry:
-            self.virtual_gantry.step()
-
-        # Step bridge for updated torques before physics step using base class helper
-        self._step_bridge()
-
         self.gym.simulate(self.sim)
 
         if self.sim_device == "cpu":
             self.gym.fetch_results(self.sim, True)
-
-        # Call video recorder capture frame if recording is active
-        if self.video_recorder:
-            self.capture_video_frame()
 
         self.gym.refresh_dof_state_tensor(self.sim)
 

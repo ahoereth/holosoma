@@ -18,7 +18,7 @@ import mujoco
 import torch
 import warp as wp
 
-from holosoma.utils.sampler import DistributionLike, TermSampler
+from holosoma.utils.sampler import DistributionLike, DistributionSpec, TermSampler, quantiles
 
 if TYPE_CHECKING:
     import mujoco_warp as mjwarp
@@ -198,6 +198,7 @@ def randomize_field(
     operation: Literal["add", "scale", "abs"] = "abs",
     shared_across_entities: bool = False,
     axis_base: int = 0,
+    num_buckets: int | None = None,
 ) -> None:
     """Unified model randomization for the MuJoCo backends (WarpBackend GPU + ClassicBackend CPU).
 
@@ -241,6 +242,14 @@ def randomize_field(
         independent draw each. Use to randomize a group of entities as one logical unit — e.g.
         a freejoint's 3 linear ``dof_damping`` DOFs sharing one value (PhysX exposes a single
         linear damping scalar, so this keeps the concept aligned across backends).
+    num_buckets : Optional[int]
+        Quantization knob mirroring the PhysX backends' material bucketing, for a config that wants
+        the SAME staircase discretization on MuJoCo. ``None`` (default): draw continuously — MuJoCo
+        writes the model field directly and has no per-scene material cap, so continuous is the true
+        marginal. An int: quantize each axis's draw onto ``num_buckets`` stratified quantile values of
+        its distribution (a shared per-axis table, keyed-shuffled, then each (env, entity) picks a
+        bucket) — the same n-atom staircase the IsaacSim material writer produces. Only the VALUE set
+        is discretized; per-entity granularity is unchanged. Applies to any field/operation.
 
     Raises
     ------
@@ -377,10 +386,28 @@ def randomize_field(
     # the K axis leaves on independent streams. Validation (log_uniform positivity, high>=low) fires at
     # spec construction, raising a clean error instead of silently writing NaN. Stack the per-axis draws
     # back into the (n_e, n_n, n_a) layout the indexer expects.
-    per_axis = [
-        sampler.draw(leaf, env_ids=env_ids, coords=(axis_base + k, entity_ids[None, :]), device=device)  # (n_e, n_n)
-        for k, leaf in enumerate(range_leaves)
-    ]
+    if num_buckets is None:
+        per_axis = [
+            sampler.draw(
+                leaf, env_ids=env_ids, coords=(axis_base + k, entity_ids[None, :]), device=device
+            )  # (n_e, n_n)
+            for k, leaf in enumerate(range_leaves)
+        ]
+    else:
+        # Bucketed: quantize each axis onto num_buckets stratified quantile values (mirrors the PhysX
+        # material writer). Fill a per-axis bucket table with the spec's quantiles, shuffle it with a
+        # KEYED permutation (distinct stream coord axis_base + k so axes are not rank-aligned), then let
+        # each (env, entity) pick a bucket via the keyed draw_int. Per-entity granularity is preserved —
+        # only the VALUE set is discretized, matching IsaacSim's staircase.
+        per_axis = []
+        for k, leaf in enumerate(range_leaves):
+            column = quantiles(DistributionSpec.parse(leaf), num_buckets, device)[
+                sampler.permute(num_buckets, (axis_base + k,))
+            ]
+            bucket_ids = sampler.draw_int(
+                0, num_buckets - 1, env_ids=env_ids, coords=(axis_base + k, entity_ids[None, :])
+            )  # (n_e, n_n)
+            per_axis.append(column[bucket_ids])
     random_values = torch.stack(per_axis, dim=-1)  # (n_e, n_n, n_a)
 
     # Share one per-env sample across the whole entity group (the first entity's draw), so a

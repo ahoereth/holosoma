@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from holosoma.config_types.sensors import CameraSensorConfig, SensorMountConfig
+from holosoma.config_types.sensor import CameraSensorConfig, SensorMountConfig
 from holosoma.simulator.shared.camera_sensor import SensorManager
 
 pytestmark = pytest.mark.no_sim

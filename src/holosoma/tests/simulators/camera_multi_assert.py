@@ -41,7 +41,7 @@ def main() -> int:
 
     headless = args.headless == "true"
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
-    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors="dual-cam")
+    config = build_run_sim_config(sim_arg, "panel-target", args.robot, args.terrain, sensors=_camera_presets.dual_cam)
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 

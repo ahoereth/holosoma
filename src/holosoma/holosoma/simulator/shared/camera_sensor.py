@@ -19,7 +19,7 @@ from holosoma.config_types.frequency import resolve_decimation
 from holosoma.utils.safe_torch_import import torch
 
 if TYPE_CHECKING:
-    from holosoma.config_types.sensors import CameraSensorConfig
+    from holosoma.config_types.sensor import CameraSensorConfig
 
 
 @dataclass
@@ -31,12 +31,13 @@ class CameraRuntime:
     """
 
     name: str
-    """Sensor name (the ``SensorsConfig.cameras`` key); the backend's native-resource lookup key."""
+    """Sensor name (the --sensor dict key); the backend's native-resource lookup key."""
 
     config: CameraSensorConfig
 
     buffers: dict[str, torch.Tensor] = field(default_factory=dict)
-    """Most recent output per data_type (e.g. {"rgb": [N,H,W,3] uint8}). Filled by render."""
+    """Most recent render per data_type on the SIM device (e.g. {"rgb": [N,H,W,3] uint8}). Write via
+    :meth:`set_buffer` (never assign directly) so the cross-device cache stays consistent."""
 
     step_counter: int = -1
     """Render counter for decimation gating (``step_counter % decimation == 0``). Advanced by
@@ -45,6 +46,43 @@ class CameraRuntime:
     effective_decimation: int = 1
     """Control-step decimation as an int, resolved from ``config.update_decimation`` (which may be
     a frequency string) at registration."""
+
+    _device_cache: dict[tuple[str, str], torch.Tensor] = field(default_factory=dict)
+    """Cross-device copies of ``buffers``, keyed by ``(data_type, str(device))``. Populated lazily by
+    :meth:`buffer_on` (e.g. the host copy every off-GPU consumer shares), cleared by :meth:`set_buffer`
+    when a fresh render lands. Never a copy of the sim-device buffer itself (that is served directly)."""
+
+    def set_buffer(self, data_type: str, tensor: torch.Tensor) -> None:
+        """Store the latest render for ``data_type`` and drop any now-stale cross-device copies of it.
+
+        The single write path for a rendered frame: invalidation is co-located with the mutation, so
+        a cached host copy can never outlive the sim-device buffer it was derived from. Called by each
+        backend's ``render_sensors`` (once per due camera per step) in place of a raw ``buffers[...] =``."""
+        self.buffers[data_type] = tensor
+        for key in [k for k in self._device_cache if k[0] == data_type]:
+            del self._device_cache[key]
+
+    def buffer_on(self, data_type: str, device: torch.device | str | None = None) -> torch.Tensor:
+        """Return the full ``[N, ...]`` buffer for ``data_type`` on ``device`` (cross-device copies cached).
+
+        ``device=None`` (or the sim device the buffer already lives on) returns the buffer directly —
+        no copy, no cache entry. Any other device returns a cached ``.to(device)`` copy: the FIRST
+        caller for a given ``(data_type, device)`` pays the transfer (one device->host sync for
+        ``"cpu"``), every later caller this render reuses it. The cache is invalidated by
+        :meth:`set_buffer` on the next render, so a slow (decimated) camera keeps serving cheap cached
+        reads across the steps it does not re-render."""
+        buf = self.buffers[data_type]
+        if device is None:
+            return buf
+        dev = torch.device(device)
+        if buf.device == dev:
+            return buf
+        key = (data_type, str(dev))
+        cached = self._device_cache.get(key)
+        if cached is None:
+            cached = buf.to(dev)
+            self._device_cache[key] = cached
+        return cached
 
 
 class SensorManager:

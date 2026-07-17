@@ -53,7 +53,9 @@ def main() -> int:
     headless = args.headless == "true"
     sim_arg = "mujoco" if args.simulator == "mjwarp" else args.simulator
     # Non-square camera (96x64) with an off-axis panel (left and up): the red lands in one quadrant.
-    config = build_run_sim_config(sim_arg, "panel-offaxis", args.robot, args.terrain, sensors="front-cam-wide")
+    config = build_run_sim_config(
+        sim_arg, "panel-offaxis", args.robot, args.terrain, sensors=_camera_presets.front_cam_wide
+    )
     if args.simulator == "mjwarp":
         config = _camera_presets.as_mjwarp(config)
 
@@ -88,7 +90,7 @@ def main() -> int:
     step(sim, max(2, steps_for_seconds(sim, 0.05)))
     sim.render_sensors()
 
-    cam_name, cam = next(iter(config.sensors.cameras.items()))
+    cam_name, cam = next(iter(config.sensor.items()))
     fails: list[str] = []
     img_all = sim.get_camera_data(cam_name, "rgb")  # [N,H,W,3]
     # Shape (N, height, width, 3) with height != width; catches a W/H transpose.
