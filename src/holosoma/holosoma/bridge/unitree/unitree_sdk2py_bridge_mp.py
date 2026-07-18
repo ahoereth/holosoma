@@ -190,7 +190,7 @@ class UnitreeMpSdk2Bridge(UnitreeSdk2Bridge):
 
     def _init_sdk_components(self):
         """Spawn the DDS child; keep only picklable, binding-free stand-ins in the parent."""
-        robot_type = self.robot.asset.robot_type
+        robot_type = self.sdk_robot_type
         if robot_type not in self.SUPPORTED_ROBOT_TYPES:
             raise ValueError(f"Invalid robot type '{robot_type}'. Unitree SDK supports: {self.SUPPORTED_ROBOT_TYPES}")
 

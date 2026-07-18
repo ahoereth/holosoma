@@ -874,9 +874,28 @@ class IsaacGym(BaseSimulator):
         # ) // self.num_envs
         # return num_actors
 
-    def apply_torques_at_dof(self, torques):
-        """Apply torques with detailed logging to match MuJoCo implementation."""
-        self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(torques))
+    def apply_torques_at_dof(self, torques, dof_indices=None):
+        """Apply torques with detailed logging to match MuJoCo implementation.
+
+        ``set_dof_actuation_force_tensor`` is a full replacement of the actuation-force buffer, so a
+        subset write must scatter into a persistent full-width buffer (leaving the other DOFs as
+        their owner last wrote them) and then set the whole tensor. The full path (``dof_indices``
+        None) passes the caller's tensor straight through, unchanged from before.
+        """
+        if dof_indices is None:
+            self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(torques))
+            return
+
+        # Persistent [num_envs, num_dof] buffer: unowned slots keep their previous value across
+        # substeps (mirrors MuJoCo's persistent ctrl), so a co-controller on the other DOFs composes.
+        if getattr(self, "_dof_actuation_forces", None) is None:
+            self._dof_actuation_forces = torch.zeros(
+                self.num_envs, self.num_dof, dtype=torch.float32, device=self.device
+            )
+        idx_t = torch.as_tensor(dof_indices, device=self.device, dtype=torch.long)
+        # torques is aligned with dof_indices (1-D for the single-robot SDK bridge); broadcast over envs.
+        self._dof_actuation_forces[:, idx_t] = torques.reshape(-1).to(self._dof_actuation_forces.dtype)
+        self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self._dof_actuation_forces))
 
     def apply_rigid_body_force_at_pos_tensor(self, force_tensor, pos_tensor):
         self.gym.apply_rigid_body_force_at_pos_tensors(

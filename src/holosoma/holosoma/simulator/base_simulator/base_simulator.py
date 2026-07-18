@@ -432,12 +432,17 @@ class BaseSimulator:
 
     # ----- Control Application Methods -----
 
-    def apply_torques_at_dof(self, torques):
+    def apply_torques_at_dof(self, torques, dof_indices=None):
         """
         Applies the specified torques to the robot's degrees of freedom (DOF).
 
         Args:
-            torques (tensor): Tensor containing torques to apply.
+            torques (tensor): Tensor containing torques to apply. When ``dof_indices`` is None it is
+                the full per-DOF vector; otherwise it is aligned with ``dof_indices``.
+            dof_indices (list[int] | None): When None (default), write every DOF (the historical
+                full-width path). When a list, scatter ``torques`` into ONLY those DOFs' actuators,
+                leaving the other slots as their owner wrote them this substep (so a co-controller
+                driving the complementary DOFs is not clobbered).
         """
         raise NotImplementedError("The 'apply_torques_at_dof' method must be implemented in subclasses.")
 

@@ -1038,13 +1038,18 @@ class MuJoCo(BaseSimulator):
         if len(env_ids) > 0:
             self.contact_forces_history[env_ids, :, :, :] = 0.0
 
-    def apply_torques_at_dof(self, torques: torch.Tensor) -> None:
+    def apply_torques_at_dof(self, torques: torch.Tensor, dof_indices: list[int] | None = None) -> None:
         """Apply torques with backend-specific optimization.
 
         Parameters
         ----------
         torques : torch.Tensor
-            Torques to apply to each DOF.
+            Torques to apply. Full per-DOF vector when ``dof_indices`` is None; otherwise aligned
+            with ``dof_indices``.
+        dof_indices : list[int] | None
+            When None (default), write every DOF. When a list, scatter ``torques`` into ONLY those
+            DOFs' ctrl slots, leaving the rest as their owner wrote them (so a co-controller on the
+            complementary DOFs is not clobbered).
 
         Raises
         ------
@@ -1058,23 +1063,31 @@ class MuJoCo(BaseSimulator):
             logger.warning("No actuators found in MuJoCo model")
             return
 
+        # The DOFs to write, and their aligned torques. Full path -> every DOF in order.
+        target_dofs = list(range(self.num_dof)) if dof_indices is None else dof_indices
+
         # Check if backend supports direct tensor writes
         ctrl_tensor = self.backend.get_ctrl_tensor()
 
         if ctrl_tensor is not None:
-            # Fast path: Direct zero-copy write (WarpBackend)
-            ctrl_tensor[:] = torques
+            # Fast path: Direct zero-copy write (WarpBackend). ctrl is [num_envs, nu] in DOF order.
+            if dof_indices is None:
+                ctrl_tensor[:] = torques
+            else:
+                idx_t = torch.as_tensor(dof_indices, device=ctrl_tensor.device, dtype=torch.long)
+                ctrl_tensor[:, idx_t] = torques.reshape(-1).to(ctrl_tensor.dtype)
         else:
             # Slow path: Loop-based write (ClassicBackend)
             torques_np = torques.detach().cpu().numpy().flatten()
 
-            # Verify we have the expected number of actuators
-            if len(torques_np) != self.root_model.nu:
-                raise ValueError(f"Torque count mismatch: got {len(torques_np)}, expected {self.root_model.nu}")
+            # Verify torque count matches the DOFs being written.
+            if len(torques_np) != len(target_dofs):
+                raise ValueError(f"Torque count mismatch: got {len(torques_np)}, expected {len(target_dofs)}")
 
-            # Map holosoma DOF indices to MuJoCo actuator indices
-            for i, dof_name in enumerate(self.dof_names):
+            # Map holosoma DOF indices to MuJoCo actuator indices (write only the target DOFs).
+            for i, dof_idx in enumerate(target_dofs):
                 # Add prefix for MuJoCo actuator lookup (dof_names are clean, need prefixed version)
+                dof_name = self.dof_names[dof_idx]
                 actuator_name = self._get_prefixed_name(dof_name)
                 actuator_id = mujoco.mj_name2id(self.root_model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
                 if actuator_id == -1:

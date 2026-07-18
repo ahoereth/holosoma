@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 from abc import ABC, abstractmethod
 
@@ -23,10 +25,25 @@ class BasicSdk2Bridge(ABC):
         # Store simulator reference for generic access
         self.simulator = simulator
 
-        # Uses simulator actuator count (truly simulator-agnostic)
-        self.num_motor = simulator.num_dof  # Generic actuator count
+        # The DOFs this bridge controls (subset of the simulator's DOFs, in bridge order). Default
+        # (empty controlled/excluded config) is every DOF, matching the historical 1:1 SDK-motor <->
+        # sim-DOF behavior. A robot with more sim DOFs than the SDK models (so a co-controller owns
+        # the rest) narrows it via RobotBridgeConfig.controlled_dof_names / excluded_dof_names.
+        self.dof_indices = self._resolve_dof_indices(simulator, robot_config)
+        # None when the subset is every DOF in natural order -> simulator applies the fast full-width
+        # ctrl write; a list -> the simulator scatters into ONLY these DOFs' ctrl slots.
+        self._apply_indices: list[int] | None = (
+            None if self.dof_indices == list(range(simulator.num_dof)) else self.dof_indices
+        )
+
+        # SDK motor count is the size of the controlled subset (was: simulator.num_dof).
+        self.num_motor = len(self.dof_indices)
         self.torques = np.zeros(self.num_motor)  # Avoids config/model mismatches
-        self.torque_limit = np.array(self.robot.dof_effort_limit_list)
+        self.torque_limit = np.array([self.robot.dof_effort_limit_list[i] for i in self.dof_indices])
+
+        # robot_type presented to the SDK (its type gate + motor-vector sizing). Falls back to the
+        # asset's own robot_type, so this changes nothing unless bridge.sdk_robot_type is set.
+        self.sdk_robot_type = robot_config.bridge.sdk_robot_type or robot_config.asset.robot_type
 
         # joystick
         self.key_map = {
@@ -51,6 +68,45 @@ class BasicSdk2Bridge(ABC):
 
         # Initialize SDK-specific components
         self._init_sdk_components()
+
+    def _resolve_dof_indices(self, simulator, robot_config: RobotConfig) -> list[int]:
+        """Resolve which simulator DOFs this bridge controls, as indices into ``simulator.dof_names``.
+
+        ``controlled_dof_names`` (allow-list, in order) wins over ``excluded_dof_names``
+        (control-everything-else). Both empty -> every DOF in natural order (the default, so an
+        SDK that owns the whole robot is unchanged). Names are validated against the loaded robot.
+        """
+        bridge_cfg = robot_config.bridge
+
+        # Default (no subset configured): control every DOF. Uses only num_dof, so it needs no
+        # dof_names — keeps the historical whole-robot behavior for any simulator.
+        if not bridge_cfg.controlled_dof_names and not bridge_cfg.excluded_dof_names:
+            return list(range(simulator.num_dof))
+
+        dof_names = list(simulator.dof_names)
+        name_to_idx = {n: i for i, n in enumerate(dof_names)}
+
+        if bridge_cfg.controlled_dof_names:
+            indices, missing = [], []
+            for name in bridge_cfg.controlled_dof_names:
+                idx = name_to_idx.get(name)
+                (indices.append(idx) if idx is not None else missing.append(name))
+            if missing:
+                raise ValueError(
+                    f"bridge.controlled_dof_names {missing} not in the loaded robot (dof_names={dof_names})."
+                )
+        else:  # excluded_dof_names (controlled empty, but not both — the both-empty case returned above)
+            excluded = set(bridge_cfg.excluded_dof_names)
+            unknown = excluded - set(name_to_idx)
+            if unknown:
+                raise ValueError(
+                    f"bridge.excluded_dof_names {sorted(unknown)} not in the loaded robot (dof_names={dof_names})."
+                )
+            indices = [i for i, n in enumerate(dof_names) if n not in excluded]
+
+        if not indices:
+            raise ValueError("bridge DOF subset resolved to empty; nothing to control.")
+        return indices
 
     @abstractmethod
     def _init_sdk_components(self):
@@ -89,9 +145,10 @@ class BasicSdk2Bridge(ABC):
         numpy.ndarray
             Computed torques with limits applied
         """
-        # Get actual state from simulator
-        q_actual = self.simulator.dof_pos[0]
-        dq_actual = self.simulator.dof_vel[0]
+        # Get actual state from simulator, narrowed to the DOFs this bridge controls (so the SDK's
+        # num_motor-length kp/q_target broadcast against a matching-length state vector).
+        q_actual = self.simulator.dof_pos[0][self.dof_indices]
+        dq_actual = self.simulator.dof_vel[0][self.dof_indices]
 
         # Convert inputs to torch tensors if needed
         device = q_actual.device
@@ -256,14 +313,15 @@ class BasicSdk2Bridge(ABC):
         Returns:
             tuple: (positions, velocities, accelerations) as numpy arrays
         """
-        # Use generic simulator interface - works for all simulators
-        positions = self.simulator.dof_pos[0].detach().cpu().numpy()
-        velocities = self.simulator.dof_vel[0].detach().cpu().numpy()
+        # Use generic simulator interface - works for all simulators. Narrowed to the controlled
+        # DOFs so publish_low_state reports exactly the SDK's num_motor joints.
+        positions = self.simulator.dof_pos[0][self.dof_indices].detach().cpu().numpy()
+        velocities = self.simulator.dof_vel[0][self.dof_indices].detach().cpu().numpy()
 
         if not hasattr(self.simulator, "dof_acc"):
             raise RuntimeError("DOF acceleration not available (is the bridge enabled?)")
 
-        accelerations = self.simulator.dof_acc[0].detach().cpu().numpy()
+        accelerations = self.simulator.dof_acc[0][self.dof_indices].detach().cpu().numpy()
 
         return positions, velocities, accelerations
 
@@ -281,7 +339,11 @@ class BasicSdk2Bridge(ABC):
         # Bridge operates on env 0 by default
         env_id = getattr(self, "env_id", 0)
         forces = self.simulator.get_dof_forces(env_id)
-        return forces[: self.num_motor].detach().cpu().numpy()
+        # Force sensors may be disabled (enable_dof_force_sensors=False) -> empty tensor; a
+        # fancy-index would raise, so pass the empty tensor through as the full-width path does.
+        if forces.numel() == 0:
+            return forces.detach().cpu().numpy()
+        return forces[self.dof_indices].detach().cpu().numpy()
 
     def _get_base_imu_data(self):
         """Get base IMU data: quaternion, angular velocity, linear acceleration (simulator-agnostic).
@@ -347,7 +409,7 @@ class BasicSdk2Bridge(ABC):
         yaw_speed = float(ang_vel_body[2].item())
         return position, quat_wxyz, lin, yaw_speed
 
-    def publish_odom(self):
+    def publish_odom(self):  # noqa: B027  intentional concrete no-op default; SDKs with a base-state channel override it
         """Publish base odometry over the SDK. Default no-op.
 
         SDKs with a base-state channel (Unitree's ``rt/odommodestate`` / ``SportModeState``)

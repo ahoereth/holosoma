@@ -29,7 +29,7 @@ class UnitreeSdk2Bridge(BasicSdk2Bridge):
             WirelessController,
         )
 
-        robot_type = self.robot.asset.robot_type
+        robot_type = self.sdk_robot_type
 
         # Validate robot type first
         if robot_type not in self.SUPPORTED_ROBOT_TYPES:

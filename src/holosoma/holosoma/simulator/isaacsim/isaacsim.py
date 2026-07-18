@@ -1039,8 +1039,14 @@ class IsaacSim(BaseSimulator):
         if len(env_ids) > 0:
             self.contact_forces_history[env_ids, :, :, :] = 0.0
 
-    def apply_torques_at_dof(self, torques):
-        self._robot.set_joint_effort_target(torques, joint_ids=self.dof_ids)
+    def apply_torques_at_dof(self, torques, dof_indices=None):
+        # set_joint_effort_target writes only the given joint_ids without clobbering the rest, so a
+        # subset (dof_indices) composes natively with a co-controller on the other DOFs.
+        if dof_indices is None:
+            joint_ids = self.dof_ids
+        else:
+            joint_ids = [self.dof_ids[i] for i in dof_indices]
+        self._robot.set_joint_effort_target(torques, joint_ids=joint_ids)
 
     def draw_debug_viz(self):
         if self.virtual_gantry:

@@ -33,7 +33,7 @@ class BoosterSdk2Bridge(BasicSdk2Bridge):
 
         logger.info(f"Booster SDK factory initialized with domain_id={domain_id}")
 
-        robot_type = self.robot.asset.robot_type
+        robot_type = self.sdk_robot_type
         if robot_type in self.SUPPORTED_ROBOT_TYPES:
             self.LowCmd = LowCmd
             self.LowState = LowState

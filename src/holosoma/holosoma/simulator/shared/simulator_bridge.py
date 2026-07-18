@@ -155,7 +155,9 @@ class SimulatorBridge:
         torques_tensor = torch.from_numpy(self.robot_bridge.torques).to(
             device=self.simulator.device, dtype=torch.float32
         )
-        self.simulator.apply_torques_at_dof(torques_tensor)
+        # None when the bridge controls every DOF (fast full-width write); a list when it controls a
+        # subset (scatter into only those DOFs, leaving a co-controller's slots untouched).
+        self.simulator.apply_torques_at_dof(torques_tensor, dof_indices=self.robot_bridge._apply_indices)
 
         # Publish simulation clock for e.g, WBT policies
         sim_time = self.simulator.time()
