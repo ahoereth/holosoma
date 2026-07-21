@@ -89,6 +89,11 @@ class GridConditionManager:
             keys = list(name)
             normalized_values = [tuple(v) for v in values]
 
+        existing_keys = {k for ax in self._axes for k in ax["keys"]}
+        duplicates = existing_keys & set(keys)
+        if duplicates:
+            raise RuntimeError(f"Duplicate axis key(s) {duplicates}. Each key can only belong to one axis.")
+
         self._axes.append(
             {
                 "keys": keys,
@@ -119,16 +124,7 @@ class GridConditionManager:
                     cond.update(dict(zip(keys, vals)))
                 self.conditions.append(cond)
 
-        # --- Deduplicate (preserving order) ---
-        seen: set[tuple] = set()
-        unique: list[dict[str, Any]] = []
-        for cond in self.conditions:
-            key = tuple(sorted(cond.items()))
-            if key not in seen:
-                seen.add(key)
-                unique.append(cond)
-        self.conditions = unique
-        self.num_conditions = len(unique)
+        self.num_conditions = len(self.conditions)
 
         if num_envs < self.num_conditions:
             raise RuntimeError(
