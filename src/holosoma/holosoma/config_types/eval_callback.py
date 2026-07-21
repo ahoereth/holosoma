@@ -303,6 +303,11 @@ class EvalCallbacksConfig:
                 "grid_payload and grid_push cannot both be enabled: "
                 "both inject external forces via IsaacSim and would overwrite each other"
             )
+        any_grid = (
+            self.grid_velocity.config.enabled or self.grid_payload.config.enabled or self.grid_push.config.enabled
+        )
+        if any_grid and not self.recording.config.enabled:
+            raise ValueError("Grid eval callbacks require recording to be enabled. Set --recording.config.enabled=True")
         return self
 
     def collect_active_callbacks(self) -> dict:
