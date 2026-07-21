@@ -103,7 +103,10 @@ class GridEvalVelocityCallback(RLEvalCallback):
         """Build independent velocity conditions from config.
 
         Each non-trivial axis is swept separately; other axes default to 0.
-        Deduplication is handled by GridConditionManager.finalize().
+        Deduplicates here because multiple axes that include 0.0 would
+        otherwise produce identical (0,0,0) entries — e.g.
+        lin_vel_x=(0.0, 0.5) and lin_vel_y=(0.0, 0.3) both generate
+        a zero-velocity condition.
         """
         zeros = {"lin_vel_x": 0.0, "lin_vel_y": 0.0, "ang_vel_yaw": 0.0}
         axes = {
@@ -112,11 +115,17 @@ class GridEvalVelocityCallback(RLEvalCallback):
             "ang_vel_yaw": list(config.ang_vel_yaw),
         }
 
+        seen: set[tuple[float, ...]] = set()
         conditions: list[dict[str, float]] = []
         for axis_name, values in axes.items():
             if values == [0.0]:
                 continue
-            conditions.extend({**zeros, axis_name: val} for val in values)
+            for val in values:
+                cond = {**zeros, axis_name: val}
+                key = (cond["lin_vel_x"], cond["lin_vel_y"], cond["ang_vel_yaw"])
+                if key not in seen:
+                    seen.add(key)
+                    conditions.append(cond)
         return conditions or [zeros.copy()]
 
     def _build_command_tensor(
