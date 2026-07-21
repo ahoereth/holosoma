@@ -27,6 +27,11 @@ from holosoma.utils.rotations import (
 )
 from holosoma.utils.simulator_config import SimulatorType
 
+DEBUG_ZERO_STEP = os.getenv("DEBUG_ZERO_STEP", "False").lower() == "true"
+DEBUG_FREEZE_FRAME = int(os.getenv("DEBUG_FREEZE_FRAME", "0"))
+if DEBUG_ZERO_STEP:
+    logger.info(f"DEBUG_ZERO_STEP is enabled, freezing at frame {DEBUG_FREEZE_FRAME}")
+
 
 #########################################################################################################
 ## MotionLoader and AdaptiveTimestepsSampler
@@ -796,6 +801,8 @@ class MotionCommand(CommandTermBase):
         """called in _update_tasks_callback of the environment. (after compute_reward, before compute_observations)"""
         # 0. update time steps, all motion joint/body poses are updated automatically with the time steps.
         advance_mask = torch.ones_like(self.time_steps, dtype=torch.bool)
+        if DEBUG_ZERO_STEP:
+            advance_mask = self.time_steps < DEBUG_FREEZE_FRAME
 
         # Handle freeze_at_timestep_zero_prob: for envs at their motion's start, randomly decide whether to advance
         freeze_prob = self.motion_cfg.freeze_at_timestep_zero_prob
