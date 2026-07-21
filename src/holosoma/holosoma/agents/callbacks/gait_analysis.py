@@ -89,7 +89,6 @@ class GaitAnalyser:
 
         self._left_foot_z_range = (np.min(left_z, axis=0), np.max(left_z, axis=0))
         self._right_foot_z_range = (np.min(right_z, axis=0), np.max(right_z, axis=0))
-        self._done = True
 
         # Initialize ground-contact state from the last recorded frame
         left_range = np.maximum(self._left_foot_z_range[1] - self._left_foot_z_range[0], 1e-4)
@@ -113,6 +112,8 @@ class GaitAnalyser:
             f"Left Z: [{self._left_foot_z_range[0].mean():.3f}, {self._left_foot_z_range[1].mean():.3f}], "
             f"Right Z: [{self._right_foot_z_range[0].mean():.3f}, {self._right_foot_z_range[1].mean():.3f}]"
         )
+
+        self._done = True
         return True
 
     def detect_phases(self) -> np.ndarray:

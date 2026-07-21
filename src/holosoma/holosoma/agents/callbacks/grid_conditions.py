@@ -9,7 +9,7 @@ The manager is created by EvalRecordingCallback (the single recorder) and
 shared with other callbacks via ``_require_recording_cb()``.
 
 Terminology:
-    axis   — one factor of the grid, added via ``add_axis()``.
+    axis   — one factor of the grid, added via ``register_axis()``.
              Each axis contributes one "slot" to the Cartesian product.
              An axis can control a single variable (``name="push_force_n"``)
              or several coupled variables
@@ -31,7 +31,7 @@ class GridConditionManager:
 
     Lifecycle:
         1. Created during ``on_pre_evaluate_policy`` by the recording callback.
-        2. Other callbacks call ``add_axis()`` during their own
+        2. Other callbacks call ``register_axis()`` during their own
            ``on_pre_evaluate_policy`` (callbacks execute in field-declaration
            order from ``EvalCallbacksConfig``).
         3. Recording callback calls ``finalize()`` on the first env step
@@ -45,12 +45,11 @@ class GridConditionManager:
         self.warmup_steps: int = 0
         self._finalized: bool = False
 
-    def add_axis(
+    def register_axis(
         self,
         name: str | list[str],
         values: list,
         *,
-        labels: list[str] | None = None,
         group: str = "",
     ) -> None:
         """Register one axis of the evaluation grid.
@@ -59,11 +58,11 @@ class GridConditionManager:
 
         Single-variable axis (one key per condition entry)::
 
-            cm.add_axis("push_force_n", [100.0, 150.0], group="push")
+            cm.register_axis("push_force_n", [100.0, 150.0], group="push")
 
         Multi-variable axis (coupled keys that vary together)::
 
-            cm.add_axis(
+            cm.register_axis(
                 ["lin_vel_x", "lin_vel_y", "ang_vel_yaw"],
                 [(0.5, 0, 0), (1.0, 0, 0), (0, 0.3, 0)],
                 group="velocity",
@@ -74,13 +73,12 @@ class GridConditionManager:
             values: The sweep values for this axis.  For a single key, a flat
                 list (e.g. ``[0.5, 1.0]``).  For coupled keys, a list of
                 tuples with one element per key.
-            labels: Human-readable labels (optional, defaults to str(value)).
             group: Logical group for metadata output (e.g. "velocity", "push").
 
         Must be called before ``finalize()``.
         """
         if self._finalized:
-            raise RuntimeError(f"Cannot add axis '{name}' after conditions are finalized.")
+            raise RuntimeError(f"Cannot register axis '{name}' after conditions are finalized.")
 
         if isinstance(name, str):
             keys = [name]
@@ -98,7 +96,6 @@ class GridConditionManager:
             {
                 "keys": keys,
                 "values": normalized_values,
-                "labels": labels,
                 "group": group,
             }
         )
@@ -148,21 +145,40 @@ class GridConditionManager:
     def get_metadata(self) -> dict[str, Any]:
         """Return condition metadata for NPZ recording.
 
-        ``grid_conditions`` uses hierarchical dicts grouped by the ``group``
-        parameter passed to ``add_axis()``.  Ungrouped keys stay at
-        the top level.
+        Given axes registered as::
 
-        Example condition::
+            cm.register_axis(["lin_vel_x", "lin_vel_y", "ang_vel_yaw"],
+                        [(0.5, 0, 0), (1.0, 0, 0)], group="velocity")
+            cm.register_axis("push_force_n", [100.0, 150.0], group="push")
 
-            {'velocity': {'lin_vel_x': 0.5, 'lin_vel_y': 0.0, 'ang_vel_yaw': 0.0},
-             'push': {'body_label': 'torso', 'direction': 'forward', 'force_n': 150.0}}
+        After finalize (4 conditions), returns::
+
+            {
+                "num_conditions": 4,
+                "grid_conditions": [
+                    {"velocity": {"lin_vel_x": 0.5, "lin_vel_y": 0.0,
+                                  "ang_vel_yaw": 0.0},
+                     "push": {"push_force_n": 100.0}},
+                    {"velocity": {"lin_vel_x": 0.5, "lin_vel_y": 0.0,
+                                  "ang_vel_yaw": 0.0},
+                     "push": {"push_force_n": 150.0}},
+                    ...
+                ],
+            }
+
+        ``grid_conditions`` nests keys under their axis ``group``.
+        Keys with no group stay at the top level of each condition dict.
         """
+        # Build key→group mapping from axis registrations.
         key_to_group: dict[str, str] = {}
         for ax in self._axes:
             grp = ax.get("group", "")
             for k in ax["keys"]:
                 key_to_group[k] = grp
 
+        # Restructure flat conditions into grouped dicts.
+        # e.g. {"lin_vel_x": 0.5, "push_force_n": 100}
+        #   → {"velocity": {"lin_vel_x": 0.5}, "push": {"push_force_n": 100}}
         hierarchical: list[dict[str, Any]] = []
         for cond in self.conditions:
             grouped: dict[str, Any] = {}
@@ -174,18 +190,7 @@ class GridConditionManager:
                     grouped[key] = val
             hierarchical.append(grouped)
 
-        meta: dict[str, Any] = {
+        return {
             "num_conditions": self.num_conditions,
             "grid_conditions": hierarchical,
         }
-        for ax in self._axes:
-            keys = ax["keys"]
-            values = ax["values"]
-            if len(keys) == 1:
-                meta[f"sweep_{keys[0]}_values"] = [v[0] for v in values]
-                if ax["labels"] is not None:
-                    meta[f"sweep_{keys[0]}_labels"] = ax["labels"]
-            else:
-                for k_idx, k in enumerate(keys):
-                    meta[f"sweep_{k}_values"] = [v[k_idx] for v in values]
-        return meta

@@ -87,13 +87,8 @@ class GridEvalPayloadCallback(RLEvalCallback):
 
         # --- Register sweep axes: body_group x mass_kg ---
         cm = self._recording_cb.condition_manager
-        cm.add_axis("payload_body_label", list(body_labels), labels=list(body_labels), group="payload")
-        cm.add_axis(
-            "payload_mass_kg",
-            list(self.config.mass_kg),
-            labels=[f"{m}kg" for m in self.config.mass_kg],
-            group="payload",
-        )
+        cm.register_axis("payload_body_label", list(body_labels), group="payload")
+        cm.register_axis("payload_mass_kg", list(self.config.mass_kg), group="payload")
 
         self._recording_cb.register_buffer_key("payload_body_pos_w")
 

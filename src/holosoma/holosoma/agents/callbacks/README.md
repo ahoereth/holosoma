@@ -97,5 +97,4 @@ python -m holosoma.eval_agent ... \
 Arrays have shape `[T, num_conditions, ...]`. Metadata is stored as a JSON string in `_metadata_json` and includes:
 - Simulation params (`dt`, `fps`, `dof_names`, `body_names`, limits)
 - Grid conditions (`grid_conditions` list of per-env condition dicts)
-- Per-axis sweep values (`sweep_<key>_values`)
 - Callback-specific metadata (push timing, payload groups, gait analysis results)
