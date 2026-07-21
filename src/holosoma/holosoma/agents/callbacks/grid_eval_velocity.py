@@ -51,7 +51,7 @@ class GridEvalVelocityCallback(RLEvalCallback):
         conditions = self._build_velocity_conditions(self.config)
         cm = self._recording_cb.condition_manager
 
-        cm.add_axis(
+        cm.register_axis(
             ["lin_vel_x", "lin_vel_y", "ang_vel_yaw"],
             [(c["lin_vel_x"], c["lin_vel_y"], c["ang_vel_yaw"]) for c in conditions],
             group="velocity",

@@ -135,31 +135,11 @@ class GridEvalPushCallback(RLEvalCallback):
 
         # --- Register sweep axes with condition manager ---
         cm = self._recording_cb.condition_manager
-        cm.add_axis(
-            name="push_body_label",
-            values=list(body_labels),
-            labels=list(body_labels),
-            group="push",
-        )
-        cm.add_axis(
-            name="push_direction",
-            values=list(self.config.directions),
-            labels=list(self.config.directions),
-            group="push",
-        )
+        cm.register_axis("push_body_label", list(body_labels), group="push")
+        cm.register_axis("push_direction", list(self.config.directions), group="push")
         if self.config.gait_phases:
-            cm.add_axis(
-                name="push_gait_phase",
-                values=list(self.config.gait_phases),
-                labels=list(self.config.gait_phases),
-                group="push",
-            )
-        cm.add_axis(
-            name="push_force_n",
-            values=self._force_magnitudes,
-            labels=[f"{f:.0f}N" for f in self._force_magnitudes],
-            group="push",
-        )
+            cm.register_axis("push_gait_phase", list(self.config.gait_phases), group="push")
+        cm.register_axis("push_force_n", self._force_magnitudes, group="push")
 
         # --- Register recording buffers and metadata ---
         self._recording_cb.register_buffer_key("push_active")
