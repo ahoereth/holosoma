@@ -25,6 +25,12 @@ class DebugConfig:
     force_zero_action: bool = False
     """Zero out the scaled policy action (robot holds default pose)."""
 
+    dry_run: bool = False
+    """Run the full policy loop (obs, inference, postprocess) but do NOT send
+    commands to the robot. Safe for bring-up / on-hardware testing: everything
+    computes and logs as normal, but send_low_command is skipped so no torque
+    is applied. Pair with print_observations to inspect what would be sent."""
+
 
 @dataclass(frozen=True)
 class Ros2DepthConsumerConfig:

@@ -700,14 +700,27 @@ class BasePolicy:
 
         # Stage 5: Action Pub
         with self.latency_tracker.measure("action_pub"):
-            self.interface.send_low_command(
-                self.cmd_q,
-                self.cmd_dq,
-                self.cmd_tau,
-                robot_state_data[0, 7 : 7 + self.num_dofs],
-                kp_override=kp_override,
-                kd_override=kd_override,
-            )
+            if self.config.task.debug.dry_run:
+                # Dry run: compute everything but send nothing to the robot.
+                # Log once so it's unmistakable no torque is being applied.
+                if not getattr(self, "_dry_run_logged", False):
+                    logger.warning(
+                        colored(
+                            "DRY RUN: policy loop active but send_low_command is SKIPPED "
+                            "(no commands sent to the robot).",
+                            "yellow",
+                        )
+                    )
+                    self._dry_run_logged = True
+            else:
+                self.interface.send_low_command(
+                    self.cmd_q,
+                    self.cmd_dq,
+                    self.cmd_tau,
+                    robot_state_data[0, 7 : 7 + self.num_dofs],
+                    kp_override=kp_override,
+                    kd_override=kd_override,
+                )
 
         # Telemetry hook: fires every control tick in every state (policy,
         # stiff-hold, init ramp) with the final executed command. Default
