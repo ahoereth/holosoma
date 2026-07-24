@@ -712,9 +712,12 @@ class BasePolicy:
 
         # Stage 5: Action Pub
         with self.latency_tracker.measure("action_pub"):
-            if self.config.task.debug.dry_run or self.config.task.debug.dryer_run:
-                # Dry run: compute everything but send nothing to the robot.
-                # (dryer_run implies dry_run — it also fabricates the state.)
+            # dry_run: the interface is the REAL bridge/driver, so we must NOT
+            # call send_low_command at all. dryer_run: the interface is the
+            # SyntheticInterface, whose send_low_command only publishes to a
+            # synthetic measurement topic (nothing reaches the robot), so we DO
+            # call it — that's what produces the measurable command stream.
+            if self.config.task.debug.dry_run and not self.config.task.debug.dryer_run:
                 # Log once so it's unmistakable no torque is being applied.
                 if not getattr(self, "_dry_run_logged", False):
                     logger.warning(
