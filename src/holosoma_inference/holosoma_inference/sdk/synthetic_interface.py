@@ -132,13 +132,26 @@ class SyntheticInterface(BaseInterface):
         # real driver. If publishing is disabled/unavailable, this is a no-op.
         if self._cmd_pub is None:
             return
+        # On shutdown (Ctrl-C / SIGTERM) the rclpy context can be torn down
+        # while a final publish is in flight — guard so exit stays clean.
+        try:
+            import rclpy
+
+            if not rclpy.ok():
+                return
+        except Exception:
+            return
         msg = self._JointState()
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.name = self._dof_names
         msg.position = np.asarray(cmd_q, dtype=float).reshape(-1).tolist()
         msg.velocity = np.asarray(cmd_dq, dtype=float).reshape(-1).tolist()
         msg.effort = np.asarray(cmd_tau, dtype=float).reshape(-1).tolist()
-        self._cmd_pub.publish(msg)
+        try:
+            self._cmd_pub.publish(msg)
+        except Exception:
+            # Context invalidated mid-publish during shutdown — ignore.
+            return
 
     def get_joystick_msg(self):
         return None
