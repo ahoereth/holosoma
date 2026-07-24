@@ -149,6 +149,18 @@ class BasePolicy:
         if hasattr(self, "_shared_hardware_source"):
             self.interface = self._shared_hardware_source.interface
             return
+        # Dryer run: fabricate state, never open a DDS connection. Bypasses the
+        # SDK backend entirely so the loop runs with no bridge/driver present.
+        if self.config.task.debug.dryer_run:
+            from holosoma_inference.sdk.synthetic_interface import SyntheticInterface
+
+            self.interface = SyntheticInterface(
+                self.robot_config,
+                self.config.task.domain_id,
+                self.config.task.interface,
+                False,
+            )
+            return
         # The SDK's own wireless-controller path is only needed when an
         # "interface" channel is selected.  The "joystick" channel is read
         # via host-side evdev (UsbJoystickInput) and does not touch the SDK.
@@ -700,8 +712,9 @@ class BasePolicy:
 
         # Stage 5: Action Pub
         with self.latency_tracker.measure("action_pub"):
-            if self.config.task.debug.dry_run:
+            if self.config.task.debug.dry_run or self.config.task.debug.dryer_run:
                 # Dry run: compute everything but send nothing to the robot.
+                # (dryer_run implies dry_run — it also fabricates the state.)
                 # Log once so it's unmistakable no torque is being applied.
                 if not getattr(self, "_dry_run_logged", False):
                     logger.warning(

@@ -31,6 +31,14 @@ class DebugConfig:
     computes and logs as normal, but send_low_command is skipped so no torque
     is applied. Pair with print_observations to inspect what would be sent."""
 
+    dryer_run: bool = False
+    """Like ``dry_run``, but ALSO fabricate the robot state instead of reading
+    it from a bridge/driver. Swaps in a synthetic interface that returns a
+    plausible standing pose (default_dof_angles, upright IMU, zero velocities)
+    and never opens a DDS connection, so the loop runs with no sim/hardware
+    present at all. Implies ``dry_run`` (never sends commands). Use to smoke-test
+    config loading, ONNX inference, and the obs pipeline off-robot."""
+
 
 @dataclass(frozen=True)
 class Ros2DepthConsumerConfig:
