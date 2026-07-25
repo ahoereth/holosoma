@@ -396,9 +396,39 @@ class BasePolicy:
     # Policy Methods
     # ============================================================================
 
+    @staticmethod
+    def _make_ort_session_options():
+        """ONNX Runtime options tuned for the real-time control loop.
+
+        By default ORT sizes its intra-op thread pool to the CPU count AND pins
+        one worker to each core via sched_setaffinity. That per-thread pin
+        bypasses the kernel's ``isolcpus`` reservation, so the workers land on
+        the isolated RT cores (10-13 here) and contend with the 1 kHz EtherCAT
+        actuator threads. The policy is a small MLP run at 50 Hz (~1 ms
+        single-threaded), so a multi-core pool buys nothing and the pinning is
+        pure harm. Force single-threaded, sequential exec, and — belt and
+        suspenders — disable ORT's thread affinity so it can never pin to an
+        isolated core even if thread counts change.
+        """
+        opts = onnxruntime.SessionOptions()
+        opts.intra_op_num_threads = 1
+        opts.inter_op_num_threads = 1
+        opts.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+        # Empty affinity string => let the OS scheduler place threads within the
+        # inherited (0-9) mask; ORT does not force per-core pins.
+        try:
+            opts.add_session_config_entry("session.intra_op_thread_affinities", "")
+        except Exception as exc:
+            # Older ORT without this config key: intra_op_num_threads=1 already
+            # avoids building the per-core pinned pool, so this is best-effort.
+            logger.debug(f"ORT intra_op_thread_affinities config unsupported: {exc}")
+        return opts
+
     def setup_policy(self, model_path):
         """Setup ONNX policy model and extract metadata."""
-        self.onnx_policy_session = onnxruntime.InferenceSession(model_path)
+        self.onnx_policy_session = onnxruntime.InferenceSession(
+            model_path, sess_options=self._make_ort_session_options()
+        )
         input_names = [inp.name for inp in self.onnx_policy_session.get_inputs()]
         output_names = [out.name for out in self.onnx_policy_session.get_outputs()]
 
