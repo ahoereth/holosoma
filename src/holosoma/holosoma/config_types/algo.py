@@ -361,7 +361,7 @@ class StudentTeacherModuleConfig:
     activation: str = "ELU"
     """Activation function name."""
 
-    depth_backbone: str = "wbt_training.utils.depth_backbone.DepthOnlyFCBackbone58x87Small"
+    depth_backbone: str = "holosoma.agents.modules.depth_backbone.DepthOnlyFCBackbone58x87Small"
     """Dotted path to the depth-backbone nn.Module class, instantiated as ``cls(depth_output_dim)``."""
 
     depth_output_dim: int = 32
