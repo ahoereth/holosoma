@@ -25,6 +25,16 @@ class DebugConfig:
     force_zero_action: bool = False
     """Zero out the scaled policy action (robot holds default pose)."""
 
+    record_rosbag: bool = False
+    """Record a per-session rosbag for the lifetime of this run_policy process.
+    Spawns ``ros2 bag record --all`` in the background when the policy starts and
+    stops it on exit (Ctrl-C, normal completion, or error), then prints the bag's
+    absolute path. Each run gets its own short, self-contained bag — no hunting
+    for a timestamp inside a long fleet-telemetry recording."""
+
+    rosbag_dir: str = "~/run_policy_sessions"
+    """Directory for per-session rosbags recorded via ``record_rosbag``."""
+
 
 @dataclass(frozen=True)
 class Ros2DepthConsumerConfig:
