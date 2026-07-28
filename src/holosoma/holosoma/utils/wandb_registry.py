@@ -119,11 +119,28 @@ def get_wandb_run_and_file(wandb_path: str) -> tuple[wandb.apis.public.Run, str,
     run = api.run(run_path)
 
     if file_name is None:
-        # Collect .pt checkpoint files and pick the one with the largest index
-        files = [f.name for f in run.files() if f.name.endswith(".pt")]
+        # Collect .pt checkpoint files and pick the one with the largest index.
+        # Workaround for a far.wandb.io server bug: when fileCount is an exact
+        # multiple of the page size (50), pagination returns ``{files: null}``
+        # past the last record, which the wandb client dereferences as
+        # ``TypeError: 'NoneType' object is not subscriptable``. Fall back to
+        # probing ``model_<_step>.pt`` by exact name (run.file() works on the
+        # affected runs even though run.files() doesn't).
+        try:
+            files = [f.name for f in run.files() if f.name.endswith(".pt")]
+        except TypeError:
+            files = []
+            last_step = int((run.summary or {}).get("_step", 0))
+            for n in range(last_step, max(last_step - 3, -1), -1):
+                try:
+                    if run.file(f"model_{n}.pt").size > 0:
+                        files.append(f"model_{n}.pt")
+                        break
+                except Exception:
+                    continue
         if not files:
             raise FileNotFoundError(
-                f"No .pt checkpoint files found in run {run_path}. Available files: {[f.name for f in run.files()]}"
+                f"No .pt checkpoint files found in run {run_path}."
             )
         try:
             file_name = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))
