@@ -753,10 +753,11 @@ class MotionCommand(CommandTermBase):
             subset = torch.where(rand_vals < prob, start_idx, subset)
             self.time_steps[env_ids] = subset
 
-        # If the motion is at the last timestep, set it to the second last timestep;
-        # Otherwise, update_tasks_callback will advance the timestep to the next timestep -> out of bounds error.
-        already_last_timestep_mask = self.time_steps[env_ids] >= end_idx - 1
-        self.time_steps[env_ids] = torch.where(already_last_timestep_mask, end_idx - 2, self.time_steps[env_ids])
+        # Pre-advance any frame that is itself a clip-end so the +1 in step() doesn't
+        # land on a discontinuous next-clip frame, then wrap any OOB time_steps to 0.
+        env_ids_end = torch.where(self.motion.motion_ends[self.time_steps])[0]
+        self.time_steps[env_ids_end] += 1
+        self.time_steps[self.time_steps >= self.motion.time_step_total] = 0
 
         # 1. Get the root/body poses from the motion data
         # Index only reset-env timesteps (raw body index 0 = root, same as root_pos_w property)
