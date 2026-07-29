@@ -135,18 +135,6 @@ def motion_command(env: WholeBodyTrackingManager) -> torch.Tensor:
     return motion_command.command
 
 
-def velocity_command(env: WholeBodyTrackingManager) -> torch.Tensor:
-    """One-hot velocity command from the motion data (shape [num_envs, 15]).
-
-    Mirrors far-tracking's ``velocity_command`` at
-    tracking/mdp/observations.py:205-208. Gives the student policy the
-    commanded forward/lateral velocity for the currently-tracked clip; the
-    teacher has this information implicitly through its motion-ref inputs.
-    """
-    motion_command = _get_motion_command_and_assert_type(env)
-    return motion_command.vel_cmd.view(env.num_envs, -1)
-
-
 def which_motion(
     env: WholeBodyTrackingManager,
     bad_ref_pos_threshold: float = 0.5,
@@ -304,3 +292,27 @@ def obj_lin_vel_b(env: WholeBodyTrackingManager) -> torch.Tensor:
         unit_quat,
     )
     return vel_b.view(env.num_envs, -1)
+
+
+def velocity_command(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Deprecated: forwards to the application that owns this observation.
+
+    The one-hot velocity command is not part of holosoma's motion format — it
+    was introduced by an application (FAR-pi's ``wbt_training``) along with the
+    command term that supplies it, and only that application consumes it. The
+    implementation now lives beside its command term.
+
+    This forwarder exists solely because the dotted path is serialized into
+    checkpoints trained before the move, so ``resolve_callable`` must keep
+    resolving it. It reads ``vel_cmd`` off whatever command term is registered,
+    which keeps core free of any import of the application package.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    vel_cmd = getattr(motion_command, "vel_cmd", None)
+    if vel_cmd is None:
+        raise TypeError(
+            f"velocity_command: command term {type(motion_command).__name__} has no "
+            f"'vel_cmd'. This observation requires a command term that supplies one "
+            f"(e.g. wbt_training.config_values.motion_command:PhpMotionCommand)."
+        )
+    return vel_cmd.view(env.num_envs, -1)

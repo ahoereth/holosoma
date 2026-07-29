@@ -156,15 +156,8 @@ class MotionLoader:
             else:
                 self.motion_idxs = torch.zeros(num_frames, dtype=torch.long, device=device)
 
-            # One-hot velocity command (15,) per frame. Present in
-            # BeyondMimic-style NPZs; absent on older motions. When absent,
-            # self._vel_cmd is None and the `velocity_command` obs term
-            # falls back to a zero tensor at runtime.
-            if "vel_cmd" in data.files:
-                self._vel_cmd = torch.tensor(data["vel_cmd"], dtype=torch.float32, device=device)
-            else:
-                self._vel_cmd = None
-
+        # Concatenate one-hot velocity commands. Drop entirely if any loader
+        # lacks the field, so every frame has a consistent shape.
             # add object pos and quat
             self.has_object = "object_pos_w" in data
             if self.has_object:
@@ -359,13 +352,6 @@ class MultiMotionLoader:
             [torch.full((ld.time_step_total,), i, dtype=torch.long, device=device) for i, ld in enumerate(loaders)],
             dim=0,
         )
-
-        # Concatenate one-hot velocity commands. Drop entirely if any loader
-        # lacks the field, so every frame has a consistent shape.
-        if all(ld._vel_cmd is not None for ld in loaders):
-            self._vel_cmd = torch.cat([ld._vel_cmd for ld in loaders], dim=0)
-        else:
-            self._vel_cmd = None
 
         # Use indexes from first loader (all loaders share the same robot)
         self._joint_indexes = loaders[0]._joint_indexes
@@ -635,12 +621,6 @@ class MotionCommand(CommandTermBase):
         # Ref semantic: when False, reset root-velocity noise falls back to push
         # randomizer max_push_vel. When True, use init_pose_cfg.root_lin/ang_vel.
         self.use_configured_root_velocity_noise = bool(cfg.params.get("use_configured_root_velocity_noise", False))
-        # Lazy cache of per-expert frame index pools (populated on first reset
-        # when the combined motion file carries motion_idxs with >1 expert).
-        # Used for expert-balanced time_step sampling.
-        self._expert_frame_pools: list[torch.Tensor] | None = None
-        self._expert_pool_lengths: torch.Tensor | None = None
-        self._num_experts: int | None = None
 
     def setup(self) -> None:
         self.num_envs = self._env.num_envs
@@ -759,78 +739,11 @@ class MotionCommand(CommandTermBase):
         n = env_ids.numel()
         num_motions = self.motion.num_motions
 
-        # Multi-expert balancing (mirrors far-tracking
-        # tracking/mdp/commands.py:_resample_command 407-420): when the
-        # combined motion file has ``motion_idxs`` marking per-frame expert
-        # source, sample uniformly over *experts*, not over clips. Without
-        # this, clip counts dominate (e.g. one registry with 600 clips vs.
-        # six with 40 takes ~69% of envs → one teacher dominates the DAgger
-        # signal). We hit this path only on combined single-file loaders
-        # (MotionLoader.num_motions == 1); MultiMotionLoader already
-        # balances per clip so we keep its behavior.
-        motion_idxs = getattr(self.motion, "motion_idxs", None)
-        use_expert_balancing = (
-            num_motions == 1
-            and motion_idxs is not None
-            and int(motion_idxs.max().item()) > 0
-        )
-        if use_expert_balancing:
-            # Precompute per-expert frame-index pools, cached once. We can't
-            # rely on motion_idxs being contiguous per expert — on-path
-            # obstacle injection (obstacle_helpers.offset_motions_to_file)
-            # tiles the whole motion buffer N_variants times, so each expert's
-            # frames appear in N_variants disjoint blocks interleaved with
-            # other experts' blocks. Storing explicit index pools is
-            # ~O(T * int64) = a few MB total.
-            if getattr(self, "_expert_frame_pools", None) is None:
-                num_experts = int(motion_idxs.max().item()) + 1
-                pools: list[torch.Tensor] = []
-                for e in range(num_experts):
-                    idx = torch.nonzero(motion_idxs == e, as_tuple=False).squeeze(-1).to(self.device)
-                    if idx.numel() == 0:
-                        # Expert has no frames (e.g., if num_experts > actual
-                        # clip count). Fall back to all-of-motion so sampling
-                        # doesn't crash; this env will be flagged idx==-1 in
-                        # which_motion's expert_terminate check anyway.
-                        idx = torch.arange(motion_idxs.shape[0], dtype=torch.long, device=self.device)
-                    pools.append(idx)
-                self._expert_frame_pools = pools
-                self._expert_pool_lengths = torch.tensor(
-                    [p.numel() for p in pools], dtype=torch.long, device=self.device
-                )
-                self._num_experts = num_experts
-            pools = self._expert_frame_pools
-            pool_lengths = self._expert_pool_lengths
-            num_experts = self._num_experts
-
-            expert_ids = torch.randint(0, num_experts, (n,), device=self.device)
-            # Uniformly pick an index within the assigned expert's frame pool.
-            pool_len_for_env = pool_lengths[expert_ids]
-            pool_pos = (torch.rand(n, device=self.device) * pool_len_for_env.float()).long()
-            # Scatter by expert: resolve each env's global frame idx from its pool.
-            # Group by expert to index each pool; cheap since num_experts is small.
-            time_steps_new = torch.empty(n, dtype=torch.long, device=self.device)
-            for e in range(num_experts):
-                mask = expert_ids == e
-                if mask.any():
-                    time_steps_new[mask] = pools[e][pool_pos[mask]]
-            self.time_steps[env_ids] = time_steps_new
-            self.motion_ids[env_ids] = expert_ids
-            # Downstream range-based code expects start/end as the "clip"
-            # boundary. Expert frames are non-contiguous under variant tiling,
-            # so ranges are meaningless; use the full buffer so
-            # ``already_last_timestep_mask`` only fires on a genuine
-            # last-global-frame sample (rare, handled below).
-            start_idx = torch.zeros(n, dtype=torch.long, device=self.device)
-            end_idx = torch.full(
-                (n,), self.motion.time_step_total, dtype=torch.long, device=self.device
-            )
-        else:
-            self.motion_ids[env_ids] = torch.randint(0, num_motions, (n,), device=self.device)
-            start_idx = self.motion.motion_start_idx[self.motion_ids[env_ids]]
-            end_idx = self.motion.motion_end_idx[self.motion_ids[env_ids]]
-            motion_len = end_idx - start_idx
-            self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
+        self.motion_ids[env_ids] = torch.randint(0, num_motions, (n,), device=self.device)
+        start_idx = self.motion.motion_start_idx[self.motion_ids[env_ids]]
+        end_idx = self.motion.motion_end_idx[self.motion_ids[env_ids]]
+        motion_len = end_idx - start_idx
+        self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
 
         # Handle start_at_timestep_zero_prob (reset to start of assigned motion)
         prob = self.motion_cfg.start_at_timestep_zero_prob
@@ -1133,25 +1046,6 @@ class MotionCommand(CommandTermBase):
     @property
     def ref_ang_vel_w(self) -> torch.Tensor:
         return self.motion._body_ang_vel_w[self.time_steps, self.ref_body_index]
-
-    @property
-    def vel_cmd(self) -> torch.Tensor:
-        """One-hot velocity command at the per-env current timestep.
-
-        Mirrors far-tracking's ``MotionCommand.vel_cmd`` property
-        (tracking/mdp/commands.py:237-244). Raises if the motion file lacks
-        a ``vel_cmd`` field — a preset that wires the ``velocity_command``
-        obs term cannot be run against motions without the field, and a
-        silent zero fallback would produce a training-time input shape
-        mismatch with a checkpoint that was trained with the field.
-        """
-        if self.motion._vel_cmd is None:
-            raise RuntimeError(
-                "MotionCommand.vel_cmd: motion file has no 'vel_cmd' field. "
-                "Presets that use the velocity_command obs term require "
-                "motions with one-hot velocity commands."
-            )
-        return self.motion._vel_cmd[self.time_steps]
 
     @property
     def root_pos_w(self) -> torch.Tensor:
