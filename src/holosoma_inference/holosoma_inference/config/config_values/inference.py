@@ -6,7 +6,7 @@ import tyro
 from typing_extensions import Annotated
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
-from holosoma_inference.config.config_values import observation, robot, task
+from holosoma_inference.config.config_values import camera, observation, robot, task
 from holosoma_inference.utils.config_registry import (
     ConfigRegistry,
     deprecated_defaults_alias,
@@ -71,10 +71,21 @@ g1_29dof_wbt = InferenceConfig(
     secondary=_g1_safety_secondary,
 )
 
+# Depth distillation: vision-based locomotion over stairs / rough terrain.
+# No safety secondary — the depth backbone and student form one composite policy,
+# and its two model paths would collide with the multi-policy switching semantics.
+g1_wbt_distillation = InferenceConfig(
+    robot=robot.g1_29dof_wbt_distillation,
+    observation=observation.wbt_distillation_g1,
+    task=task.wbt_distillation,
+    camera=camera.single_zed2i_depth,
+)
+
 # Register core presets. Keys use hyphen-case naming convention for CLI compatibility.
 INFERENCE_REGISTRY.add("g1-29dof-loco", g1_29dof_loco)
 INFERENCE_REGISTRY.add("t1-29dof-loco", t1_29dof_loco)
 INFERENCE_REGISTRY.add("g1-29dof-wbt", g1_29dof_wbt)
+INFERENCE_REGISTRY.add("g1-wbt-distillation", g1_wbt_distillation)
 
 
 def get_annotated_inference_config() -> type:
