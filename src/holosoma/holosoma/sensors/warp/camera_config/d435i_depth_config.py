@@ -39,12 +39,6 @@ class RsD435iConfig(BaseDepthCameraConfig):
 
     offset_rot_base = [-90.0, 0, -90.0] # roll, pitch, yaw [deg]
 
-    class sensor_noise:
-        enable_sensor_noise = False
-        pixel_dropout_prob = 0.025
-        pixel_std_dev_multiplier = 0.05
-
-
 class G1FlatRsD435iConfig(RsD435iConfig):
 
     asset_meshes_root = G1_ASSET_MESHES_ROOT

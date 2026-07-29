@@ -372,33 +372,3 @@ class CameraSensor(BaseSensor):
         # Apply noise
         # self.apply_noise_vanilla()
         return self.pixels_tensors
-
-    # def apply_noise_vanilla(self): # TODO: do it in _process_depth_images()
-    #     if self.cfg.sensor_noise.enable_sensor_noise == True:
-    #         # logger.debug("Applying sensor noise")
-    #         self.pixels_tensors[:] = torch.normal(
-    #             mean=self.pixels_tensors, std=self.cfg.sensor_noise.pixel_std_dev_multiplier * self.pixels_tensors
-    #         )
-    #         # self.pixels_tensors[
-    #         #     torch.bernoulli(torch.ones_like(self.pixels_tensors) * self.cfg.sensor_noise.pixel_dropout_prob) > 0
-    #         # ] = self.cfg.near_out_of_range_value
-
-    # def apply_noise(self):
-    #     if self.cfg.sensor_noise.enable_sensor_noise == True:
-    #         # logger.debug("Applying sensor noise")
-    #         sensor_noise_params = self.cfg.sensor_noise
-    #         std_a = sensor_noise_params.std_a
-    #         std_b = sensor_noise_params.std_b
-    #         std_c = sensor_noise_params.std_c
-    #         mean_offset = sensor_noise_params.mean_offset
-    #         std_val = std_a * self.pixels_tensors**2 + std_b * self.pixels_tensors + std_c
-    #         self.pixels_tensors[:] = torch.normal(
-    #             mean= (self.pixels_tensors - mean_offset),
-    #             std=std_val
-    #         )
-    #         # self.pixels_tensors[
-    #         #     torch.bernoulli(
-    #         #         torch.ones_like(self.pixels_tensors) * self.cfg.sensor_noise.pixel_dropout_prob
-    #         #     )
-    #         #     > 0
-    #         # ] = self.cfg.near_out_of_range_value

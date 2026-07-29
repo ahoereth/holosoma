@@ -46,8 +46,3 @@ class BaseDepthCameraConfig(BaseSensorConfigCamera):
     max_translation = MISSING
     min_euler_rotation_deg = MISSING
     max_euler_rotation_deg = MISSING
-
-    class sensor_noise:
-        enable_sensor_noise = False
-        pixel_dropout_prob = MISSING
-        pixel_std_dev_multiplier = MISSING
