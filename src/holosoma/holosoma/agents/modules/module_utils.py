@@ -67,19 +67,24 @@ def setup_student_teacher_module(
     module_config,
     device,
     num_teachers: int = 1,
+    module_cls: type | None = None,
 ):
-    """Build a ``DepthStudentTeacherCritic`` (the only variant we ship today).
+    """Build a ``DepthStudentTeacherCritic``, or a drop-in replacement.
 
     ``module_config`` is a :class:`StudentTeacherModuleConfig`. The depth
     backbone is resolved from ``module_config.depth_backbone`` (dotted path)
     and instantiated with ``(depth_output_dim,)``. ``num_teachers`` controls
-    how many frozen teacher MLPs are built; ``teacher_obs`` must carry the
-    routing motion_idx in its leading column.
+    how many frozen teacher MLPs are built.
+
+    ``module_cls`` lets an application substitute a subclass — e.g. one that
+    derives the per-env teacher index from the observation rather than taking
+    it as an argument — without restating this construction.
     """
     backbone_cls = get_class(module_config.depth_backbone)
     depth_backbone = backbone_cls(module_config.depth_output_dim)
 
-    return DepthStudentTeacherCritic(
+    cls = module_cls if module_cls is not None else DepthStudentTeacherCritic
+    return cls(
         num_actor_obs=num_actor_obs,
         num_teacher_obs=num_teacher_obs,
         num_critic_obs=num_critic_obs,
@@ -102,18 +107,21 @@ def setup_depth_student_teacher_module(
     module_config,
     device,
     num_teachers: int = 1,
+    module_cls: type | None = None,
 ):
     """Build a :class:`DepthStudentTeacher` (no critic). Used by the pure-DAgger
     :class:`Distillation` algorithm.
 
     Shares :class:`StudentTeacherModuleConfig` with the PPO variant;
     ``critic_hidden_dims`` on the cfg is silently ignored since this module
-    has no critic MLP.
+    has no critic MLP. ``module_cls`` substitutes a drop-in subclass, as in
+    :func:`setup_student_teacher_module`.
     """
     backbone_cls = get_class(module_config.depth_backbone)
     depth_backbone = backbone_cls(module_config.depth_output_dim)
 
-    return DepthStudentTeacher(
+    cls = module_cls if module_cls is not None else DepthStudentTeacher
+    return cls(
         num_actor_obs=num_actor_obs,
         num_teacher_obs=num_teacher_obs,
         num_actions=num_actions,

@@ -41,13 +41,13 @@ class StudentTeacher(nn.Module):
     """Proprio-only student + one or more frozen privileged teachers.
 
     Student consumes ``actor_obs`` (+ optional depth latent from a subclass).
-    Each teacher consumes ``teacher_obs[:, 1:]``; their weights are loaded via
-    :meth:`load_teacher_state_dict` and frozen (``eval()`` + no grad).
+    Each teacher consumes the full ``teacher_obs`` and has its weights loaded
+    via :meth:`load_teacher_state_dict`, then frozen (``eval()`` + no grad).
 
-    When ``num_teachers > 1``, the first column of ``teacher_obs`` is treated
-    as a motion index that routes each env to the matching teacher. Mirrors
-    far-tracking's ``MultiTeacher.forward`` (whole_body_tracking/utils/
-    multi_motion_helpers.py:283-297). ``motion_idx == -1`` → output 0.
+    Routing across teachers is driven by an explicit ``teacher_idx`` argument
+    to :meth:`teacher_act` rather than a reserved column of the observation:
+    where that index comes from, and what counts as "no teacher", are decisions
+    for the application. See :meth:`teacher_act`.
     """
 
     def __init__(
@@ -67,10 +67,11 @@ class StudentTeacher(nn.Module):
         self.num_actor_obs = num_actor_obs
         self.num_teacher_obs = num_teacher_obs
         self.num_actions = num_actions
-        # Each teacher MLP sees teacher_obs[:, 1:] (the leading column carries
-        # the motion-routing index and is stripped in teacher_act). Pretrained
-        # teachers were never exposed to that column.
-        self._teacher_in_dim = num_teacher_obs - 1
+        # Each teacher MLP sees the whole teacher_obs. An application that
+        # smuggles routing metadata through the observation is responsible for
+        # stripping it before calling teacher_act, and for declaring
+        # num_teacher_obs as the width its teachers actually expect.
+        self._teacher_in_dim = num_teacher_obs
 
         self.student = _build_mlp(num_actor_obs, student_hidden_dims, num_actions, activation)
         self.teachers = nn.ModuleList(
@@ -205,30 +206,38 @@ class StudentTeacher(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     @torch.no_grad()
-    def teacher_act(self, teacher_obs: torch.Tensor) -> torch.Tensor:
+    def teacher_act(
+        self, teacher_obs: torch.Tensor, teacher_idx: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """Deterministic teacher forward. Used to generate DAgger labels.
 
-        ``teacher_obs[:, 0]`` is the motion index (routing key);
-        ``teacher_obs[:, 1:]`` is the privileged obs consumed by the teacher
-        MLP. Each env is routed to ``self.teachers[motion_idx]`` (with the
-        single-teacher case collapsing to ``self.teachers[0]`` for every
-        non-negative idx). ``motion_idx == -1`` zeros the output for that env
-        regardless of ``num_teachers``, so a single-teacher run still
-        propagates ``which_motion``'s expert-terminate flag into
-        ``DistillationPPO``'s ``teacher_actions == 0`` mask.
+        ``teacher_obs`` is the privileged observation, passed to the teacher
+        MLPs unchanged. ``teacher_idx`` optionally selects a teacher per env:
+
+        - ``None`` (default): every env goes to ``self.teachers[0]``.
+        - an integer tensor of shape ``[N]``: env ``n`` is routed to
+          ``self.teachers[teacher_idx[n]]``. Negative entries mean "no teacher
+          applies" and yield a zero action, which callers may use to mark
+          samples to exclude from the behaviour-cloning loss.
+
+        The index is an argument rather than a reserved observation column so
+        that this module has no opinion on how an application derives it. See
+        the ``DistillationPPO._dagger_loss`` docstring for the corresponding
+        loss-side extension point.
         """
         if teacher_obs.shape[-1] != self.num_teacher_obs:
             raise RuntimeError(
-                f"teacher_act: expected last dim {self.num_teacher_obs} "
-                f"(includes leading motion_idx column), got {teacher_obs.shape[-1]}"
+                f"teacher_act: expected last dim {self.num_teacher_obs}, "
+                f"got {teacher_obs.shape[-1]}"
             )
-        x = teacher_obs[:, 1:]
-        idx = teacher_obs[:, 0].long()
-        out = self.teachers[0](x)
+        out = self.teachers[0](teacher_obs)
+        if teacher_idx is None:
+            return out
+        idx = teacher_idx.long().reshape(-1)
         for i in range(1, len(self.teachers)):
             mask = idx == i
             if mask.any():
-                out[mask] = self.teachers[i](x[mask])
+                out[mask] = self.teachers[i](teacher_obs[mask])
         out[idx < 0] = 0.0
         return out
 

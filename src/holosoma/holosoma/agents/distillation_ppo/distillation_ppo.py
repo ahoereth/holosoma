@@ -459,6 +459,19 @@ class DistillationPPO(BaseAlgo):
 
     # ------------------------------------------------------------ training step
 
+    def _dagger_loss(
+        self, student_mean: torch.Tensor, teacher_actions: torch.Tensor
+    ) -> torch.Tensor:
+        """Behaviour-cloning loss against the teacher's actions.
+
+        Plain reduction over the whole batch. Override to drop samples — e.g.
+        an application whose ``teacher_act`` marks "no teacher applies" with a
+        zero action can mask those rows out here. Keep the ``.mean()``
+        denominator at the full batch size if you want the reported loss to
+        stay comparable across masking schemes.
+        """
+        return self.distill_loss_fn(student_mean, teacher_actions)
+
     def _training_step(self) -> dict[str, float]:
         generator = self.storage.mini_batch_generator(self.config.num_mini_batches, self.config.num_learning_epochs)
         loss_accum: dict[str, torch.Tensor] = {}
@@ -545,16 +558,7 @@ class DistillationPPO(BaseAlgo):
 
         entropy_mean = entropy.mean()
 
-        # DAgger (behavior-cloning) loss with expert-terminate masking. Rows
-        # where the teacher emits all-zero actions (a convention from the
-        # reference implementation marking trajectories the expert terminated)
-        # are zeroed and the .mean() denominator is the full batch — matches
-        # far-tracking my_distillation.py:1021-1035. A multiplicative mask
-        # keeps the autograd graph intact.
-        distill_raw = self.distill_loss_fn(student_mean, teacher_actions, reduction="none")
-        expert_terminate = torch.all(teacher_actions == 0.0, dim=-1)
-        keep_mask = (~expert_terminate).float().unsqueeze(-1)
-        dagger_loss = (distill_raw * keep_mask).mean()
+        dagger_loss = self._dagger_loss(student_mean, teacher_actions)
 
         # Combined loss. Matches far-tracking's DepthDistillationPPO formula at
         # my_distillation.py:978-985, 1037: value loss is **always active**

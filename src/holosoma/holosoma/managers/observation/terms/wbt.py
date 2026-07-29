@@ -135,61 +135,6 @@ def motion_command(env: WholeBodyTrackingManager) -> torch.Tensor:
     return motion_command.command
 
 
-def which_motion(
-    env: WholeBodyTrackingManager,
-    bad_ref_pos_threshold: float = 0.5,
-    bad_ref_ori_threshold: float = 0.8,
-    bad_motion_body_pos_threshold: float = 0.5,
-    bad_motion_body_pos_body_names: tuple[str, ...] = (
-        "left_ankle_roll_link",
-        "right_ankle_roll_link",
-        "left_wrist_yaw_link",
-        "right_wrist_yaw_link",
-    ),
-) -> torch.Tensor:
-    """Per-env current motion index (shape [num_envs, 1]).
-
-    Used as the leading column of ``teacher_obs`` to route samples to the
-    matching teacher in ``StudentTeacher.teacher_act``. When the motion file
-    lacks a ``motion_idxs`` field, ``MotionLoader`` already zero-fills
-    (command/terms/wbt.py:157) so single-motion runs collapse to
-    ``teachers[0]`` automatically.
-
-    When the teacher's anchor / orientation / tracked-body errors exceed the
-    given thresholds the env is flagged as "expert lost" and the index is
-    overwritten with ``-1``; ``StudentTeacher.teacher_act`` zeros that env's
-    teacher action, which then drives DistillationPPO's ``expert_terminate``
-    mask (``teacher_actions == 0``) so the DAgger loss is suppressed for that
-    sample. Mirrors far-tracking ``observations.py:190-197``.
-    """
-    cmd = _get_motion_command_and_assert_type(env)
-    idx = cmd.motion.motion_idxs[cmd.time_steps].to(torch.float32)
-
-    bad_ref_pos = (
-        torch.norm(cmd.ref_pos_w - cmd.robot_ref_pos_w, dim=1) > bad_ref_pos_threshold
-    )
-
-    g = gravity_vector(env)
-    motion_g_b = quat_rotate_inverse(cmd.ref_quat_w, g, w_last=True)
-    robot_g_b = quat_rotate_inverse(cmd.robot_ref_quat_w, g, w_last=True)
-    bad_ref_ori = torch.abs(motion_g_b[:, 2] - robot_g_b[:, 2]) > bad_ref_ori_threshold
-
-    body_names_to_track = list(cmd.motion_cfg.body_names_to_track)
-    body_idx = torch.tensor(
-        [body_names_to_track.index(n) for n in bad_motion_body_pos_body_names],
-        dtype=torch.long,
-        device=env.device,
-    )
-    body_err = torch.norm(
-        cmd.body_pos_relative_w[:, body_idx] - cmd.robot_body_pos_w[:, body_idx], dim=-1
-    )
-    bad_motion_body_pos = torch.any(body_err > bad_motion_body_pos_threshold, dim=-1)
-
-    expert_terminate = bad_ref_pos | bad_ref_ori | bad_motion_body_pos
-    idx = torch.where(expert_terminate, torch.full_like(idx, -1.0), idx)
-    return idx.view(env.num_envs, 1)
-
-
 def robot_anchor_projected_gravity(env: WholeBodyTrackingManager) -> torch.Tensor:
     """Gravity vector projected into the motion-command anchor (ref) frame.
 
