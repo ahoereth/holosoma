@@ -108,3 +108,23 @@ waist_back_camera = CameraSensorConfig(
     data_types=["depth"],
     update_decimation="50Hz",
 )
+
+# Forward-facing depth camera pitched 71deg down, mounted on the torso — the rig the
+# depth-distillation stair policies were trained against. Renders at 240x135 (16:9,
+# matching the training raycast resolution); the depth-shm plugin resizes to the
+# backbone's 58x87 input. The orientation places the optical axis (-Z) along body +X
+# rotated 71deg toward -Z, with image-up perpendicular to it in the X-Z plane, so the
+# camera sees the ground a short distance ahead of the feet.
+stair_front_depth_camera = CameraSensorConfig(
+    mount=SensorMountConfig(
+        target_kind="robot_link",
+        target="torso_link",
+        position=[0.125, 0.06, 0.02],
+        orientation=[-0.69740924, -0.11670628, 0.11670628, 0.69740924],
+    ),
+    width=240,
+    height=135,
+    vertical_fov=69.0,
+    data_types=["depth"],
+    update_decimation="50Hz",
+)

@@ -11,6 +11,7 @@ Imported at CLI-build time; stays ROS-free (a preset's impl loads only when its 
 from holosoma.config_types.plugin import (
     CameraVizPluginConfig,
     ClockPublishPluginConfig,
+    DepthShmPluginConfig,
     GantryControlPluginConfig,
     NoOpPluginConfig,
     PluginConfig,
@@ -146,5 +147,20 @@ viz = PLUGIN_REGISTRY.add("viz", CameraVizPluginConfig(live_window=True))
 
 # Record all configured cameras to an mp4 at teardown (no live window; runs headless).
 viz_record = PLUGIN_REGISTRY.add("viz-record", CameraVizPluginConfig(record_video=True))
+
+# Publish preprocessed depth to shared memory for a policy process (sim-to-sim vision
+# policies). Pairs with the `g1-stair-front-depth` camera and the inference-side
+# `inference:g1-wbt-distillation` preset; the resize/clip/normalize values here must match
+# what the checkpoint was trained with.
+depth_shm = PLUGIN_REGISTRY.add(
+    "depth-shm",
+    DepthShmPluginConfig(
+        camera="stair_front_depth",
+        resized_width=87,
+        resized_height=58,
+        near_clip=0.3,
+        far_clip=2.0,
+    ),
+)
 
 __getattr__ = deprecated_defaults_alias(__name__, PLUGIN_REGISTRY)

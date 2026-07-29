@@ -66,11 +66,61 @@ class Ros2DepthConsumerConfig:
 
 
 @dataclass(frozen=True)
+class DepthShmConfig:
+    """Shared-memory transport for depth frames produced by an external server.
+
+    The producer (e.g. the MuJoCo image server) creates a POSIX shared-memory
+    block holding a float32 array of shape
+    ``(num_cameras, 1, resized_height, resized_width)`` with already
+    resized/clipped/normalized depth. The policy attaches read-only and polls it
+    each control tick, so there is no serialization or IPC cost in the loop.
+
+    Preferred over :class:`Ros2DepthConsumerConfig` for sim-to-sim on one host:
+    no ROS2 dependency and no per-frame copy over a socket.
+    """
+
+    name: str = "depth_img_shm"
+    """Shared-memory block name, must match the producer's."""
+
+    required: bool = True
+    """Fail policy startup if the block is absent.
+
+    ``False`` substitutes zero frames and logs a warning, which lets the policy
+    run without a depth producer (useful for smoke-testing the control loop).
+    """
+
+
+@dataclass(frozen=True)
 class TaskConfig:
     """Task execution configuration for policy inference."""
 
     model_path: str | list[str]
-    """Path to ONNX model(s). Supports local paths and wandb:// URIs. Required field."""
+    """Path to ONNX model(s). Supports local paths and wandb:// URIs. Required field.
+
+    Most policies take a single path. Composite policies take an ordered list of
+    the models they compose — e.g. depth distillation takes exactly
+    ``[depth_backbone.onnx, student.onnx]``. This differs from the multi-policy
+    case, where a list means several independently switchable policies.
+    """
+
+    policy_type: str = ""
+    """Explicit policy class selector, resolved against the
+    ``holosoma.policies.by_type`` entry-point group. Empty means infer the class
+    from the observation/robot heuristic."""
+
+    depth_shm: DepthShmConfig = DepthShmConfig()
+    """Shared-memory depth transport (used when the policy consumes depth
+    images and no ROS2 depth consumer is configured)."""
+
+    record_dir: str = ""
+    """Subdirectory under ``recorded_motion/`` for saved motion clips.
+
+    Empty means ``"default_run"``. Recording is armed with the ``c`` key while
+    the policy is running, not by setting this field."""
+
+    record_label: str = "clip"
+    """Filename label for recorded clips. Clips are written to
+    ``recorded_motion/<record_dir>/<record_label>_duration<X.X>s_motion.npz``."""
 
     rl_rate: float = 50
     """Policy inference rate in Hz."""

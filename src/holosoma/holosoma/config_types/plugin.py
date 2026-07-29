@@ -383,3 +383,70 @@ class CameraVizPluginConfig(PluginConfig):
                 f"allowed: {sorted(_DEPTH_COLORMAPS)}."
             )
         return self
+
+
+@pydantic_dataclass(frozen=True, config=_FORBID_EXTRA)
+class DepthShmPluginConfig(PluginConfig):
+    """Publish preprocessed depth to shared memory for a policy process to consume.
+
+    Produces exactly what a vision policy's depth backbone expects: depth resized to
+    ``(resized_height, resized_width)``, clipped to ``[near_clip, far_clip]`` and
+    normalized to ``[-0.5, 0.5]``. Doing the preprocessing here (rather than in the
+    policy) keeps the two sides from disagreeing about it, and means the policy reads
+    its input tensor with a single memory copy.
+
+    Shared memory rather than a ROS2 topic because the consumer runs on the same host
+    at the control rate: no serialization, no broker, no per-frame allocation.
+    """
+
+    shm_name: str = "depth_img_shm"
+    """Shared-memory block name. Must match the policy's ``--task.depth-shm.name``."""
+
+    camera: str = ""
+    """Name of the configured camera to publish. Required."""
+
+    env_id: int = 0
+    """Which environment's view to publish."""
+
+    resized_width: int = 87
+    """Output width — must equal the depth backbone's input width."""
+
+    resized_height: int = 58
+    """Output height — must equal the depth backbone's input height."""
+
+    near_clip: float = 0.3
+    """Depth at or below this maps to -0.5. Match the value used in training."""
+
+    far_clip: float = 2.0
+    """Depth at or above this maps to +0.5. Match the value used in training."""
+
+    latency_frames: int = 0
+    """Publish the frame this many steps old, modeling real camera/transport delay.
+
+    The policies were trained against a camera pipeline with inherent latency; replaying
+    that here keeps sim-to-sim honest. 0 publishes the freshest frame."""
+
+    def get_cls(self) -> Callable[..., Any]:
+        # Deferred import: keeps cv2/torch out of CLI-build import.
+        from holosoma.simulator.plugins.depth_shm_plugin import DepthShmPlugin
+
+        return DepthShmPlugin
+
+    @model_validator(mode="after")
+    def validate_depth_shm(self) -> DepthShmPluginConfig:
+        if not self.camera:
+            raise ValueError("DepthShmPluginConfig.camera must name a configured camera.")
+        if self.resized_width <= 0 or self.resized_height <= 0:
+            raise ValueError(
+                f"DepthShmPluginConfig resized dims must be positive, got "
+                f"({self.resized_height}, {self.resized_width})."
+            )
+        if self.near_clip >= self.far_clip:
+            raise ValueError(
+                f"DepthShmPluginConfig needs near_clip < far_clip, got {self.near_clip} >= {self.far_clip}."
+            )
+        if self.latency_frames < 0:
+            raise ValueError(f"DepthShmPluginConfig.latency_frames must be >= 0, got {self.latency_frames}.")
+        if self.env_id < 0:
+            raise ValueError(f"DepthShmPluginConfig.env_id must be >= 0, got {self.env_id}.")
+        return self
