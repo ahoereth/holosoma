@@ -156,8 +156,6 @@ class MotionLoader:
             else:
                 self.motion_idxs = torch.zeros(num_frames, dtype=torch.long, device=device)
 
-        # Concatenate one-hot velocity commands. Drop entirely if any loader
-        # lacks the field, so every frame has a consistent shape.
             # add object pos and quat
             self.has_object = "object_pos_w" in data
             if self.has_object:
@@ -738,11 +736,11 @@ class MotionCommand(CommandTermBase):
         # For multi-motion: randomly assign each env to a motion, sample within that motion's range
         n = env_ids.numel()
         num_motions = self.motion.num_motions
-
         self.motion_ids[env_ids] = torch.randint(0, num_motions, (n,), device=self.device)
         start_idx = self.motion.motion_start_idx[self.motion_ids[env_ids]]
         end_idx = self.motion.motion_end_idx[self.motion_ids[env_ids]]
         motion_len = end_idx - start_idx
+
         self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
 
         # Handle start_at_timestep_zero_prob (reset to start of assigned motion)
@@ -755,11 +753,10 @@ class MotionCommand(CommandTermBase):
             subset = torch.where(rand_vals < prob, start_idx, subset)
             self.time_steps[env_ids] = subset
 
-        # Pre-advance any frame that is itself a clip-end so the +1 in step() doesn't
-        # land on a discontinuous next-clip frame, then wrap any OOB time_steps to 0.
-        env_ids_end = torch.where(self.motion.motion_ends[self.time_steps])[0]
-        self.time_steps[env_ids_end] += 1
-        self.time_steps[self.time_steps >= self.motion.time_step_total] = 0
+        # If the motion is at the last timestep, set it to the second last timestep;
+        # Otherwise, update_tasks_callback will advance the timestep to the next timestep -> out of bounds error.
+        already_last_timestep_mask = self.time_steps[env_ids] >= end_idx - 1
+        self.time_steps[env_ids] = torch.where(already_last_timestep_mask, end_idx - 2, self.time_steps[env_ids])
 
         # 1. Get the root/body poses from the motion data
         # Index only reset-env timesteps (raw body index 0 = root, same as root_pos_w property)
