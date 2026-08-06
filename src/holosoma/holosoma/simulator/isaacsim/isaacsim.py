@@ -953,15 +953,15 @@ class IsaacSim(BaseSimulator):
         # Initialize robot tensors
         self.refresh_sim_tensors()
 
-        # Initialize acceleration tensors ONLY if bridge is enabled
+        # Base acceleration is only needed by the bridge. Joint acceleration
+        # comes directly from IsaacLab's articulation data for both training
+        # rewards and bridge consumers.
         if self.simulator_config.bridge.enabled:
-            logger.info("Bridge enabled: initializing acceleration computation tensors")
-            self.dof_acc = torch.zeros(self.num_envs, self.num_dof, device=self.sim_device)
-            self.prev_dof_vel = torch.zeros(self.num_envs, self.num_dof, device=self.sim_device)
+            logger.info("Bridge enabled: initializing base acceleration computation tensors")
             self.base_linear_acc = torch.zeros(self.num_envs, 3, device=self.sim_device)
             self.prev_base_lin_vel = torch.zeros(self.num_envs, 3, device=self.sim_device)
         else:
-            logger.debug("Bridge disabled: skipping acceleration computation tensors")
+            logger.debug("Bridge disabled: skipping base acceleration computation tensors")
 
         # Apply each free object's configured initial velocity now that the scene is played and
         # the state adapter is live. Pose is already set at spawn (InitialStateCfg), so re-writing
@@ -977,6 +977,11 @@ class IsaacSim(BaseSimulator):
     def dof_state(self):
         # This will always use the latest dof_pos and dof_vel
         return torch.cat([self.dof_pos[..., None], self.dof_vel[..., None]], dim=-1)
+
+    @property
+    def dof_acc(self) -> torch.Tensor:
+        """Return IsaacLab's native per-joint acceleration tensor."""
+        return self._robot.data.joint_acc[:, self.dof_ids]
 
     def refresh_sim_tensors(self):
         # Apply reset to recache new wyxz -> xyzw tensor
@@ -1060,13 +1065,8 @@ class IsaacSim(BaseSimulator):
         self.dof_pos = self._robot.data.joint_pos[:, self.dof_ids]  # (num_envs, num_dof)
         self.dof_vel = self._robot.data.joint_vel[:, self.dof_ids]
 
-        # Update accelerations ONLY if bridge is enabled
+        # Base acceleration is only consumed by bridge telemetry.
         if self.simulator_config.bridge.enabled:
-            # Update DOF acceleration using numerical differentiation
-            self.dof_acc = (self.dof_vel - self.prev_dof_vel) / self.sim_dt
-            self.prev_dof_vel = self.dof_vel.clone()
-
-            # Update base linear acceleration using numerical differentiation
             current_base_vel = self.robot_root_states[:, 7:10]
             self.base_linear_acc = (current_base_vel - self.prev_base_lin_vel) / self.sim_dt
             self.prev_base_lin_vel = current_base_vel.clone()
