@@ -18,7 +18,6 @@ import isaacsim.core.utils.stage as stage_utils
 import omni.log
 import torch
 from pxr import Usd, UsdGeom
-from isaaclab.actuators import IdealPDActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import ViewerCfg, mdp
 from isaaclab.managers import EventManager, SceneEntityCfg
@@ -51,6 +50,7 @@ from holosoma.simulator.isaacsim.converters import (
     physics_to_mass_props,
     physics_to_rigid_body_props,
 )
+from holosoma.simulator.isaacsim.actuator_cfg import build_actuator_configs, joint_drive_target_type
 from holosoma.simulator.isaacsim.event_cfg import EventCfg
 from holosoma.simulator.isaacsim.events import randomize_body_com, randomize_rigid_body_inertia
 from holosoma.simulator.isaacsim.isaaclab_viewpoint_camera_controller import ViewportCameraController
@@ -349,7 +349,7 @@ class IsaacSim(BaseSimulator):
                         stiffness=0,
                         damping=0,
                     ),
-                    target_type="none",
+                    target_type=joint_drive_target_type(self.robot_config),
                 ),
                 activate_contact_sensors=True,
                 rigid_props=robot_rigid_props,
@@ -378,43 +378,7 @@ class IsaacSim(BaseSimulator):
             joint_vel={".*": 0.0},
         )
 
-        dof_names_list = copy.deepcopy(self.robot_config.dof_names)
-        # for i, name in enumerate(dof_names_list):
-        #     dof_names_list[i] = name.replace("_joint", "")
-        dof_effort_limit_list = self.robot_config.dof_effort_limit_list
-        dof_vel_limit_list = self.robot_config.dof_vel_limit_list
-        dof_armature_list = self.robot_config.dof_armature_list
-        dof_joint_friction_list = self.robot_config.dof_joint_friction_list
-
-        # get kp and kd from config
-        kp_list = []
-        kd_list = []
-        stiffness_dict = self.robot_config.control.stiffness
-        damping_dict = self.robot_config.control.damping
-
-        for i in range(len(dof_names_list)):
-            dof_names_i_without_joint = dof_names_list[i].replace("_joint", "")
-            for key in stiffness_dict:
-                if key in dof_names_i_without_joint:
-                    kp_list.append(stiffness_dict[key])
-                    kd_list.append(damping_dict[key])
-                    print(f"key: {key}, kp: {stiffness_dict[key]}, kd: {damping_dict[key]}")
-
-        # ImplicitActuatorCfg IdealPDActuatorCfg
-        actuators = {
-            dof_names_list[i]: IdealPDActuatorCfg(
-                joint_names_expr=[dof_names_list[i]],
-                effort_limit=dof_effort_limit_list[i],
-                velocity_limit=dof_vel_limit_list[i],
-                # effort_limit_sim=dof_effort_limit_list[i],
-                # velocity_limit_sim=dof_vel_limit_list[i],
-                stiffness=0,
-                damping=0,
-                armature=dof_armature_list[i],
-                friction=dof_joint_friction_list[i],
-            )
-            for i in range(len(dof_names_list))
-        }
+        actuators = build_actuator_configs(self.robot_config)
 
         robot_articulation_config: ArticulationCfg = ARTICULATION_CFG.replace(
             prim_path="/World/envs/env_.*/Robot", spawn=spawn, init_state=init_state, actuators=actuators
@@ -1048,6 +1012,12 @@ class IsaacSim(BaseSimulator):
 
     def apply_torques_at_dof(self, torques):
         self._robot.set_joint_effort_target(torques, joint_ids=self.dof_ids)
+
+    def apply_position_targets_at_dof(self, position_targets):
+        self._robot.set_joint_position_target(position_targets, joint_ids=self.dof_ids)
+
+    def get_applied_torques_at_dof(self):
+        return self._robot.data.applied_torque[:, self.dof_ids]
 
     def draw_debug_viz(self):
         if self.virtual_gantry:
