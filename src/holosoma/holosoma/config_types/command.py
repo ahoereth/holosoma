@@ -127,5 +127,27 @@ class MotionConfig:
     """Duration in seconds of the post-appended interpolation phase.
     Only used if enable_default_pose_append is True."""
 
+    # self-collision-aware spawning
+    resample_self_collisions: bool = False
+    """Reject self-colliding spawn poses at reset. After assembling the initial pose (sampled
+    motion frame + init noise), check it for self-collision and, if it collides, re-draw the spawn
+    (a fresh motion frame plus fresh noise, drawn with the same sampler as the first attempt),
+    repeating until collision-free. Guards against the gradient blow-ups that occur when the robot
+    spawns in self-collision and enable_self_collisions is on. Requires the ``mujoco`` package (used
+    only as a standalone collision checker); no-op with a warning if it is unavailable. Default off
+    preserves existing behavior."""
+
+    max_self_collision_resample_attempts: int = 20
+    """Max spawn re-draws (motion frame + noise) per env before giving up. Exhausting this means
+    every re-drawn spawn self-collided across all attempts, which almost always indicates broken
+    motion data (a clip whose frames self-collide even at zero noise); it raises a RuntimeError
+    rather than silently spawning a colliding pose. Only used if resample_self_collisions is
+    True."""
+
+    resample_self_collisions_in_eval: bool = False
+    """If True, also reject self-colliding spawns during evaluation. Default False keeps eval
+    deterministic (every env starts at its motion's frame 0). Only used if resample_self_collisions
+    is True."""
+
     # noise related
     noise_to_initial_pose: NoiseToInitialPoseConfig = field(default_factory=NoiseToInitialPoseConfig)

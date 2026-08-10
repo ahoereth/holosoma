@@ -14,7 +14,7 @@ from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
 from holosoma.managers.command.base import CommandTermBase
 from holosoma.simulator.shared.object_registry import ObjectType
 from holosoma.utils.file_cache import cached_open
-from holosoma.utils.path import resolve_data_file_path
+from holosoma.utils.path import resolve_asset_path, resolve_data_file_path
 from holosoma.utils.rotations import (
     get_euler_xyz,
     quat_apply,
@@ -536,6 +536,25 @@ def get_filtered_body_names(body_list: List[str], pattern: str) -> List[str]:
     return [body_name for body_name in body_list if re.match(pattern, body_name)]
 
 
+def _load_urdf_with_mesh_assets(urdf_path: str) -> tuple[str, dict[str, bytes]]:
+    """Read a URDF and its referenced mesh files into an in-memory asset dict.
+
+    Returns ``(urdf_text, assets)`` suitable for ``mujoco.MjModel.from_xml_string(text, assets)``.
+    Every ``filename="..."`` mesh reference is resolved relative to the URDF directory; missing
+    files are skipped (MuJoCo raises a clear error later if a required mesh is absent).
+    """
+    with open(urdf_path, encoding="utf-8") as f:
+        text = f.read()
+    base = os.path.dirname(urdf_path)
+    assets: dict[str, bytes] = {}
+    for rel in re.findall(r'filename="([^"]+)"', text):
+        p = os.path.join(base, rel)
+        if os.path.exists(p):
+            with open(p, "rb") as fh:
+                assets[rel] = fh.read()
+    return text, assets
+
+
 class MotionCommand(CommandTermBase):
     def __init__(self, cfg: Any, env: WholeBodyTrackingManager):
         super().__init__(cfg, env)
@@ -614,45 +633,169 @@ class MotionCommand(CommandTermBase):
 
         self.init_buffers()
 
-        # 6. visualization markers for isaacsim
+        # 6. self-collision-aware spawning (optional; builds a standalone MuJoCo collision model)
+        self._setup_self_collision_check()
+
+        # 7. visualization markers for isaacsim
         if self._env.viewer and self._env.simulator.get_simulator_type() == SimulatorType.ISAACSIM:
             self._setup_visualization_markers_for_isaacsim()
 
-    def reset(self, env_ids: torch.Tensor | None) -> None:
-        """called per reset_idx, reset timesteps and robot/object poses."""
-        env_ids = self._ensure_index_tensor(env_ids)
-        if env_ids.numel() == 0:
+    def _setup_self_collision_check(self) -> None:
+        """Build a standalone MuJoCo model used to reject self-colliding spawn poses at reset.
+
+        Enabled only when ``motion_cfg.resample_self_collisions`` is set. MuJoCo compiles each
+        collision mesh into its convex hull and auto-filters direct parent<->child pairs
+        (``filterparent``), matching PhysX's articulation self-collision semantics, so a
+        robot-link-vs-robot-link contact at a joint configuration means the pose would self-collide
+        in training (see :meth:`_check_self_collision` for how world contacts are excluded).
+
+        No-ops (leaving the feature disabled with a warning) if the flag is off, MuJoCo is not
+        importable, or the robot URDF has no collision geometry. Self-collision depends only on
+        joint angles, so the free base is left at the identity and only joint DOFs are written.
+        """
+        # Disabled-state attributes so reset() can guard with a single cheap check.
+        self._sc_enabled = False
+        self._sc_warned = False
+        self._sc_model = None
+        self._sc_data = None
+        self._sc_qpos_addr = None  # np.ndarray[int]: qpos address per robot DOF (dof_names order)
+        self._sc_motion_cols = None  # np.ndarray[int]: dof_names column per mapped DOF
+        self._sc_geom_is_robot = None  # np.ndarray[bool]: geom belongs to a robot link (not world)
+        self._sc_total_resampled = 0  # running count of spawns that needed resampling
+        self._sc_resets_with_collision = 0  # running count of resets that hit >=1 colliding spawn
+
+        if not self.motion_cfg.resample_self_collisions:
             return
 
+        try:
+            import mujoco
+        except ImportError:
+            logger.warning(
+                "resample_self_collisions=True but the 'mujoco' package is not importable; "
+                "self-collision resampling is DISABLED (spawns will not be checked)."
+            )
+            return
+
+        asset = self._env.robot_config.asset
+        urdf_path = resolve_asset_path(asset.urdf_file, asset.asset_root)
+        text, assets = _load_urdf_with_mesh_assets(urdf_path)
+        try:
+            model = mujoco.MjModel.from_xml_string(text, assets=assets)
+        except Exception as e:  # noqa: BLE001 - surface any compile error, then disable
+            logger.warning(f"Failed to build MuJoCo self-collision model from {urdf_path}: {e!r}; "
+                           "self-collision resampling is DISABLED.")
+            return
+
+        if model.ngeom == 0:
+            logger.warning(f"MuJoCo model from {urdf_path} has no collision geometry (ngeom=0); "
+                           "self-collision resampling is DISABLED.")
+            return
+
+        # Map each robot DOF (in dof_names order, which matches self.motion.joint_pos columns) to its
+        # qpos address in the MuJoCo model. Skip (with a warning) any joint absent from the URDF.
+        dof_names = self._env.simulator.dof_names
+        qpos_addr: list[int] = []
+        motion_cols: list[int] = []
+        for col, name in enumerate(dof_names):
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if jid < 0:
+                logger.warning(f"self-collision: DOF '{name}' not found in MuJoCo model; skipped.")
+                continue
+            qpos_addr.append(int(model.jnt_qposadr[jid]))
+            motion_cols.append(col)
+
+        if not qpos_addr:
+            logger.warning("self-collision: no robot DOFs matched the MuJoCo model; DISABLED.")
+            return
+
+        # Per-geom "belongs to a robot link" mask, so we count ONLY robot-vs-robot contacts and
+        # ignore robot-vs-world contacts. Some robot models include a world ground-plane geom;
+        # since the standalone check leaves the floating base at the identity,
+        # the robot intersects that plane and would otherwise register spurious "collisions" that
+        # are ground contact, not self-collision. World is always MuJoCo body id 0.
+        geom_is_robot = np.array(
+            [model.geom_bodyid[g] != 0 for g in range(model.ngeom)], dtype=bool
+        )
+        n_robot_geoms = int(geom_is_robot.sum())
+
+        self._sc_model = model
+        self._sc_data = mujoco.MjData(model)
+        self._sc_qpos_addr = np.asarray(qpos_addr, dtype=np.int64)
+        self._sc_motion_cols = np.asarray(motion_cols, dtype=np.int64)
+        self._sc_geom_is_robot = geom_is_robot
+        self._sc_enabled = True
+        logger.info(
+            f"Self-collision resampling ENABLED (MuJoCo model from {os.path.basename(urdf_path)}: "
+            f"{n_robot_geoms} robot collision geoms of {model.ngeom} total, "
+            f"{len(qpos_addr)} DOFs mapped)."
+        )
+        if self.motion_cfg.resample_self_collisions_in_eval:
+            # In eval every env starts at its motion's frame 0 (phase is forced to 0), so a
+            # resample can only re-roll the motion id + init noise, not the within-motion frame.
+            # If a motion's frame-0 pose self-collides and there is no alternative (e.g. a single
+            # motion, or all motions collide at frame 0) with little/no init noise, the rejection
+            # loop cannot escape and will raise RuntimeError. Warn rather than silently trap.
+            logger.warning(
+                "resample_self_collisions_in_eval=True: eval resampling can only vary the motion id "
+                "and init noise (frame is pinned to 0), so a frame-0 self-collision in a single-motion "
+                "eval may exhaust attempts and raise. Leave it False unless you know eval has multiple "
+                "non-colliding motions."
+            )
+
+    def _check_self_collision(self, dof_pos: torch.Tensor) -> torch.Tensor:
+        """Return a per-env bool tensor: True where the joint configuration self-collides.
+
+        ``dof_pos`` is ``(k, num_dofs)`` in robot DOF order. Uses the standalone MuJoCo model
+        (set qpos -> mj_forward -> inspect contacts); the free base stays at identity since
+        self-collision is invariant to root pose. Serial over the ``k`` rows (k is the resetting
+        subset). Counts ONLY robot-link-vs-robot-link contacts: contacts where either geom belongs
+        to the world body (e.g. a ground plane in the model) are ignored, since
+        the identity base makes the robot clip the ground and those are ground contact, not
+        self-collision.
+        """
+        import mujoco
+
+        model, data = self._sc_model, self._sc_data
+        addr, cols = self._sc_qpos_addr, self._sc_motion_cols
+        geom_is_robot = self._sc_geom_is_robot
+        dof_np = dof_pos.detach().cpu().numpy()
+        out = torch.zeros(dof_np.shape[0], dtype=torch.bool, device=dof_pos.device)
+        for i in range(dof_np.shape[0]):
+            data.qpos[addr] = dof_np[i, cols]
+            mujoco.mj_forward(model, data)
+            collided = False
+            for c in range(data.ncon):
+                g1 = data.contact.geom1[c]
+                g2 = data.contact.geom2[c]
+                if geom_is_robot[g1] and geom_is_robot[g2]:
+                    collided = True
+                    break
+            out[i] = collided
+        return out
+
+    def _sample_frames(self, env_ids: torch.Tensor) -> None:
+        """Sample motion id + time step for ``env_ids`` (writes self.motion_ids / self.time_steps).
+
+        Factored out of ``reset`` so the self-collision rejection loop can re-draw frames for a
+        colliding subset with the exact same sampling logic. Does NOT run the adaptive sampler's
+        failure-stat update (that is a once-per-reset side effect handled in ``reset``).
+        """
         n = env_ids.numel()
         num_motions = self.motion.num_motions
 
-        # 0. Sample the time steps (and, for the adaptive sampler, the motion id).
         adaptive_global_idx = None
         if self.motion_cfg.use_adaptive_timesteps_sampler:
-            # Match BeyondMimic behavior: update failed bins from environments
-            # that terminated before this reset, then sample new phases.
-            # Gate the failure-stat update on training mode so evaluation episodes
-            # don't contaminate the training sampler's failure distribution
-            # (the is_evaluating phase-zeroing below only affects sampling, not stats).
-            if not self._env.is_evaluating:
-                episode_failed = self._env.termination_manager.terminated[env_ids]
-                if torch.any(episode_failed):
-                    failed_at_time_step = self.time_steps[env_ids][episode_failed]
-                    self.adaptive_timesteps_sampler.update_current_bin_failed_count(failed_at_time_step)
-            # The sampler bins failures over the GLOBAL concatenated-motion frame
-            # axis, so it must return a global frame index here. The motion id is
-            # then derived from that index (NOT chosen independently), keeping the
-            # failure-prioritized phase attached to the motion it was recorded on.
+            # The sampler bins failures over the GLOBAL concatenated-motion frame axis, so it must
+            # return a global frame index here. The motion id is then derived from that index (NOT
+            # chosen independently), keeping the failure-prioritized phase attached to its motion.
             adaptive_global_idx = self.adaptive_timesteps_sampler.sample_global_time_steps(n)
             phase = None
         else:
             phase = torch.rand(n, device=self.device)
 
         if self._env.is_evaluating:
-            # Eval forces every env through the uniform/else branch below, which
-            # indexes `phase`, so it must be a real zero tensor even when the
-            # adaptive sampler left it as None.
+            # Eval forces every env through the uniform/else branch below, which indexes `phase`,
+            # so it must be a real zero tensor even when the adaptive sampler left it as None.
             phase = torch.zeros(n, device=self.device)
             adaptive_global_idx = None  # eval starts every env at its motion's first frame
 
@@ -689,7 +832,12 @@ class MotionCommand(CommandTermBase):
         already_last_timestep_mask = self.time_steps[env_ids] >= end_idx - 1
         self.time_steps[env_ids] = torch.where(already_last_timestep_mask, end_idx - 2, self.time_steps[env_ids])
 
-        # 1. Get the root/body poses from the motion data
+    def _assemble_spawn_targets(self, env_ids: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Read the motion pose at the currently-sampled frames for ``env_ids`` and apply init
+        noise. Returns the target robot state tensors. Re-callable per rejection-loop retry (it
+        re-reads the motion at self.time_steps, which _sample_frames has updated for the subset).
+        """
+        # 1. Get the root/body poses from the motion data (at the current self.time_steps)
         root_pos = self.root_pos_w[env_ids].clone()
         root_rot = self.root_quat_w[env_ids].clone()
         root_lin_vel = self.root_lin_vel_w[env_ids].clone()
@@ -763,14 +911,117 @@ class MotionCommand(CommandTermBase):
             torch.rand(root_ang_vel.shape, device=self.device) - 0.5
         ) * 2 * root_ang_vel_noise_rpy.unsqueeze(0)  # (num_envs, 3)
 
-        # 3. Set the robot states in simulator
-        self._env.simulator.dof_pos[env_ids] = target_dof_pos
-        self._env.simulator.dof_vel[env_ids] = target_dof_vel
+        return {
+            "dof_pos": target_dof_pos,
+            "dof_vel": target_dof_vel,
+            "root_pos": target_root_pos,
+            "root_rot": target_root_rot,
+            "root_lin_vel": target_root_lin_vel,
+            "root_ang_vel": target_root_ang_vel,
+        }
 
-        self._env.simulator.robot_root_states[env_ids, :3] = target_root_pos
-        self._env.simulator.robot_root_states[env_ids, 3:7] = target_root_rot
-        self._env.simulator.robot_root_states[env_ids, 7:10] = target_root_lin_vel
-        self._env.simulator.robot_root_states[env_ids, 10:13] = target_root_ang_vel
+    def _resample_self_colliding_spawns(self, env_ids: torch.Tensor, targets: dict[str, torch.Tensor]) -> None:
+        """Reject self-colliding spawn poses in-place.
+
+        For each env whose assembled spawn pose self-collides, re-draw the spawn (a fresh motion
+        frame plus fresh noise, via the same :meth:`_sample_frames`/:meth:`_assemble_spawn_targets`
+        path as the first attempt) and re-check, up to ``max_self_collision_resample_attempts``.
+        ``targets`` (from :meth:`_assemble_spawn_targets`, indexed 0..len(env_ids)-1 parallel to
+        ``env_ids``) is updated in place with accepted poses. Raises ``RuntimeError`` if any env
+        still self-collides after the cap, rather than silently spawning a colliding pose.
+        """
+        # local position of each env within the env_ids / targets arrays
+        local = torch.arange(env_ids.numel(), device=self.device)
+        colliding_local = local[self._check_self_collision(targets["dof_pos"])]
+
+        # Observability: how many of the resetting envs initially self-collided, and how many
+        # resample attempts it took to clear them. Exposed as metrics + a periodic INFO log so a
+        # colliding motion visibly triggers resampling (rather than the loop being silent).
+        n_initial_colliding = int(colliding_local.numel())
+        attempts_used = 0
+
+        for attempt in range(self.motion_cfg.max_self_collision_resample_attempts):
+            if colliding_local.numel() == 0:
+                break
+            attempts_used = attempt + 1
+            bad_env_ids = env_ids[colliding_local]
+            # Re-draw frame + noise for the still-colliding envs, then re-assemble their targets.
+            self._sample_frames(bad_env_ids)
+            new_targets = self._assemble_spawn_targets(bad_env_ids)
+            for key, val in targets.items():
+                val[colliding_local] = new_targets[key]
+            # Re-check only the redrawn subset; keep those that still collide.
+            still = self._check_self_collision(new_targets["dof_pos"])
+            colliding_local = colliding_local[still]
+
+        # Metrics on every reset (including 0.0 when nothing collided) so the logged averages are an
+        # honest spawn-collision rate rather than a mean over collision resets only. Surfaced in the
+        # training logger alongside the motion-tracking metrics.
+        frac = n_initial_colliding / max(env_ids.numel(), 1)
+        self.metrics["self_collision/spawn_collision_fraction"] = torch.tensor(frac, device=self.device)
+        self.metrics["self_collision/resample_attempts"] = torch.tensor(float(attempts_used), device=self.device)
+
+        if n_initial_colliding > 0:
+            self._sc_total_resampled += n_initial_colliding
+            self._sc_resets_with_collision += 1
+            logger.debug(
+                f"self-collision resample: {n_initial_colliding}/{env_ids.numel()} envs "
+                f"({100 * frac:.1f}%) spawned self-colliding, cleared in {attempts_used} attempt(s)."
+            )
+            # Rate-limit the INFO line (fires on the 1st, 101st, ... collision reset) so a colliding
+            # motion is visibly reported without spamming every reset.
+            if self._sc_resets_with_collision % 100 == 1:
+                logger.info(
+                    f"self-collision resample active: this reset {n_initial_colliding}/{env_ids.numel()} "
+                    f"envs collided (cleared in {attempts_used} attempt(s)); "
+                    f"{self._sc_total_resampled} spawns resampled across "
+                    f"{self._sc_resets_with_collision} resets so far."
+                )
+
+        if colliding_local.numel() > 0:
+            bad_env_ids = env_ids[colliding_local]
+            last_motions = sorted(set(self.motion_ids[bad_env_ids].tolist()))
+            raise RuntimeError(
+                "Self-collision resampling failed: could not find a non-self-colliding spawn "
+                f"after {self.motion_cfg.max_self_collision_resample_attempts} re-draws (each a "
+                f"fresh motion frame + noise) for envs {bad_env_ids.tolist()}. Every re-drawn spawn "
+                "self-collided, which usually means one or more motion clips self-collide at nearly "
+                f"every frame even at zero noise (last-drawn motion ids: {last_motions}). Inspect / "
+                "fix the retargeted motion(s), raise max_self_collision_resample_attempts, or disable "
+                "resample_self_collisions."
+            )
+
+    def reset(self, env_ids: torch.Tensor | None) -> None:
+        """called per reset_idx, reset timesteps and robot/object poses."""
+        env_ids = self._ensure_index_tensor(env_ids)
+        if env_ids.numel() == 0:
+            return
+
+        # Adaptive sampler failure-stat update (once per reset, training only). Match BeyondMimic:
+        # update failed bins from envs that terminated before this reset, then sample new phases.
+        # Gate on training mode so evaluation episodes don't contaminate the failure distribution.
+        if self.motion_cfg.use_adaptive_timesteps_sampler and not self._env.is_evaluating:
+            episode_failed = self._env.termination_manager.terminated[env_ids]
+            if torch.any(episode_failed):
+                failed_at_time_step = self.time_steps[env_ids][episode_failed]
+                self.adaptive_timesteps_sampler.update_current_bin_failed_count(failed_at_time_step)
+
+        # 0. Sample frames, 1+2. read motion pose + apply init noise.
+        self._sample_frames(env_ids)
+        targets = self._assemble_spawn_targets(env_ids)
+
+        # 2.5 Optionally reject self-colliding spawns by re-drawing frame + noise until clean.
+        if self._sc_enabled and (not self._env.is_evaluating or self.motion_cfg.resample_self_collisions_in_eval):
+            self._resample_self_colliding_spawns(env_ids, targets)
+
+        # 3. Set the robot states in simulator
+        self._env.simulator.dof_pos[env_ids] = targets["dof_pos"]
+        self._env.simulator.dof_vel[env_ids] = targets["dof_vel"]
+
+        self._env.simulator.robot_root_states[env_ids, :3] = targets["root_pos"]
+        self._env.simulator.robot_root_states[env_ids, 3:7] = targets["root_rot"]
+        self._env.simulator.robot_root_states[env_ids, 7:10] = targets["root_lin_vel"]
+        self._env.simulator.robot_root_states[env_ids, 10:13] = targets["root_ang_vel"]
 
         # 4. Set the object states in simulator
         if self.motion.has_object:
