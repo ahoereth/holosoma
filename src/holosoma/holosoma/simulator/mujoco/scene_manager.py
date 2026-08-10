@@ -252,37 +252,66 @@ class MujocoSceneManager:
         )
 
     def _create_trimesh(self, terrain_state: TerrainTermBase) -> mujoco.MjSpec.Geom:
-        """Create MuJoCo mesh terrain matching shared Terrain class behavior."""
+        """Create MuJoCo mesh terrain matching shared Terrain class behavior.
+
+        Emits ONE geom per connected component of the mesh, because MuJoCo collides a mesh geom
+        as its CONVEX HULL. A stepped or stair course is concave, so a single geom over the whole
+        mesh hulls into a smooth ramp spanning the course: on the shipped ``terrain.obj`` the
+        collision surface at the spawn point rises from the true z=0.0 ground to z~=0.26, which
+        embeds the robot in the ground at spawn. Splitting first gives each block its own hull, so
+        the flat ground stays flat and the steps stay steps.
+
+        Contacts are configured per component here rather than by the caller, which only sees the
+        geom returned for the first component.
+        """
 
         if terrain_state.mesh is None:
             raise ValueError("Terrain mesh data is required when using trimesh terrain type.")
 
-        vertices = np.asarray(terrain_state.mesh.vertices, dtype=np.float32)
-        faces = np.asarray(terrain_state.mesh.faces, dtype=np.int32)
+        components = [c for c in terrain_state.mesh.split() if len(c.vertices) and len(c.faces)]
+        if not components:
+            # A watertight single-body mesh does not split; fall back to the whole mesh so a
+            # convex terrain (e.g. a plain ground slab) still works.
+            if not (len(terrain_state.mesh.vertices) and len(terrain_state.mesh.faces)):
+                raise ValueError("Terrain mesh is empty and cannot be used to create a mesh geom.")
+            components = [terrain_state.mesh]
 
-        if vertices.size == 0 or faces.size == 0:
-            raise ValueError("Terrain mesh is empty and cannot be used to create a mesh geom.")
+        logger.info(f"Adding terrain mesh as {len(components)} convex component geom(s)")
 
-        mesh_spec = self.world_spec.add_mesh(name="terrain")
-        mesh_spec.uservert = vertices.flatten(order="C")
-        mesh_spec.userface = faces.flatten(order="C")
-        mesh_spec.smoothnormal = False
+        first_geom: mujoco.MjSpec.Geom | None = None
+        for idx, component in enumerate(components):
+            mesh_spec = self.world_spec.add_mesh(name=f"terrain_{idx}")
+            mesh_spec.uservert = np.asarray(component.vertices, dtype=np.float32).flatten(order="C")
+            mesh_spec.userface = np.asarray(component.faces, dtype=np.int32).flatten(order="C")
+            mesh_spec.smoothnormal = False
 
-        return self.world_spec.worldbody.add_geom(
-            name=terrain_state.name,
-            type=mujoco.mjtGeom.mjGEOM_MESH,
-            meshname=mesh_spec.name,
-            pos=[0.0, 0.0, 0.0],
-            material="solid_gray",
-            friction=[
-                # Ignore terrain config until we expose Mujoco-specific parameters
-                0.7,  # reasonable default
-                0.005,  # reasonable default
-                0.001,  # reasonable default
-            ],  # [sliding, torsional, rolling]
-            solimp=[0.99, 0.99, 0.01, 0.5, 2],
-            solref=[0.001, 1],
-        )
+            geom = self.world_spec.worldbody.add_geom(
+                name=terrain_state.name if idx == 0 else f"{terrain_state.name}_{idx}",
+                type=mujoco.mjtGeom.mjGEOM_MESH,
+                meshname=mesh_spec.name,
+                pos=[0.0, 0.0, 0.0],
+                material="solid_gray",
+                friction=[
+                    # Ignore terrain config until we expose Mujoco-specific parameters
+                    0.7,  # reasonable default
+                    0.005,  # reasonable default
+                    0.001,  # reasonable default
+                ],  # [sliding, torsional, rolling]
+                solimp=[0.99, 0.99, 0.01, 0.5, 2],
+                solref=[0.001, 1],
+            )
+
+            # Environment collision class (2), colliding only with the robot (1) — same values the
+            # caller applies to the returned geom, set here so every component collides too.
+            geom.contype = 2
+            geom.conaffinity = 1
+            if terrain_state.hide_visual:
+                geom.rgba = [0.0, 0.0, 0.0, 0.0]
+
+            if first_geom is None:
+                first_geom = geom
+
+        return first_geom
 
     def _create_hfield(self, terrain_state: TerrainTermBase) -> mujoco.MjSpec.Geom:
         """Create MuJoCo heightfield terrain from procedural terrain data.
