@@ -17,6 +17,11 @@ dependencies = [
     "lxml-stubs",
     "matplotlib",
     "meshcat",
+    # TODO: mujoco is a base dep only because WBT self-collision-aware spawning uses a standalone
+    # MuJoCo model as its collision checker (managers/command/terms/wbt.py). It is otherwise an
+    # optional backend dep. Replace the checker with a native PhysX/IsaacSim overlap query so
+    # mujoco can move back to optional (see the self-collision-resample follow-up), then drop this.
+    "mujoco",
     "mypy==1.14.1",
     "notebook",
     "numpy-stl",

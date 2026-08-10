@@ -667,12 +667,24 @@ class MotionCommand(CommandTermBase):
         if not self.motion_cfg.resample_self_collisions:
             return
 
+        # Only meaningful when the sim actually resolves self-collisions — with enable_self_collisions
+        # off, a colliding spawn is harmless (links interpenetrate freely, no gradient blow-up), so
+        # checking would be pure overhead and could raise spuriously on motions training ignores.
+        # The flag defaults on; this keeps it a no-op for the robots that don't opt into self-collision.
+        if not self._env.robot_config.asset.enable_self_collisions:
+            logger.info(
+                "resample_self_collisions is on but the robot asset has enable_self_collisions=False; "
+                "self-collision resampling is inactive (a colliding spawn cannot perturb training here)."
+            )
+            return
+
         try:
             import mujoco
         except ImportError:
             logger.warning(
-                "resample_self_collisions=True but the 'mujoco' package is not importable; "
-                "self-collision resampling is DISABLED (spawns will not be checked)."
+                "resample_self_collisions is on and enable_self_collisions=True, but the 'mujoco' "
+                "package is not importable; self-collision resampling is DISABLED (spawns will not be "
+                "checked). Install mujoco in the training image to activate it."
             )
             return
 

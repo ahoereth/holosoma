@@ -128,14 +128,17 @@ class MotionConfig:
     Only used if enable_default_pose_append is True."""
 
     # self-collision-aware spawning
-    resample_self_collisions: bool = False
+    resample_self_collisions: bool = True
     """Reject self-colliding spawn poses at reset. After assembling the initial pose (sampled
     motion frame + init noise), check it for self-collision and, if it collides, re-draw the spawn
     (a fresh motion frame plus fresh noise, drawn with the same sampler as the first attempt),
     repeating until collision-free. Guards against the gradient blow-ups that occur when the robot
-    spawns in self-collision and enable_self_collisions is on. Requires the ``mujoco`` package (used
-    only as a standalone collision checker); no-op with a warning if it is unavailable. Default off
-    preserves existing behavior."""
+    spawns in self-collision and enable_self_collisions is on.
+
+    On by default, but only ACTIVE when the robot asset has ``enable_self_collisions=True`` (the
+    only case where a colliding spawn actually perturbs training) AND the ``mujoco`` package (used
+    only as a standalone collision checker) is importable; it silently no-ops otherwise. Set False
+    to force it off even when self-collisions are enabled."""
 
     max_self_collision_resample_attempts: int = 20
     """Max spawn re-draws (motion frame + noise) per env before giving up. Exhausting this means
