@@ -414,11 +414,39 @@ class DepthShmPluginConfig(PluginConfig):
     resized_height: int = 58
     """Output height — must equal the depth backbone's input height."""
 
+    crop_top: int = 0
+    """Rows to drop from the TOP of the rendered frame before resizing.
+
+    Training crops the raw camera frame before the resize, so the resize sees the same field of
+    view it saw during distillation. The D435i preset uses 2 (training's ``depth[:, 2:, 4:-4]``);
+    0 disables cropping."""
+
+    crop_bottom: int = 0
+    """Rows to drop from the BOTTOM before resizing. Training's crop is top-only, so 0."""
+
+    crop_left: int = 0
+    """Columns to drop from the LEFT before resizing. D435i preset uses 4."""
+
+    crop_right: int = 0
+    """Columns to drop from the RIGHT before resizing. D435i preset uses 4."""
+
     near_clip: float = 0.3
     """Depth at or below this maps to -0.5. Match the value used in training."""
 
     far_clip: float = 2.0
-    """Depth at or above this maps to +0.5. Match the value used in training."""
+    """Depth at or above this maps to +0.5. Match the value used in training.
+
+    This is the training camera's ``max_range`` — 2.0 for the ZED 2i rig, 3.0 for the D435i rig.
+    Getting it wrong rescales every pixel silently rather than raising."""
+
+    empty_threshold: float = 0.15
+    """Post-resize, depth below this is treated as EMPTY and set to ``far_clip``.
+
+    Mirrors training's ``depth_images[depth_images < 0.15] = max_depth``: a reading too close to be
+    real is what an invalid/dropped pixel looks like on the physical camera, and "unknown" is encoded
+    as far rather than near. Because training clamps to ``[near_clip, far_clip]`` before this runs,
+    the branch only fires on bicubic undershoot; it is kept for exact parity. Values >= ``near_clip``
+    disable it in practice (everything is already at or above the threshold)."""
 
     latency_frames: int = 0
     """Publish the frame this many steps old, modeling real camera/transport delay.
@@ -449,4 +477,15 @@ class DepthShmPluginConfig(PluginConfig):
             raise ValueError(f"DepthShmPluginConfig.latency_frames must be >= 0, got {self.latency_frames}.")
         if self.env_id < 0:
             raise ValueError(f"DepthShmPluginConfig.env_id must be >= 0, got {self.env_id}.")
+        crops = {
+            "crop_top": self.crop_top,
+            "crop_bottom": self.crop_bottom,
+            "crop_left": self.crop_left,
+            "crop_right": self.crop_right,
+        }
+        for name, value in crops.items():
+            if value < 0:
+                raise ValueError(f"DepthShmPluginConfig.{name} must be >= 0, got {value}.")
+        if self.empty_threshold < 0:
+            raise ValueError(f"DepthShmPluginConfig.empty_threshold must be >= 0, got {self.empty_threshold}.")
         return self

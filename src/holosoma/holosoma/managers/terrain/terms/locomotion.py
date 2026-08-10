@@ -119,8 +119,15 @@ class TerrainLocomotion(TerrainTermBase):
             # Training mode: random terrain tiles for curriculum learning
             self._env_origins[:] = torch.from_numpy(self.terrain.sample_env_origins()).to(self.device).to(torch.float)
         else:
-            # Eval mode: all robots at tile (0,0) for deterministic evaluation
-            origin_0_0 = torch.from_numpy(self.terrain._env_origins[0, 0]).to(self.device).to(torch.float)
+            # Eval mode: all robots at tile (0,0) for deterministic evaluation.
+            # A LOAD_OBJ terrain has no generated height field, so it never fills ``_env_origins``;
+            # its per-tile origins are derived from the mesh bounds instead. ``sample_env_origins``
+            # (the randomize_tiles branch above) already dispatches this way.
+            if self._cfg.mesh_type == "load_obj":
+                origin_grid = self.terrain._get_load_obj_env_origin_grid()
+            else:
+                origin_grid = self.terrain._env_origins
+            origin_0_0 = torch.from_numpy(origin_grid[0, 0]).to(self.device).to(torch.float)
             self._env_origins[:] = origin_0_0  # Broadcast to all robots
 
     def _init_base_height_points(self):

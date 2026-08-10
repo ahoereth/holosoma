@@ -1,9 +1,9 @@
 """Tests for the depth-distillation policy's observation and command contracts.
 
 The student checkpoint's input layout is a wire format: 93 proprioceptive dims in
-declaration order, then a 15-dim one-hot direction command, then a 32-dim depth
-latent. Reordering any of that silently produces a plausible-looking but wrong
-action, so these tests pin the layout rather than just checking it runs.
+training's sorted term order, then a 15-dim one-hot direction command, then a
+32-dim depth latent. Reordering any of that silently produces a plausible-looking
+but wrong action, so these tests pin the layout rather than just checking it runs.
 
 No ONNX files are needed: the sessions are stubbed, so the tests assert the
 policy's own assembly logic.
@@ -28,9 +28,12 @@ from holosoma_inference.policies.locomotion import LocomotionPolicy
 NUM_DOFS = 29
 LATENT_DIM = 32
 DEPTH_H, DEPTH_W = 58, 87
-# 3 gravity + 3 ang_vel + 29 dof_pos + 29 dof_vel + 29 actions
+# 29 actions + 3 ang_vel + 29 dof_pos + 29 dof_vel + 3 gravity, in training's sorted term order.
 PROPRIO_DIM = 93
 ONE_HOT_DIM = 15
+# Slices of the proprioceptive block, derived from that sorted order.
+ANG_VEL_SLICE = slice(NUM_DOFS, NUM_DOFS + 3)
+GRAVITY_SLICE = slice(PROPRIO_DIM - 3, PROPRIO_DIM)
 
 
 class _FakeInterface:
@@ -131,30 +134,39 @@ def _robot_state(dof_pos=None, dof_vel=None, ang_vel=(0.0, 0.0, 0.0)):
 
 
 def test_observation_is_proprio_then_command_then_latent():
-    """The student's 140-dim input must be assembled in exactly this order."""
+    """The student's 140-dim input must be assembled in exactly this order.
+
+    Training concatenates the group over ``sorted(term_names)``, so the proprioceptive block is
+    [actions(29) | base_ang_vel(3) | dof_pos(29) | dof_vel(29) | projected_gravity(3)]."""
     policy = _make_policy()
     obs = policy.prepare_obs_for_rl(_robot_state(ang_vel=(0.11, 0.22, 0.33)))["obs"]
 
     assert obs.shape == (1, PROPRIO_DIM + ONE_HOT_DIM + LATENT_DIM)
+    np.testing.assert_allclose(obs[0, ANG_VEL_SLICE], [0.11, 0.22, 0.33], atol=1e-6)
     # Upright with zero waist angles -> gravity points straight down.
-    np.testing.assert_allclose(obs[0, 0:3], [0.0, 0.0, -1.0], atol=1e-6)
-    np.testing.assert_allclose(obs[0, 3:6], [0.11, 0.22, 0.33], atol=1e-6)
+    np.testing.assert_allclose(obs[0, GRAVITY_SLICE], [0.0, 0.0, -1.0], atol=1e-6)
     # One-hot block sums to 1 (stand is active at startup).
     assert obs[0, PROPRIO_DIM : PROPRIO_DIM + ONE_HOT_DIM].sum() == pytest.approx(1.0)
     # Latent block is the backbone's output, last.
     np.testing.assert_allclose(obs[0, PROPRIO_DIM + ONE_HOT_DIM :], 0.5, atol=1e-6)
 
 
-def test_actor_obs_terms_are_not_alphabetically_sorted():
-    """These checkpoints expect declaration order, not the default sorted order."""
+def test_actor_obs_terms_are_in_training_sorted_order():
+    """The wire order is training's ``sorted()`` order, used verbatim.
+
+    Not the ONNX ``observation_names`` metadata order (which the exporter writes as the training
+    config's *declaration* order, gravity first) — trusting that would transpose gravity and
+    actions and silently degrade tracking."""
     policy = _make_policy()
     assert policy.obs_terms_sorted["actor_obs"] == [
-        "projected_gravity",
+        "actions",
         "base_ang_vel",
         "dof_pos",
         "dof_vel",
-        "actions",
+        "projected_gravity",
     ]
+    # The list is literally sorted, which is the property that makes it match training.
+    assert policy.obs_terms_sorted["actor_obs"] == sorted(policy.obs_terms_sorted["actor_obs"])
 
 
 def test_two_model_paths_required():

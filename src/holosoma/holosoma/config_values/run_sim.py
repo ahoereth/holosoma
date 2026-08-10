@@ -65,7 +65,11 @@ mujoco = RUN_SIM_REGISTRY.add(
             virtual_gantry=VirtualGantryCfg(enabled=True),
             sim=dataclasses.replace(
                 holosoma.config_values.simulator.mujoco.config.sim,
-                fps=2000,  # mujoco can run faster
+                # 500 Hz physics / 125 Hz control (control_decimation=4). Matches the reference
+                # sim2sim setup the depth-distillation checkpoints are validated against; note a
+                # camera's `update_decimation` resolves against the CONTROL rate, so a bare "50Hz"
+                # is not exactly achievable here (125/50 = 2.5) — use ">50Hz".
+                fps=500,  # mujoco can run faster
             ),
         ),
     ),

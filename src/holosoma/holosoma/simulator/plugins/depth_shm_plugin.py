@@ -92,8 +92,39 @@ class DepthShmPlugin(CameraConsumerPlugin):
 
         np.copyto(self._array, delayed[None, None])
 
+    def _crop(self, depth: np.ndarray) -> np.ndarray:
+        """Drop the configured border rows/cols, mirroring training's pre-resize crop.
+
+        Training crops the raw camera frame (``depth[:, 2:, 4:-4]`` for the D435i rig) *before*
+        resizing, so the resize sees that field of view. Cropping after the resize — or not at
+        all — changes the geometry the backbone sees without any error."""
+        cfg = self.cfg
+        top, left = cfg.crop_top, cfg.crop_left
+        # Translate "drop N from the end" into an index; None keeps the full extent.
+        bottom = -cfg.crop_bottom if cfg.crop_bottom else None
+        right = -cfg.crop_right if cfg.crop_right else None
+        if not (top or left or bottom or right):
+            return depth
+        cropped = depth[top:bottom, left:right]
+        if cropped.size == 0:
+            raise ValueError(
+                f"DepthShmPlugin crop removed the whole {depth.shape} frame "
+                f"(top={cfg.crop_top}, bottom={cfg.crop_bottom}, left={cfg.crop_left}, right={cfg.crop_right})."
+            )
+        return cropped
+
     def _resize_clip_normalize(self, depth: np.ndarray) -> np.ndarray:
-        """Resize to the backbone's input size, then clip and normalize to [-0.5, 0.5]."""
+        """Crop, resize to the backbone's input size, then clip and normalize to [-0.5, 0.5]."""
+        depth = self._crop(depth)
+
+        # Clamp to [near_clip, far_clip] BEFORE the resize, matching training, which clamps at
+        # capture time and only then crops/resizes. This is not redundant with the post-resize clip:
+        # the bicubic kernel spreads out-of-range values into their neighbors, so clamping after the
+        # resize leaves a halo the training pipeline never had. MuJoCo also reports the scene-extent
+        # plane (tens of meters) where a ray escapes, which would smear badly.
+        near, far = self.cfg.near_clip, self.cfg.far_clip
+        depth = np.clip(depth, near, far)
+
         target = (self.cfg.resized_height, self.cfg.resized_width)
         if depth.shape != target:
             import torch
@@ -104,8 +135,17 @@ class DepthShmPlugin(CameraConsumerPlugin):
             )
             depth = tensor[0, 0].numpy()
 
-        near, far = self.cfg.near_clip, self.cfg.far_clip
-        return ((np.clip(depth, near, far) - near) / (far - near) - 0.5).astype(np.float32)
+        # Post-resize handling, mirroring training term-for-term:
+        #   1. clamp the FAR side only (bicubic overshoots at sharp depth edges),
+        #   2. map anything below `empty_threshold` to far — "too close to be real" reads as empty,
+        #      which is how an invalid/dropped pixel presents on the physical camera,
+        #   3. normalize with NO near-side clamp.
+        # Step 3 is deliberate: bicubic ringing can dip a hair under `near`, and training lets that
+        # through, so the output range is *approximately* [-0.5, 0.5] rather than strictly bounded.
+        # Clamping it here would look tidier but would feed the backbone a distribution it never saw.
+        depth = np.minimum(depth, far)
+        depth = np.where(depth < self.cfg.empty_threshold, far, depth)
+        return ((depth - near) / (far - near) - 0.5).astype(np.float32)
 
     def stop(self) -> None:
         """Release the block. Unlinks so the next run starts from a clean slate."""

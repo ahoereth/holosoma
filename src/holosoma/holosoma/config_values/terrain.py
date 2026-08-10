@@ -71,22 +71,29 @@ terrain_load_obj = TERRAIN_REGISTRY.add(
     ),
 )
 
-terrain_load_step = TerrainManagerCfg(
-    terrain_term=TerrainTermCfg(
-        static_friction=1.0,
-        dynamic_friction=1.0,
-        restitution=0.0,
-        mesh_type=MeshType.LOAD_OBJ,
-        func="holosoma.managers.terrain.terms.locomotion:TerrainLocomotion",
-        obj_file_path="holosoma/data/terrains/climb_125.obj",
-        num_rows=1,
-        num_cols=1,
-        spawn=SpawnCfg(
-            randomize_tiles=False,
-            query_terrain_height=True,
-            use_grid_sampling=True,
-        ),
-    )
+# Stepped-block course for vision (depth-distillation) locomotion: an 80m x 80m ground plane with
+# a line of raised blocks of varying height along +X. Registered so it is selectable as
+# ``terrain:terrain-load-step``; override the mesh with
+# ``--terrain.terrain-term.obj-file-path <abs path>``.
+terrain_load_step = TERRAIN_REGISTRY.add(
+    "terrain_load_step",
+    TerrainManagerCfg(
+        terrain_term=TerrainTermCfg(
+            static_friction=1.0,
+            dynamic_friction=1.0,
+            restitution=0.0,
+            mesh_type=MeshType.LOAD_OBJ,
+            func="holosoma.managers.terrain.terms.locomotion:TerrainLocomotion",
+            obj_file_path="holosoma/data/terrains/terrain.obj",
+            num_rows=1,
+            num_cols=1,
+            spawn=SpawnCfg(
+                randomize_tiles=False,
+                query_terrain_height=True,
+                use_grid_sampling=True,
+            ),
+        )
+    ),
 )
 
 terrain_locomotion_stairs_and_slope_eval = TerrainManagerCfg(

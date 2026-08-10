@@ -156,14 +156,32 @@ wbt = ObservationConfig(
 # ``[actor_obs | velocity_command | depth_latent]``; only ``actor_obs`` is built
 # by the generic history machinery, so the term order below IS the wire order
 # the checkpoint expects.
+#
+# The terms are listed pre-sorted ALPHABETICALLY because that is the order training
+# concatenates them in: the training-side ObservationManager builds a ``concatenate=True``
+# group with ``torch.cat`` over ``sorted(obs_tensors.keys())``
+# (holosoma/managers/observation/manager.py), while this package consumes ``obs_dict`` in
+# declaration order. Listing them already sorted is what makes the two agree.
+#
+# Do NOT "fix" this order from the checkpoint's ``observation_names`` metadata. The exporter
+# writes that field as the *declaration* order of the training config
+# (``wbt_training/utils/exporter.py``), not the sorted order it actually concatenates, so the
+# metadata reads ``robot_anchor_projected_gravity,base_ang_vel,dof_pos,dof_vel,actions,
+# velocity_command,placeholder`` and is misleading. Reordering these five lines silently
+# transposes blocks of the student's input (e.g. gravity <-> actions) and degrades tracking
+# rather than raising.
+#
+# ``velocity_command`` is a sixth term of the same training group, but it sorts last among the
+# six and the policy appends it right after the group, so both paths place it at dims 93-107,
+# ahead of the depth latent.
 wbt_distillation_g1 = ObservationConfig(
     obs_dict={
         "actor_obs": [
-            "projected_gravity",
+            "actions",
             "base_ang_vel",
             "dof_pos",
             "dof_vel",
-            "actions",
+            "projected_gravity",
         ],
         "depth_obs": [
             "cam_depth",
@@ -193,9 +211,10 @@ wbt_distillation_g1 = ObservationConfig(
         "actor_obs": 1,
         "depth_obs": 3,
     },
-    # These checkpoints were exported with terms in declaration order, so the
-    # list above is the literal wire layout: [gravity(3) | ang_vel(3) |
-    # dof_pos(29) | dof_vel(29) | actions(29)] = 93 dims.
+    # The list above is used verbatim (no re-sorting at runtime); it is already in the sorted
+    # order training concatenates, so the wire layout is:
+    #   [actions(29) | base_ang_vel(3) | dof_pos(29) | dof_vel(29) | projected_gravity(3)] = 93,
+    # then velocity_command(15) at 93:108 and the depth latent(32) at 108:140.
     sort_obs_terms=False,
 )
 

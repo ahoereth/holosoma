@@ -209,8 +209,9 @@ python src/holosoma/holosoma/run_sim.py robot:g1-29dof \
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--plugin.depth.near-clip` | `0.3` | Depth at or below this normalizes to `-0.5` |
-| `--plugin.depth.far-clip` | `2.0` | Depth at or above this normalizes to `+0.5` |
-| `--plugin.depth.latency-frames` | `0` | Publish a frame this many steps old, modeling real camera/transport delay (5 frames at 50 Hz = 100 ms) |
+| `--plugin.depth.far-clip` | `2.0` | Depth at or above this normalizes to `+0.5` (the training camera's `max_range`: 2.0 ZED, 3.0 D435i) |
+| `--plugin.depth.crop-top` / `-bottom` / `-left` / `-right` | `0` | Border rows/cols dropped **before** the resize; the D435i preset uses `2/0/4/4` (training's `depth[2:, 4:-4]`) |
+| `--plugin.depth.latency-frames` | `0` | Publish a frame this many steps old, modeling real camera/transport delay. Counted in *camera renders*, not control steps |
 | `--plugin.depth.shm-name` | `depth_img_shm` | Shared-memory block name; must match `--task.depth-shm.name` |
 
 The resize uses bicubic interpolation with antialiasing to match
@@ -226,32 +227,83 @@ input — the policy fails loud on a size mismatch rather than reading garbage:
 --sensor.stair_front_depth.width 320 --sensor.stair_front_depth.height 180
 ```
 
-### Stair terrain
+Note the sensor's `near`/`far` are **not** the clip range. MuJoCo's near/far is a global view
+frustum that *removes* geometry, so a near plane at `near_clip` would make a 0.2 m obstacle
+invisible (revealing the background behind it) where training would report it at 0.3 m. Keep the
+frustum permissive and let the plugin's `near_clip`/`far_clip` do the clamping.
 
-The default terrain is a flat plane: this repo ships `MeshType.LOAD_OBJ` but no terrain
-mesh assets. The depth camera sees ground and the policy runs, but for actual stairs
-supply a mesh:
+### Render rate
+
+A camera's `update_decimation` resolves against the **control** rate (`fps / control_decimation`),
+not the physics rate. The sim2sim mujoco preset is 500 Hz / 4 = 125 Hz, where a bare `"50Hz"` is not
+an exact divisor and raises at startup; the presets therefore use `">50Hz"` (→ 62.5 Hz). The policy
+polls the shared-memory block at its own 50 Hz, so over-rendering is harmless.
+
+### Stair / stepped terrain
+
+`terrain:terrain-load-step` ships a stepped-block course (`holosoma/data/terrains/terrain.obj`):
+an 80 m ground plane with a line of raised blocks of varying height along +X. Point it at a
+different mesh with an absolute path:
 
 ```bash
 python src/holosoma/holosoma/run_sim.py robot:g1-29dof \
     sensor.stair_front_depth:g1-stair-front-depth plugin.depth:depth-shm \
-    terrain:terrain-load-obj \
+    terrain:terrain-load-step \
     --terrain.terrain-term.obj-file-path <path>/chained_stairs_15.obj
 ```
+
+Use `terrain:terrain-locomotion-plane` for flat ground.
+
+---
+
+## RealSense D435i variant
+
+The presets above describe the ZED 2i rig. For checkpoints trained against the **D435i** rig
+(`G1FlatRsD435iConfig`: 27° down torso mount at `(0.01, 0.01, 0.44)`, 106x60, `[0.3, 3.0]` m), use
+the D435i triple instead — the depth tensor is 58x87 either way, so the ZED presets also *run*, just
+with the wrong extrinsics and far clip:
+
+```bash
+./run_php_sim.sh          # terminal 1
+./run_php_inference.sh    # terminal 2
+```
+
+which is:
+
+```bash
+python src/holosoma/holosoma/run_sim.py robot:g1-29dof \
+    sensor.d435i_front_depth:g1-d435i-front-depth \
+    plugin.depth:depth-shm-d435i \
+    terrain:terrain-load-step \
+    --simulator.config.bridge.enabled=True
+
+python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-wbt-distillation-d435i \
+    --task.interface lo \
+    --task.model-path "['<RUN>/model_19999/depth_backbone.onnx','<RUN>/model_19999/student.onnx']"
+```
+
+`<RUN>` may be a `wandb://<entity>/<project>/<run_id>` URI; checkpoints are cached under
+`~/.cache/holosoma_inference/weights/<run_id>/`, so later runs are offline.
 
 ---
 
 ## How It Works
 
 ```
-MuJoCo depth render (240x135, metric meters)
-  └─ DepthShmPlugin: resize -> 58x87 (bicubic+antialias),
-     clip [0.3, 2.0], normalize [-0.5, 0.5]
-       └─ /dev/shm/depth_img_shm : float32 (1, 1, 58, 87), 50 Hz
+MuJoCo depth render (metric meters; 240x135 ZED rig / 106x60 D435i rig)
+  └─ DepthShmPlugin: clip [near, far] -> crop -> resize 58x87 (bicubic+antialias)
+     -> normalize [-0.5, 0.5]
+       └─ /dev/shm/depth_img_shm : float32 (1, 1, 58, 87)
             └─ DepthShmSensor (policy process)
                  └─ depth_backbone.onnx -> latent [1, 32]
                       └─ student.onnx: obs [1, 140] -> actions [1, 29]
 ```
+
+Step order matters and mirrors training exactly: the clip runs **before** the resize (the bicubic
+kernel would otherwise smear MuJoCo's far-plane sentinel across its neighbours), and the crop runs
+before the resize so the resize sees training's field of view. This is pinned by
+`simulator/plugins/tests/test_depth_shm_plugin.py`, which reimplements the training math and asserts
+the two agree.
 
 Shared memory rather than a ROS2 topic because the consumer runs on the same host at
 the control rate: no serialization, no broker, no per-frame allocation.
@@ -260,25 +312,31 @@ The student's 140-dim input is a **wire format**:
 
 | Slice | Contents |
 |-------|----------|
-| `[0:3]` | `projected_gravity` — in the **torso** frame, not the pelvis |
-| `[3:6]` | `base_ang_vel` |
-| `[6:35]` | `dof_pos` (in **model** joint order) |
-| `[35:64]` | `dof_vel` (model order) |
-| `[64:93]` | previous `actions` (model order) |
+| `[0:29]` | previous `actions` (in **model** joint order) |
+| `[29:32]` | `base_ang_vel` |
+| `[32:61]` | `dof_pos` (model order) |
+| `[61:90]` | `dof_vel` (model order) |
+| `[90:93]` | `projected_gravity` — in the **torso** frame, not the pelvis |
 | `[93:108]` | one-hot direction command |
 | `[108:140]` | depth latent |
 
 Three details there are load-bearing. Each would produce a plausible-looking but wrong
 action rather than an error, so all three are pinned by tests:
 
-- **Term order is declaration order, not alphabetical.** The rest of this package sorts
-  observation term names; these checkpoints do not. The preset sets
-  `sort_obs_terms=False`, so the order written in `obs_dict` *is* the layout —
-  reordering that list silently changes the observation vector.
-- **Joint order differs from the robot's.** The checkpoint's `joint_names` metadata is
-  IsaacLab's interleaved ordering. Observations are permuted into model order and
-  actions back into robot order. `last_policy_action` is deliberately kept in *model*
-  order, because it feeds back as the `actions` observation on the next tick.
+- **Term order is training's `sorted()` order, not the ONNX metadata's order.** The
+  training-side `ObservationManager` concatenates a `concatenate=True` group over
+  `sorted(term_names)`, so the wire layout is alphabetical: `actions`, `base_ang_vel`,
+  `dof_pos`, `dof_vel`, `projected_gravity`. The preset lists them already sorted and sets
+  `sort_obs_terms=False` so the list is used verbatim.
+
+  Do **not** "fix" this from the checkpoint's `observation_names` metadata: the exporter
+  writes that field as the training config's *declaration* order (gravity first), which is
+  not the order it concatenates. Trusting the metadata transposes gravity and actions.
+- **Joint order may differ from the robot's.** The permutation is derived at load time from
+  the checkpoint's `joint_names` metadata, so it adapts per checkpoint — it is the identity
+  for checkpoints exported in the robot's own serial order, and a real reordering for
+  IsaacLab-interleaved ones. `last_policy_action` is deliberately kept in *model* order,
+  because it feeds back as the `actions` observation on the next tick.
 - **Gravity is observed in the anchor (torso) frame.** On hardware the IMU sits in the
   torso, so the base quaternion already is the torso's; in MuJoCo the floating base is
   the pelvis, so the waist yaw/roll/pitch rotations are chained on.

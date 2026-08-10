@@ -81,11 +81,18 @@ g1_wbt_distillation = InferenceConfig(
     camera=camera.single_zed2i_depth,
 )
 
+# Same policy, but describing the RealSense D435i rig the D435i checkpoints were trained with
+# (27deg-down torso mount, 106x60, clip [0.3, 3.0]) instead of the ZED 2i's. The depth tensor is
+# 58x87 either way, so the plain preset also runs — just with the wrong extrinsics and far clip.
+# Pair with the sim's `sensor.<key>:g1-d435i-front-depth` + `plugin.<key>:depth-shm-d435i`.
+g1_wbt_distillation_d435i = replace(g1_wbt_distillation, camera=camera.single_d435i_depth)
+
 # Register core presets. Keys use hyphen-case naming convention for CLI compatibility.
 INFERENCE_REGISTRY.add("g1-29dof-loco", g1_29dof_loco)
 INFERENCE_REGISTRY.add("t1-29dof-loco", t1_29dof_loco)
 INFERENCE_REGISTRY.add("g1-29dof-wbt", g1_29dof_wbt)
 INFERENCE_REGISTRY.add("g1-wbt-distillation", g1_wbt_distillation)
+INFERENCE_REGISTRY.add("g1-wbt-distillation-d435i", g1_wbt_distillation_d435i)
 
 
 def get_annotated_inference_config() -> type:
