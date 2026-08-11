@@ -51,13 +51,13 @@ class DepthDistillationPolicy(LocomotionPolicy):
     """
 
     # Command index per (speed_mode, direction), matching the training command set.
-    # speed_mode 0 = low, 1 = high, 2 = madmax.
+    # speed_mode 0 = low, 1 = high. The command one-hot stays 15-wide (see
+    # ``obs_dims["velocity_command"]``); the indices beyond those used here are simply never set.
     CMD_CODES: dict[int, dict[str, int]] = {
         0: {"stand": 0, "forward": 1, "left_45": 2, "left_90": 3, "right_45": 4, "right_90": 5, "back": 11},
         1: {"stand": 0, "forward": 6, "left_45": 7, "left_90": 8, "right_45": 9, "right_90": 10, "back": 11},
-        2: {"stand": 0, "forward": 12, "left_45": 13, "left_90": 13, "right_45": 14, "right_90": 14, "back": 11},
     }
-    SPEED_MODE_LABELS = ("LOW", "HIGH", "MADMAX")
+    SPEED_MODE_LABELS = ("LOW", "HIGH")
 
     # Bind w/a/s/d/q/e to absolute heading commands instead of the default
     # velocity accumulator. Read by the input factory when building the keyboard
@@ -563,7 +563,7 @@ class DepthDistillationPolicy(LocomotionPolicy):
             self.set_velocity_command(cmd_idx)
 
     def _dispatch_command(self, cmd):
-        """Handle discrete commands; STAND_TOGGLE cycles the speed mode here."""
+        """Handle discrete commands; STAND_TOGGLE toggles the speed mode here."""
         if cmd in self.COMMAND_TO_DIRECTION:
             # Absolute heading: one press selects it outright.
             self.set_velocity_command(self.CMD_CODES[self.speed_mode][self.COMMAND_TO_DIRECTION[cmd]])

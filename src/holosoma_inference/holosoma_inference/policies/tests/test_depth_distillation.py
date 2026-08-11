@@ -277,7 +277,7 @@ def test_speed_mode_cycles_and_remaps_commands():
     policy._apply_velocity(VelCmd(lin_vel=(0.5, 0.0), ang_vel=0.0))
     assert policy.active_velocity_command_idx == policy.CMD_CODES[1]["forward"]
 
-    policy._dispatch_command(StateCommand.STAND_TOGGLE)
+    # Two modes, so the cycle wraps on the next toggle.
     policy._dispatch_command(StateCommand.STAND_TOGGLE)
     assert policy.speed_mode == 0
 

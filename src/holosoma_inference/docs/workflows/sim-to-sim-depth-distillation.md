@@ -148,7 +148,7 @@ resists free-fall. `i` eases back to the startup pose over 2 s.
 | 45° left / right | **hold** `a` / `d` |
 | 90° left / right | **hold** `q` / `e` |
 | Stand | release all direction keys, or `z` |
-| Cycle speed mode (LOW → HIGH → MADMAX) | `=` |
+| Toggle speed mode (LOW ↔ HIGH) | `=` |
 
 Direction keys are **momentary**: the robot walks while a key is held and returns to stand as soon as
 you let go — like a gamepad d-pad. Holding two directions stacks them, so releasing the newer one

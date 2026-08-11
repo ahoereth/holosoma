@@ -38,7 +38,7 @@ python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-wbt
 #   i        re-enter stiff hold   c  toggle motion recording
 #   w/s      forward / back        a/d  45deg left / right
 #   q/e      90deg left / right    z  stand
-#   =        cycle speed mode (LOW -> HIGH -> MADMAX)
+#   =        toggle speed mode (LOW <-> HIGH)
 #
 # Recording writes recorded_motion/stair/stair_duration<X.X>s_motion.npz
 # (qpos [N, 36] quat-first, vel_cmd [N, 15] one-hot, fps), relative to cwd.

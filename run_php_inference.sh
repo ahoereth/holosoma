@@ -47,7 +47,7 @@ python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-wbt
 #   i        re-enter stiff hold   c  toggle motion recording
 #   HOLD w/s forward / back        HOLD a/d  45deg left / right
 #   HOLD q/e 90deg left / right    z  stand
-#   =        cycle speed mode (LOW -> HIGH -> MADMAX)
+#   =        toggle speed mode (LOW <-> HIGH)
 #
 # Direction keys are MOMENTARY: the robot walks while a key is held and stands the moment you release
 # it. Holding two directions stacks them, so releasing the newer one resumes the one still held.
