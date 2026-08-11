@@ -66,6 +66,13 @@ class DepthDistillationPolicy(LocomotionPolicy):
     # looks unresponsive.
     KEYBOARD_DIRECTION_KEYS = KEYBOARD_DIRECTION_COMMANDS
 
+    # Direction keys are MOMENTARY: the robot moves while a key is held and returns to stand on
+    # release, like a gamepad d-pad and like the reference deployment. Latching (one tap keeps
+    # walking until another key is pressed) is easy to run into a wall with, since letting go of the
+    # keyboard does not stop the robot. Needs key-up events; the input factory falls back to
+    # latching when they are unavailable (no pynput / no DISPLAY).
+    KEYBOARD_HOLD_DIRECTIONS = True
+
     # StateCommand -> CMD_CODES direction name.
     COMMAND_TO_DIRECTION: dict[StateCommand, str] = {
         StateCommand.MOVE_FORWARD: "forward",

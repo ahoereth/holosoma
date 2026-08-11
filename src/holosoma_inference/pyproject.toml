@@ -18,6 +18,10 @@ dependencies = [
     "onnxruntime",
     "scipy",
     "sshkeyboard",
+    # Key-UP events, which sshkeyboard cannot report (a terminal delivers auto-repeat, not releases).
+    # Needed for hold-to-move direction keys; import and listener start are both guarded, so a
+    # headless install simply falls back to latching directions.
+    "pynput",
     "termcolor",
     "pyyaml",
     "tyro>=0.10.0a4",

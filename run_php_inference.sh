@@ -45,12 +45,16 @@ python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-wbt
 # Controls (in THIS terminal):
 #   ]        start the policy      o  damping mode (Kp=0, Kd>0)
 #   i        re-enter stiff hold   c  toggle motion recording
-#   w/s      forward / back        a/d  45deg left / right
-#   q/e      90deg left / right    z  stand
+#   HOLD w/s forward / back        HOLD a/d  45deg left / right
+#   HOLD q/e 90deg left / right    z  stand
 #   =        cycle speed mode (LOW -> HIGH -> MADMAX)
 #
-# Direction is a discrete class, not a continuous velocity — each press selects an ABSOLUTE heading,
-# so reversing from forward to back takes one press.
+# Direction keys are MOMENTARY: the robot walks while a key is held and stands the moment you release
+# it. Holding two directions stacks them, so releasing the newer one resumes the one still held.
+#
+# This needs true key-up events (pynput + an X11 DISPLAY). Without a DISPLAY the policy warns and
+# falls back to LATCHING, where a press keeps the robot walking until another direction or 'z' —
+# releasing the key does not stop it.
 #
 # Deploy sequence: in the MuJoCo window press 8 (~25x) to lower the gantry, then 9 to release it;
 # the policy holds a stiff standing pose until ']' so the robot stays upright meanwhile.

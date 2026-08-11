@@ -48,7 +48,10 @@ def create_input(policy: BasePolicy, source: InputSource, role: str) -> VelCmdPr
         if not isinstance(direction_keys, dict):
             direction_keys = None
         vel_keys = KEYBOARD_VELOCITY_LOCOMOTION if role == "velocity" else None
-        return KeyboardInput.create(velocity_keys=vel_keys, direction_keys=direction_keys)
+        # Opt-in hold-to-move: a policy sets KEYBOARD_HOLD_DIRECTIONS when its direction keys should
+        # be momentary (held = move, released = stand) rather than latching on the last press.
+        hold = bool(getattr(policy, "KEYBOARD_HOLD_DIRECTIONS", False))
+        return KeyboardInput.create(velocity_keys=vel_keys, direction_keys=direction_keys, hold_directions=hold)
 
     if source == "ros2":
         return Ros2Input(

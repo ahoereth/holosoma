@@ -144,16 +144,29 @@ resists free-fall. `i` eases back to the startup pose over 2 s.
 
 | Action | Keyboard |
 |--------|----------|
-| Forward / backward | `w` / `s` |
-| 45° left / right | `a` / `d` |
-| 90° left / right | `q` / `e` |
-| Stand | `z` |
+| Forward / backward | **hold** `w` / `s` |
+| 45° left / right | **hold** `a` / `d` |
+| 90° left / right | **hold** `q` / `e` |
+| Stand | release all direction keys, or `z` |
 | Cycle speed mode (LOW → HIGH → MADMAX) | `=` |
 
-Unlike the blind locomotion policy, direction is a **discrete class**, not a continuous
-velocity — that is how the command was represented during training. Each press
-therefore selects an **absolute heading**: one tap responds immediately, and reversing
-from forward to back takes a single press.
+Direction keys are **momentary**: the robot walks while a key is held and returns to stand as soon as
+you let go — like a gamepad d-pad. Holding two directions stacks them, so releasing the newer one
+resumes the one still held. This makes letting go of the keyboard a reliable stop.
+
+Unlike the blind locomotion policy, direction is a **discrete class**, not a continuous velocity —
+that is how the command was represented during training, so one tap responds immediately and
+reversing from forward to back is a single keypress rather than several.
+
+Hold-to-move needs true key-up events, which a terminal does not deliver (it reports auto-repeat, not
+releases), so this uses `pynput` and an X11 **DISPLAY**. Without one, the policy logs
+
+```
+Hold-to-move needs key-up events (pynput + a DISPLAY); direction keys will latch until another is pressed.
+```
+
+and each press *latches* until another direction or `z` is pressed. Note the robot then keeps walking
+after you release the key — use `z` to stop.
 
 Joystick and ROS2 still deliver continuous velocities; those are quantized to the
 nearest direction sector, so all input sources work.
