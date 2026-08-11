@@ -306,12 +306,19 @@ python src/holosoma/holosoma/run_sim.py robot:g1-29dof \
     sensor.d435i_front_depth:g1-d435i-front-depth \
     plugin.depth:depth-shm-d435i \
     terrain:terrain-load-step \
+    --robot.asset.xml-file g1/g1_29dof_halfspherehand.xml \
     --simulator.config.bridge.enabled=True
 
 python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-wbt-distillation-d435i \
     --task.interface lo \
     --task.model-path "['<RUN>/model_19999/depth_backbone.onnx','<RUN>/model_19999/student.onnx']"
 ```
+
+`--robot.asset.xml-file` picks the half-sphere-hand MJCF, matching the reference sim2sim rig. It is a
+per-run flag rather than part of the `g1-29dof` preset because training ran on an Isaac backend and
+read only `urdf_file`; `xml_file` is required but unused there, so it stayed at the plain
+`g1_29dof.xml`. Omit the flag to get that plain model (rubber-hand mesh + capsule collider) — the
+joint and actuator order are identical either way, so checkpoints load against both.
 
 `<RUN>` may be a `wandb://<entity>/<project>/<run_id>` URI; checkpoints are cached under
 `~/.cache/holosoma_inference/weights/<run_id>/`, so later runs are offline.
