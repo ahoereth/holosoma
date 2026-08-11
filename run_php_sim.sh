@@ -26,10 +26,16 @@ fi
 # A stale block from a crashed run has the wrong size if the resolution changed.
 rm -f /dev/shm/depth_img_shm 2>/dev/null || true
 
+# --robot.asset.xml-file selects the half-sphere-hand MJCF, matching the reference sim2sim setup.
+# Set here rather than in the robot preset on purpose: training ran on an Isaac backend and so read
+# only `urdf_file` (`main_mesh_arm_collision_halfspherehand.urdf`), leaving `xml_file` at the plain
+# `g1_29dof.xml` it never opens. Baking the half-sphere XML into the preset would therefore change
+# every MuJoCo consumer of `g1-29dof`, including ones that want the training pairing.
 python src/holosoma/holosoma/run_sim.py robot:g1-29dof \
     sensor.d435i_front_depth:g1-d435i-front-depth \
     plugin.depth:depth-shm-d435i \
     terrain:terrain-load-step \
+    --robot.asset.xml-file g1/g1_29dof_halfspherehand.xml \
     --simulator.config.bridge.enabled=True \
     "$@"
 
