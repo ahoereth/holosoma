@@ -211,7 +211,8 @@ python src/holosoma/holosoma/run_sim.py robot:g1-29dof \
 | `--plugin.depth.near-clip` | `0.3` | Depth at or below this normalizes to `-0.5` |
 | `--plugin.depth.far-clip` | `2.0` | Depth at or above this normalizes to `+0.5` (the training camera's `max_range`: 2.0 ZED, 3.0 D435i) |
 | `--plugin.depth.crop-top` / `-bottom` / `-left` / `-right` | `0` | Border rows/cols dropped **before** the resize; the D435i preset uses `2/0/4/4` (training's `depth[2:, 4:-4]`) |
-| `--plugin.depth.latency-frames` | `0` | Publish a frame this many steps old, modeling real camera/transport delay. Counted in *camera renders*, not control steps |
+| `--plugin.depth.render-hz` | `10.0` | Rate of the plugin's own render thread. Independent of `fps` and of the camera's `update_decimation` |
+| `--plugin.depth.latency-frames` | `0` | Publish a frame this many steps old, modeling real camera/transport delay. Counted in *rendered frames*, so one frame is `1/render_hz` (100 ms at the default) |
 | `--plugin.depth.shm-name` | `depth_img_shm` | Shared-memory block name; must match `--task.depth-shm.name` |
 
 The resize uses bicubic interpolation with antialiasing to match
@@ -234,10 +235,27 @@ frustum permissive and let the plugin's `near_clip`/`far_clip` do the clamping.
 
 ### Render rate
 
-A camera's `update_decimation` resolves against the **control** rate (`fps / control_decimation`),
-not the physics rate. The sim2sim mujoco preset is 500 Hz / 4 = 125 Hz, where a bare `"50Hz"` is not
-an exact divisor and raises at startup; the presets therefore use `">50Hz"` (→ 62.5 Hz). The policy
-polls the shared-memory block at its own 50 Hz, so over-rendering is harmless.
+The depth-shm plugin renders on **its own thread** at `--plugin.depth.render-hz` (default **10 Hz**,
+the D435i's real publish rate), not on the physics thread:
+
+```bash
+--plugin.depth.render-hz 20
+```
+
+This is load-bearing for hitting the sim's target rate. A GL depth render costs ~0.25 ms on a GPU
+context (and ~4.7 ms on a software one), which does not fit the 2 ms budget of a 500 Hz physics step.
+Rendered inline, each frame lands on one unlucky step, blows its slot, and the rate limiter then
+sprints to catch up — the sim reports 400/600 Hz swings and never settles. Off-thread it holds a flat
+500.0 Hz, before and after a policy attaches.
+
+The camera is taken off the control-loop render schedule when the plugin starts
+(`SensorManager.claim_external_rendering`), so its `update_decimation` is unused and the physics loop
+pays nothing for it. The policy polls shared memory at its own 50 Hz and simply re-reads the latest
+frame, so a render rate below the control rate means repeated frames, not stalls.
+
+`update_decimation` still governs any camera rendered *inline* by another consumer (ros2-image, viz,
+video). Note it resolves against the **control** rate (`fps / control_decimation` = 125 Hz here),
+where a bare `"50Hz"` is not an exact divisor and raises at startup — hence `">50Hz"` in the presets.
 
 ### Stair / stepped terrain
 

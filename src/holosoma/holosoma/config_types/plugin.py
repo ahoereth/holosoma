@@ -448,11 +448,25 @@ class DepthShmPluginConfig(PluginConfig):
     the branch only fires on bicubic undershoot; it is kept for exact parity. Values >= ``near_clip``
     disable it in practice (everything is already at or above the threshold)."""
 
+    render_hz: float = 10.0
+    """Rate of this plugin's own render thread, in Hz. Default 10 — the D435i's real publish rate.
+
+    Rendering runs off the physics thread, so this is independent of ``fps`` /
+    ``control_decimation`` and of the camera's ``update_decimation`` (which only governs inline
+    ``FRAME_END`` rendering, unused by this plugin). A GL depth render costs far more than a 500 Hz
+    physics step's 2 ms budget, so doing it inline makes the sim miss its target; here it cannot.
+
+    The consuming policy polls shared memory at its own rate and simply re-reads the latest frame,
+    so a rate below the control rate means repeated frames rather than stalls."""
+
     latency_frames: int = 0
     """Publish the frame this many steps old, modeling real camera/transport delay.
 
     The policies were trained against a camera pipeline with inherent latency; replaying
-    that here keeps sim-to-sim honest. 0 publishes the freshest frame."""
+    that here keeps sim-to-sim honest. 0 publishes the freshest frame.
+
+    Counted in RENDERED frames, i.e. steps of ``render_hz`` — at the default 10 Hz one frame is
+    100 ms, not the 20 ms a 50 Hz control step would be."""
 
     def get_cls(self) -> Callable[..., Any]:
         # Deferred import: keeps cv2/torch out of CLI-build import.
@@ -488,4 +502,6 @@ class DepthShmPluginConfig(PluginConfig):
                 raise ValueError(f"DepthShmPluginConfig.{name} must be >= 0, got {value}.")
         if self.empty_threshold < 0:
             raise ValueError(f"DepthShmPluginConfig.empty_threshold must be >= 0, got {self.empty_threshold}.")
+        if self.render_hz <= 0:
+            raise ValueError(f"DepthShmPluginConfig.render_hz must be > 0, got {self.render_hz}.")
         return self
