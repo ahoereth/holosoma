@@ -5,7 +5,7 @@
 # Defaults to the W&B run below; checkpoints are cached under
 # ~/.cache/holosoma_inference/weights/<run_id>/, so later runs are offline.
 #
-#   RUN=wandb://<entity>/<project>/<run_id> STEP=model_19999 ./run_php_inference.sh
+#   RUN=wandb://<entity>/<project>/<run_id> STEP=model_20000 ./run_php_inference.sh
 #
 # A local checkpoint pair works too, pointing at the two files directly:
 #   BACKBONE=/path/depth_backbone.onnx STUDENT=/path/student.onnx ./run_php_inference.sh
@@ -18,8 +18,8 @@ cd "$REPO"
 
 source scripts/source_inference_setup.sh
 
-RUN="${RUN:-wandb://zhwuuu/WBT-Holosoma/pmgx05c3}"
-STEP="${STEP:-model_19999}"
+RUN="${RUN:-wandb://zhwuuu/WBT-Holosoma/74k88lqt}"
+STEP="${STEP:-model_20000}"
 BACKBONE="${BACKBONE:-${RUN}/${STEP}/depth_backbone.onnx}"
 STUDENT="${STUDENT:-${RUN}/${STEP}/student.onnx}"
 
