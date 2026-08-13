@@ -19,10 +19,18 @@ from holosoma.utils.safe_torch_import import torch
 #########################################################################################################
 ## Termination terms
 #########################################################################################################
-def motion_ends(env, **_) -> torch.Tensor:
-    """Terminate if the motion ends."""
-    motion_command = env.command_manager.get_state("motion_command")
-    return motion_command.time_steps >= motion_command.motion.time_step_total - 2
+def motion_ends(env, command_name: str = "motion_command", **_) -> torch.Tensor:
+    """Time out at the final frame of each environment's selected motion clip."""
+    motion_command = env.command_manager.get_state(command_name)
+    if motion_command is None:
+        raise RuntimeError(f"Command manager has no stateful term {command_name!r}")
+
+    motion_ids = motion_command.motion_ids.to(
+        device=motion_command.motion.motion_end_idx.device,
+        dtype=torch.long,
+    )
+    end_steps = motion_command.motion.motion_end_idx[motion_ids].to(device=motion_command.time_steps.device)
+    return motion_command.time_steps >= end_steps - 1
 
 
 class BadTracking(TerminationTermBase):
