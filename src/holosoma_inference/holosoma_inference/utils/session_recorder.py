@@ -36,17 +36,24 @@ class SessionRecorder:
     that won't start must never take down the policy run.
     """
 
-    def __init__(self, enabled: bool, out_dir: str = "~/run_policy_sessions", storage: str = "mcap"):
+    def __init__(
+        self,
+        enabled: bool,
+        out_dir: str = "~/run_policy_sessions",
+        storage: str = "mcap",
+        cpu: int = 0,
+    ):
         self.enabled = enabled
         self.out_dir = Path(out_dir).expanduser()
         self.storage = storage
+        self.cpu = cpu
         self.bag_path: Path | None = None
         self._proc: subprocess.Popen | None = None
 
     @classmethod
     def from_debug_config(cls, debug: DebugConfig) -> SessionRecorder:
-        """Build from a task ``DebugConfig`` (reads ``record_rosbag`` / ``rosbag_dir``)."""
-        return cls(enabled=debug.record_rosbag, out_dir=debug.rosbag_dir)
+        """Build from a task ``DebugConfig`` (reads ``record_rosbag`` / ``rosbag_dir`` / ``rosbag_cpu``)."""
+        return cls(enabled=debug.record_rosbag, out_dir=debug.rosbag_dir, cpu=debug.rosbag_cpu)
 
     def __enter__(self) -> Self:
         if not self.enabled:
@@ -62,9 +69,18 @@ class SessionRecorder:
                 "-o", str(self.bag_path),
             ]
             # fmt: on
+            # Pin the recorder off the policy core: as a child of the (often
+            # taskset-pinned) policy process it would otherwise inherit the
+            # policy's CPU affinity and steal cycles from inference, adding
+            # control-loop jitter. taskset -c <cpu> moves it to its own core.
+            if self.cpu >= 0:
+                cmd = ["taskset", "-c", str(self.cpu), *cmd]
             # setsid: own process group so we can SIGINT only the recorder on exit.
             self._proc = subprocess.Popen(cmd, preexec_fn=os.setsid)  # noqa: PLW1509
-            logger.info(f"💾 Recording session rosbag → {self.bag_path} (ros2 bag record --all)")
+            logger.info(
+                f"💾 Recording session rosbag → {self.bag_path} "
+                f"(ros2 bag record --all{f', taskset -c {self.cpu}' if self.cpu >= 0 else ''})"
+            )
         except Exception as exc:  # never let recording break the run
             logger.warning(f"Could not start session rosbag recorder: {exc}")
             self._proc = None

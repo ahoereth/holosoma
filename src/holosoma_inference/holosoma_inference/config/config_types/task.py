@@ -35,6 +35,11 @@ class DebugConfig:
     rosbag_dir: str = "~/run_policy_sessions"
     """Directory for per-session rosbags recorded via ``record_rosbag``."""
 
+    rosbag_cpu: int = 0
+    """CPU core to pin ``ros2 bag record`` to (via ``taskset``) so it doesn't
+    inherit the policy's affinity and add control-loop jitter. Default 0 exists
+    everywhere and is never an isolated RT core. Negative disables pinning."""
+
 
 @dataclass(frozen=True)
 class Ros2DepthConsumerConfig:
