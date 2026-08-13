@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from holosoma.agents.ppo.ppo import EmpiricalNormalization
+from holosoma.agents.ppo.ppo import PPO, EmpiricalNormalization
 
 
 def _population_moments(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -75,3 +75,20 @@ def test_deferred_sync_preserves_between_rank_variance(monkeypatch) -> None:
     assert local.count.item() == 4
     assert collective_calls == 2
     assert not remote_moments
+
+
+def test_multi_gpu_advantage_variance_roundoff_is_clamped(monkeypatch) -> None:
+    advantages = torch.ones((2, 1))
+
+    def fake_all_reduce(stats: torch.Tensor, **_) -> None:
+        epsilon = torch.finfo(stats.dtype).eps
+        stats.copy_(stats.new_tensor([2.0, 2.0 - epsilon]))
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+    algorithm = PPO.__new__(PPO)
+    algorithm.gpu_world_size = 2
+
+    normalized = PPO._normalize_advantages_multi_gpu(algorithm, advantages)
+
+    assert torch.isfinite(normalized).all()
+    torch.testing.assert_close(normalized, torch.zeros_like(normalized))

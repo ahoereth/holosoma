@@ -820,7 +820,7 @@ class PPO(BaseAlgo):
 
         global_mean = local_stats[0] / self.gpu_world_size
         global_sq_mean = local_stats[1] / self.gpu_world_size
-        global_variance = global_sq_mean - global_mean**2
+        global_variance = (global_sq_mean - global_mean**2).clamp_min(0.0)
         global_std = torch.sqrt(global_variance + 1e-8)
 
         return (advantages - global_mean) / global_std
