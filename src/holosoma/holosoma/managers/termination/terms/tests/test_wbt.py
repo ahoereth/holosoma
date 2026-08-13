@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
 
 from holosoma.config_values.wbt.g1.termination import g1_29dof_wbt_termination
-from holosoma.managers.termination.terms.wbt import motion_ends
+from holosoma.managers.termination.terms.wbt import BadTracking, BadTrackingZOnly, _threshold_failure, motion_ends
 
 pytestmark = pytest.mark.no_sim
 
@@ -76,3 +77,39 @@ def test_motion_ends_rejects_invalid_boundary_metadata() -> None:
 
 def test_default_wbt_termination_leaves_motion_end_optional() -> None:
     assert "motion_end" not in g1_29dof_wbt_termination.terms
+
+
+def test_tracking_thresholds_fail_closed_on_non_finite_values() -> None:
+    error = torch.tensor([0.1, float("nan"), float("inf"), 0.1])
+    threshold = torch.tensor([0.2, 0.2, 0.2, float("nan")])
+
+    assert _threshold_failure(error, threshold).tolist() == [False, True, True, True]
+
+
+def test_position_tracking_checks_fail_closed() -> None:
+    command: Any = SimpleNamespace(
+        ref_pos_w=torch.tensor([[0.0, 0.0, 0.0], [float("nan"), 0.0, 0.0]]),
+        robot_ref_pos_w=torch.zeros(2, 3),
+        body_pos_relative_w=torch.tensor([[[0.0, 0.0, 0.0]], [[0.0, float("inf"), 0.0]]]),
+        robot_body_pos_w=torch.zeros(2, 1, 3),
+        object_pos_w=torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, float("nan")]]),
+        simulator_object_pos_w=torch.zeros(2, 3),
+    )
+    term = BadTracking.__new__(BadTracking)
+    term.bad_ref_pos_threshold = 0.5
+    term.bad_motion_body_pos_threshold = 0.5
+    term.bad_motion_body_pos_body_indexes = torch.tensor([0])
+    term.bad_object_pos_threshold = 0.5
+
+    assert term.bad_ref_pos(command).tolist() == [False, True]
+    assert term.bad_motion_body_pos(command).tolist() == [False, True]
+    assert term.bad_object_pos(command).tolist() == [False, True]
+
+    z_term = BadTrackingZOnly.__new__(BadTrackingZOnly)
+    z_term.bad_ref_pos_threshold = 0.5
+    z_term.bad_motion_body_pos_threshold = 0.5
+    z_term.bad_motion_body_pos_body_indexes = torch.tensor([0])
+    command.ref_pos_w[1, 2] = float("nan")
+    command.body_pos_relative_w[1, 0, 2] = float("nan")
+    assert z_term.bad_ref_pos(command).tolist() == [False, True]
+    assert z_term.bad_motion_body_pos(command).tolist() == [False, True]
