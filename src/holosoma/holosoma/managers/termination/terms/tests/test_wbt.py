@@ -74,8 +74,5 @@ def test_motion_ends_rejects_invalid_boundary_metadata() -> None:
         motion_ends(env)
 
 
-def test_default_wbt_termination_treats_motion_end_as_timeout() -> None:
-    motion_end = g1_29dof_wbt_termination.terms["motion_end"]
-
-    assert motion_end.func == "holosoma.managers.termination.terms.wbt:motion_ends"
-    assert motion_end.is_timeout
+def test_default_wbt_termination_leaves_motion_end_optional() -> None:
+    assert "motion_end" not in g1_29dof_wbt_termination.terms

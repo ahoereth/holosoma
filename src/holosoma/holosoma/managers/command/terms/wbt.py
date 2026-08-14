@@ -1641,6 +1641,24 @@ class MotionCommand(CommandTermBase):
             # 4.3 set the object states in simulator
             self._env.simulator.set_actor_states([self.object_name], env_ids, object_states)
 
+    def _advance_or_resample_motions(self, advance_mask: torch.Tensor) -> None:
+        """Advance active clips and soft-reset clips whose terminal frame was consumed."""
+        at_end = self.motion.motion_ends[self.time_steps]
+        advance_mask &= ~at_end
+        self.time_steps += advance_mask.long()
+
+        ended_env_ids = torch.where(at_end)[0]
+        if ended_env_ids.numel() == 0:
+            return
+
+        self.reset(ended_env_ids)
+        sim = self._env.simulator
+        sim.set_actor_root_state_tensor_robots(ended_env_ids, sim.robot_root_states)
+        sim.set_dof_state_tensor_robots(ended_env_ids, sim.dof_state)  # type: ignore[attr-defined]
+        sim.clear_contact_forces_history(ended_env_ids)
+        sim.refresh_sim_tensors()
+        self._env.observation_manager.reset(ended_env_ids)
+
     def step(self) -> None:
         """called in _update_tasks_callback of the environment. (after compute_reward, before compute_observations)"""
         # 0. update time steps, all motion joint/body poses are updated automatically with the time steps.
@@ -1655,9 +1673,9 @@ class MotionCommand(CommandTermBase):
                 freeze_mask = (rand_vals < freeze_prob) & zero_mask
                 advance_mask = advance_mask & ~freeze_mask
 
-        # Hold terminal source frames even when a custom preset omits motion_end.
-        advance_mask &= ~self.motion.motion_ends[self.time_steps]
-        self.time_steps += advance_mask.long()
+        # The optional motion_end termination resets before this callback. Without
+        # it, preserve BeyondMimic's fixed-length episodes by resampling in place.
+        self._advance_or_resample_motions(advance_mask)
 
         ema_alpha_root = 0.1
         ref_root_z_now = self.motion._body_pos_w[self.time_steps, self._root_body_index_in_motion, 2]

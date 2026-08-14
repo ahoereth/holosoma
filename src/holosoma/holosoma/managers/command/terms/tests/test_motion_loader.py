@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -29,7 +30,7 @@ def _write_motion(
     body_pos_w[:, 0, 0] = joint_positions
     body_quat_w = np.zeros((num_frames, 1, 4), dtype=np.float32)
     body_quat_w[:, 0, 0] = 1.0
-    arrays: dict[str, np.ndarray | float] = {
+    arrays: dict[str, Any] = {
         "fps": fps,
         "joint_pos": joint_pos,
         "joint_vel": joint_vel,
@@ -149,3 +150,37 @@ def test_motion_command_properties_respect_raw_body_order() -> None:
     torch.testing.assert_close(command.root_pos_w, torch.tensor([[120.0, 0.0, 0.0]]))
     torch.testing.assert_close(command.ref_lin_vel_w, torch.tensor([[1.0, 0.0, 0.0]]))
     torch.testing.assert_close(command.root_ang_vel_w, torch.tensor([[4.0, 0.0, 0.0]]))
+
+
+def test_motion_command_soft_resets_after_consuming_source_boundary() -> None:
+    command = cast("Any", MotionCommand.__new__(MotionCommand))
+    command.time_steps = torch.tensor([1, 2, 3])
+    command.motion = SimpleNamespace(motion_ends=torch.tensor([False, False, True, False, True]))
+
+    def reset(env_ids: torch.Tensor) -> None:
+        command.time_steps[env_ids] = 0
+
+    command.reset = Mock(side_effect=reset)
+    simulator = SimpleNamespace(
+        robot_root_states=torch.zeros(3, 13),
+        dof_state=torch.zeros(3, 2),
+        set_actor_root_state_tensor_robots=Mock(),
+        set_dof_state_tensor_robots=Mock(),
+        clear_contact_forces_history=Mock(),
+        refresh_sim_tensors=Mock(),
+    )
+    observation_manager = SimpleNamespace(reset=Mock())
+    command._env = SimpleNamespace(simulator=simulator, observation_manager=observation_manager)
+
+    command._advance_or_resample_motions(torch.ones(3, dtype=torch.bool))
+
+    # Newly reached terminal frames remain observable for one policy step;
+    # only the terminal frame already consumed by env 1 is resampled.
+    assert command.time_steps.tolist() == [2, 0, 4]
+    ended_env_ids = command.reset.call_args.args[0]
+    assert ended_env_ids.tolist() == [1]
+    simulator.set_actor_root_state_tensor_robots.assert_called_once_with(ended_env_ids, simulator.robot_root_states)
+    simulator.set_dof_state_tensor_robots.assert_called_once_with(ended_env_ids, simulator.dof_state)
+    simulator.clear_contact_forces_history.assert_called_once_with(ended_env_ids)
+    simulator.refresh_sim_tensors.assert_called_once_with()
+    observation_manager.reset.assert_called_once_with(ended_env_ids)
