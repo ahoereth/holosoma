@@ -2,9 +2,6 @@
 # D435i depth-distillation (PHP) policy. Start run_php_sim.sh (or an on-robot depth server) first:
 # this attaches to the shared-memory block the producer creates.
 #
-# Defaults to the W&B run below; checkpoints are cached under
-# ~/.cache/holosoma_inference/weights/<run_id>/, so later runs are offline.
-#
 #   RUN=wandb://<entity>/<project>/<run_id> STEP=model_20000 ./run_php_inference.sh
 #
 # A local checkpoint pair works too, pointing at the two files directly:
@@ -18,10 +15,19 @@ cd "$REPO"
 
 source scripts/source_inference_setup.sh
 
-RUN="${RUN:-wandb://zhwuuu/WBT-Holosoma/74k88lqt}"
+RUN="${RUN:-}"
 STEP="${STEP:-model_20000}"
-BACKBONE="${BACKBONE:-${RUN}/${STEP}/depth_backbone.onnx}"
-STUDENT="${STUDENT:-${RUN}/${STEP}/student.onnx}"
+BACKBONE="${BACKBONE:-}"
+STUDENT="${STUDENT:-}"
+
+if [ -n "$RUN" ]; then
+    BACKBONE="${BACKBONE:-${RUN}/${STEP}/depth_backbone.onnx}"
+    STUDENT="${STUDENT:-${RUN}/${STEP}/student.onnx}"
+fi
+if [ -z "$BACKBONE" ] || [ -z "$STUDENT" ]; then
+    echo "set RUN=wandb://<entity>/<project>/<run_id> or both BACKBONE and STUDENT" >&2
+    exit 2
+fi
 
 # Local paths are checked up front; wandb:// URIs are resolved (and cached) by the policy.
 case "$BACKBONE" in

@@ -97,8 +97,5 @@ class RolloutStorageDistillation(RolloutStorage):
         unknown = [k for k in data if k not in self._buffers]
         if unknown:
             known = sorted(self._buffers.keys())
-            raise KeyError(
-                f"RolloutStorageDistillation.add() got unknown keys {unknown}. "
-                f"Registered buffers: {known}."
-            )
+            raise KeyError(f"RolloutStorageDistillation.add() got unknown keys {unknown}. Registered buffers: {known}.")
         super().add(**data)

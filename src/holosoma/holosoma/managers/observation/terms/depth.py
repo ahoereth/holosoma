@@ -21,13 +21,12 @@ import torch.nn.functional as F
 import trimesh
 
 from holosoma.managers.observation.base import ObservationTermBase
-
-from holosoma.utils.perlin_noise import InfiniteFractalPerlin3D
 from holosoma.sensors.warp.camera_sensor import CameraSensor
 from holosoma.sensors.warp.sensor_utils import (
     quat_mul_xyzw,
     tf_apply_xyzw,
 )
+from holosoma.utils.perlin_noise import InfiniteFractalPerlin3D
 
 
 class WarpDepthImageObsTerm(ObservationTermBase):
@@ -46,6 +45,7 @@ class WarpDepthImageObsTerm(ObservationTermBase):
         Size of the rolling depth buffer (must exceed max latency).
     resize : tuple[int, int]
         (H, W) target after crop/resize. Must match the CNN backbone input.
+        The crop itself comes from ``camera_sensor_cfg.crop_{top,bottom,left,right}``.
     enable_holes : bool
         Whether to punch Perlin-noise holes into the depth image.
     terrain_mesh_vertices, terrain_mesh_faces : numpy array
@@ -80,19 +80,13 @@ class WarpDepthImageObsTerm(ObservationTermBase):
         # interpolate default (False) diverges by ~0.12 on a normalized depth
         # image.
         self._resize_hw = (int(resized[0]), int(resized[1]))
-        self.depth_buffer = torch.zeros(
-            self.num_envs, self.buffer_len, resized[0], resized[1], device=self.device
-        )
+        self.depth_buffer = torch.zeros(self.num_envs, self.buffer_len, resized[0], resized[1], device=self.device)
         self.reset_episodes = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         if self.latency_frame_range is not None:
-            assert self.latency_frame_range[1] < self.buffer_len, (
-                "Max latency frame must be less than buffer length"
-            )
+            assert self.latency_frame_range[1] < self.buffer_len, "Max latency frame must be less than buffer length"
         else:
-            assert self.latency_frame < self.buffer_len, (
-                "Latency frame must be less than buffer length"
-            )
+            assert self.latency_frame < self.buffer_len, "Latency frame must be less than buffer length"
 
         # NOTE: command_manager is constructed *after* observation_manager in
         # BaseTask.__init__, so we cannot resolve the motion command here. Defer
@@ -142,9 +136,7 @@ class WarpDepthImageObsTerm(ObservationTermBase):
             dtype=torch.long,
             device=env.device,
         )
-        self.camera_sensors_base_link_indices = robot.find_bodies(
-            self.base_link_names, preserve_order=True
-        )[0]
+        self.camera_sensors_base_link_indices = robot.find_bodies(self.base_link_names, preserve_order=True)[0]
 
         terrain_mesh_vertices = params.get("terrain_mesh_vertices")
         terrain_mesh_faces = params.get("terrain_mesh_faces")
@@ -157,13 +149,15 @@ class WarpDepthImageObsTerm(ObservationTermBase):
             )
         # apply_terrain_preprocess may hand us either raw arrays (legacy) or a
         # single .npz path stashed in both slots (current); handle both.
-        if isinstance(terrain_mesh_vertices, str) and isinstance(terrain_mesh_faces, str) and terrain_mesh_vertices == terrain_mesh_faces:
+        if (
+            isinstance(terrain_mesh_vertices, str)
+            and isinstance(terrain_mesh_faces, str)
+            and terrain_mesh_vertices == terrain_mesh_faces
+        ):
             loaded = np.load(terrain_mesh_vertices)
             terrain_mesh_vertices = loaded["vertices"]
             terrain_mesh_faces = loaded["faces"]
-        terrain_mesh = trimesh.Trimesh(
-            vertices=terrain_mesh_vertices, faces=terrain_mesh_faces
-        )
+        terrain_mesh = trimesh.Trimesh(vertices=terrain_mesh_vertices, faces=terrain_mesh_faces)
 
         self.camera_sensor = CameraSensor(
             self.num_envs,
@@ -172,6 +166,18 @@ class WarpDepthImageObsTerm(ObservationTermBase):
             device=env.device,
         )
         self.clipping_range = (camera_sensor_cfg.min_range, camera_sensor_cfg.max_range)
+        self._crop = tuple(
+            int(getattr(camera_sensor_cfg, name, 0)) for name in ("crop_top", "crop_bottom", "crop_left", "crop_right")
+        )
+        if any(value < 0 for value in self._crop):
+            raise ValueError(f"Depth camera crop values must be non-negative, got {self._crop}.")
+        cropped_height = camera_sensor_cfg.height - self._crop[0] - self._crop[1]
+        cropped_width = camera_sensor_cfg.width - self._crop[2] - self._crop[3]
+        if cropped_height <= 0 or cropped_width <= 0:
+            raise ValueError(
+                f"Depth camera crop {self._crop} removes the entire "
+                f"{camera_sensor_cfg.height}x{camera_sensor_cfg.width} image."
+            )
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         if env_ids is None:
@@ -229,9 +235,7 @@ class WarpDepthImageObsTerm(ObservationTermBase):
     def _get_depth_images(self, env: Any) -> torch.Tensor:
         robot = env.simulator._robot
         if self.camera_sensor.is_dyna_mesh:
-            ray_cast_body_poses = [
-                robot.data.body_pos_w[:, self.camera_sensors_ray_cast_body_indices]
-            ]
+            ray_cast_body_poses = [robot.data.body_pos_w[:, self.camera_sensors_ray_cast_body_indices]]
             # holosoma stores quats as wxyz; warp sensor wants xyzw.
             ray_cast_body_quats = [
                 robot.data.body_quat_w[:, self.camera_sensors_ray_cast_body_indices][..., [1, 2, 3, 0]]
@@ -257,9 +261,7 @@ class WarpDepthImageObsTerm(ObservationTermBase):
         )
 
         depth_images = self.camera_sensor.capture()  # (num_cameras, num_envs, H, W)
-        depth_images = torch.clamp(
-            depth_images, min=self.clipping_range[0], max=self.clipping_range[1]
-        )
+        depth_images = torch.clamp(depth_images, min=self.clipping_range[0], max=self.clipping_range[1])
         return depth_images[:, 0]  # first (only) camera
 
     def _process_depth_images(self, depth_images: torch.Tensor, env_ids=None) -> torch.Tensor:
@@ -301,9 +303,9 @@ class WarpDepthImageObsTerm(ObservationTermBase):
 
         r = torch.rand_like(edge_mask.float())
         shuffle_mask = edge_mask & (r < 0.9)
-        shuffle_mask = F.max_pool2d(
-            shuffle_mask.unsqueeze(1).float(), kernel_size=3, stride=1, padding=1
-        ).squeeze(1).bool()
+        shuffle_mask = (
+            F.max_pool2d(shuffle_mask.unsqueeze(1).float(), kernel_size=3, stride=1, padding=1).squeeze(1).bool()
+        )
 
         for ii in range(1):
             x_pad = F.pad(depth_images.unsqueeze(1), (1, 1, 1, 1), mode="circular")
@@ -340,12 +342,13 @@ class WarpDepthImageObsTerm(ObservationTermBase):
         depth_images += torch.randn_like(depth_images) * 0.03
         depth_images += self.depth_offset[:, None, None]
 
-        depth_images = self._normalize_depth_images(depth_images)
-        return depth_images
+        return self._normalize_depth_images(depth_images)
 
     def _crop_depth_images(self, depth_images: torch.Tensor) -> torch.Tensor:
-        # 2 rows from top, 4 cols from each side (matches far-tracking convention).
-        return depth_images[:, 2:, 4:-4]
+        top, bottom, left, right = self._crop
+        bottom_index = -bottom if bottom else None
+        right_index = -right if right else None
+        return depth_images[:, top:bottom_index, left:right_index]
 
     def _normalize_depth_images(self, depth_images: torch.Tensor) -> torch.Tensor:
         lo, hi = self.clipping_range

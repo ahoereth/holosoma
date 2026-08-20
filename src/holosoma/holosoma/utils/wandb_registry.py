@@ -6,7 +6,7 @@ framework dependencies.
 
 from __future__ import annotations
 
-import pathlib
+from pathlib import Path
 
 import wandb
 
@@ -21,7 +21,7 @@ def resolve_tag(registry_name: str, default_tag: str = "latest") -> str:
 def download_motion_and_terrain(
     registry: str | None = None,
     artifact: wandb.Artifact | None = None,
-) -> tuple[list[pathlib.Path] | None, list[pathlib.Path] | None]:
+) -> tuple[list[Path] | None, list[Path] | None]:
     """Download motion and terrain artifacts given a full registry name.
 
     If a registry name does not include a ``":"`` tag, ``":latest"`` is appended
@@ -31,52 +31,45 @@ def download_motion_and_terrain(
     or download failed.
     """
 
-    def _download_from_registry(registry_name: str | None) -> pathlib.Path | None:
-        if artifact is not None:
-            art = artifact
-        elif not registry_name:
-            return None
-        elif registry_name.startswith("file://"):
-            # Local filesystem bypass: skip wandb and read directly from disk.
-            local_path = pathlib.Path(registry_name[len("file://") :]).expanduser().resolve()
+    def _download_from_registry(registry_name: str | None) -> Path | None:
+        if registry_name and registry_name.startswith("file://"):
+            local_path = Path(registry_name[len("file://") :]).expanduser().resolve()
             if not local_path.exists():
                 print(f"[WARN] Local registry path does not exist: {local_path}")
                 return None
             print(f"[INFO] Using local registry directory: {local_path}")
             return local_path
-        else:
-            try:
-                api = wandb.Api()
-                art = api.artifact(registry_name)
-            except Exception as e:
-                print(f"[WARN] Failed to load artifact '{registry_name}': {e}")
-                return None
+        if artifact is None and not registry_name:
+            return None
 
-        # Use artifact's cached directory if available, otherwise download once
-        default_root = getattr(art, "_default_root", None)
-        if default_root is not None and pathlib.Path(default_root()).exists():
-            print(f"[INFO] Using cached artifact for '{registry_name}'")
-            root = pathlib.Path(default_root())
-        else:
-            root = pathlib.Path(art.download())
-        return root
+        try:
+            if artifact is not None:
+                resolved_artifact = artifact
+            else:
+                registry_name = resolve_tag(registry_name)
+                resolved_artifact = wandb.Api().artifact(registry_name)
+            return Path(resolved_artifact.download())
+        except Exception as error:
+            source = registry_name or getattr(artifact, "name", "provided artifact")
+            print(f"[WARN] Failed to download artifact {source!r}: {error}")
+            return None
 
     root = _download_from_registry(registry)
 
-    motion: list[pathlib.Path] | None = None
-    terrain: list[pathlib.Path] | None = None
+    motion: list[Path] | None = None
+    terrain: list[Path] | None = None
 
     if root:
         motion_matches = sorted(
-            [p for p in root.rglob("*") if "motion" in p.name.lower()],
-            key=lambda p: p.name,
+            (path for path in root.rglob("*") if path.is_file() and "motion" in path.name.lower()),
+            key=lambda path: path.name,
         )
         terrain_matches = sorted(
-            [p for p in root.rglob("*") if "terrain" in p.name.lower()],
-            key=lambda p: p.name,
+            (path for path in root.rglob("*") if path.is_file() and "terrain" in path.name.lower()),
+            key=lambda path: path.name,
         )
-        motion = motion_matches if motion_matches else None
-        terrain = terrain_matches if terrain_matches else None
+        motion = motion_matches or None
+        terrain = terrain_matches or None
 
     if motion:
         print(f"[INFO] Motion file/artifact: {motion}")
@@ -105,9 +98,9 @@ def get_wandb_run_and_file(wandb_path: str) -> tuple[wandb.apis.public.Run, str,
         ``(run, run_path, file_name)``
     """
     api = wandb.Api()
-    # Check if the last segment looks like a filename (has an extension)
+    # A run ID may contain dots; only a checkpoint suffix denotes an explicit file.
     last_segment = wandb_path.rsplit("/", 1)[-1]
-    has_explicit_file = "." in last_segment
+    has_explicit_file = last_segment.endswith(".pt")
 
     if has_explicit_file:
         run_path = "/".join(wandb_path.split("/")[:-1])
@@ -136,12 +129,10 @@ def get_wandb_run_and_file(wandb_path: str) -> tuple[wandb.apis.public.Run, str,
                     if run.file(f"model_{n}.pt").size > 0:
                         files.append(f"model_{n}.pt")
                         break
-                except Exception:
-                    continue
+                except Exception as error:
+                    print(f"[WARN] Checkpoint probe for model_{n}.pt failed: {error}")
         if not files:
-            raise FileNotFoundError(
-                f"No .pt checkpoint files found in run {run_path}."
-            )
+            raise FileNotFoundError(f"No .pt checkpoint files found in run {run_path}.")
         try:
             file_name = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))
         except Exception:
@@ -156,10 +147,10 @@ def download_checkpoint_from_run(
     file_name: str,
     base_dir: str = "./logs/temp/checkpoints",
     replace: bool = True,
-) -> pathlib.Path:
+) -> Path:
     """Download the given file from the run into ``base_dir/<run_id>/``."""
     run_id = run.id
-    download_dir = pathlib.Path(base_dir) / run_id
+    download_dir = Path(base_dir) / run_id
     download_dir.mkdir(parents=True, exist_ok=True)
 
     wandb_file = run.file(str(file_name))
@@ -174,12 +165,12 @@ def download_checkpoint_from_run(
 def download_checkpoint_motion_and_terrain(
     wandb_path: str,
     download_base: str = "./logs/temp/checkpoints",
-) -> tuple[pathlib.Path | None, list[pathlib.Path] | None, list[pathlib.Path] | None]:
+) -> tuple[Path, list[Path] | None, list[Path] | None]:
     """Download checkpoint, motion and terrain artifacts from a WandB run.
 
     Returns ``(resume_checkpoint_path, motion_paths, terrain_paths)``.
     """
-    run, run_path, model_file = get_wandb_run_and_file(wandb_path)
+    run, _run_path, model_file = get_wandb_run_and_file(wandb_path)
     resume_path = download_checkpoint_from_run(run, model_file, base_dir=download_base)
 
     artifact = next((a for a in run.used_artifacts() if a.type == "terrains-motions"), None)
@@ -214,7 +205,7 @@ def download_checkpoint_motion_and_terrain(
 def download_checkpoint(
     wandb_path: str,
     download_base: str = "./logs/temp/checkpoints",
-) -> pathlib.Path:
+) -> Path:
     """Download just the checkpoint from a WandB run."""
     run, _, model_file = get_wandb_run_and_file(wandb_path)
     return download_checkpoint_from_run(run, model_file, base_dir=download_base)

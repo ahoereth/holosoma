@@ -1,17 +1,15 @@
-from abc import ABC
+from pathlib import Path
 
-import numpy as np
 import torch
-import warp as wp
 import trimesh
-import os
-from holosoma.sensors.warp.sensor_utils import (
-    parse_urdf_meshes,
-    convert_to_warp_mesh,
-)
+import warp as wp
 
-class BaseSensor(ABC):
+from holosoma.sensors.warp.sensor_utils import convert_to_warp_mesh
+
+
+class BaseSensor:
     """Base class and shared utilities for Warp-based sensors."""
+
     def __init__(
         self,
         num_envs,
@@ -37,12 +35,8 @@ class BaseSensor(ABC):
         self.init_ray_cast_body_poses_and_quats()
 
     def init_ray_cast_body_poses_and_quats(self):
-        self.ray_cast_body_poses_tensor = torch.zeros(
-            self.num_envs, len(self.ray_cast_bodies), 3, device=self.device
-        )
-        self.ray_cast_body_quats_tensor = torch.zeros(
-            self.num_envs, len(self.ray_cast_bodies), 4, device=self.device
-        )
+        self.ray_cast_body_poses_tensor = torch.zeros(self.num_envs, len(self.ray_cast_bodies), 3, device=self.device)
+        self.ray_cast_body_quats_tensor = torch.zeros(self.num_envs, len(self.ray_cast_bodies), 4, device=self.device)
         self.ray_cast_body_quats_tensor[..., 3] = 1.0
         self.ray_cast_body_poses = wp.from_torch(
             self.ray_cast_body_poses_tensor.view(self.num_envs, len(self.ray_cast_bodies), 3), dtype=wp.vec3
@@ -52,70 +46,39 @@ class BaseSensor(ABC):
         )
 
     def init_warp(self, device):
-        """Initialize Warp and set device safely."""
+        """Initialize Warp and select the configured device."""
         wp.init()
         try:
             wp.set_device(device)
-        except Exception as e:
-            print(e)
-            # Older warp versions may not require explicit set_device
-            raise Exception("Warp version is too old. Please update warp to the latest version.")
+        except Exception as error:
+            raise RuntimeError(f"Unable to select Warp device {device!r}.") from error
 
-    def build_warp_meshes(
-        self,
-        terrain,
-        config,
-    ):
-        """Build a Warp mesh from terrain (plane/heightfield/trimesh) and return per-env mesh ids.
-
-        Returns (wp_mesh, mesh_ids_wp_array)
-        """
-        # Initialize robot body meshes
-        self.robot_body_meshes = []
-        self.num_robot_bodies = 0
-        # Parse URDF to get mesh filenames for ray_cast_bodies on the robot
-        # body_meshes_dict = parse_urdf_meshes(robot_config)
-        # Directly get the body meshes from the robot config
-        body_meshes_dict = config.ray_cast_bodies
-        asset_meshes_root = config.asset_meshes_root
-        # Load and combine robot body meshes
+    def _load_warp_mesh(self, mesh_path: Path) -> wp.Mesh:
         try:
-            for mesh_file in body_meshes_dict.values():
-                body_mesh = trimesh.load(os.path.join(asset_meshes_root, mesh_file))
-                self.robot_body_meshes.append(
-                    convert_to_warp_mesh(body_mesh.vertices, body_mesh.faces, device=self.device)
-                )
-                self.num_robot_bodies += 1
-        except Exception as e:
-            print(f"Error loading mesh {mesh_file}: {e}")
-            raise Exception(f"Error loading mesh {mesh_file}: {e}")
+            mesh = trimesh.load_mesh(mesh_path, force="mesh")
+            if not isinstance(mesh, trimesh.Trimesh):
+                raise TypeError(f"Expected a triangle mesh, got {type(mesh).__name__}.")
+            return convert_to_warp_mesh(mesh.vertices, mesh.faces, device=self.device)
+        except Exception as error:
+            raise RuntimeError(f"Failed to load mesh {mesh_path}.") from error
 
-        def add_obstacle_meshes(obstacle_meshes_root, obstacle_meshes_dict):
-            try:
-                for mesh_file in obstacle_meshes_dict.values():
-                    obstacle_mesh = trimesh.load(os.path.join(obstacle_meshes_root, mesh_file))
-                    self.robot_body_meshes.append(
-                        convert_to_warp_mesh(obstacle_mesh.vertices, obstacle_mesh.faces, device=self.device)
-                    )
-                    self.num_robot_bodies += 1
-            except Exception as e:
-                print(f"Error loading offpath obstacle mesh {mesh_file}: {e}")
-                raise Exception(f"Error loading offpath obstacle mesh {mesh_file}: {e}")
-
-        # Add offpath obstacle meshes
+    def build_warp_meshes(self, terrain, config) -> None:
+        """Build the per-body and terrain meshes used by Warp ray casting."""
+        robot_mesh_paths = [Path(config.asset_meshes_root) / name for name in config.ray_cast_bodies.values()]
         if self.add_offpath_obstacle:
-            add_obstacle_meshes(config.offpath_obstacle_meshes_root, config.offpath_obstacle_bodies)
+            obstacle_root = Path(config.offpath_obstacle_meshes_root)
+            robot_mesh_paths.extend(obstacle_root / name for name in config.offpath_obstacle_bodies.values())
 
-        # Convert to warp mesh ids
+        self.robot_body_meshes = [self._load_warp_mesh(path) for path in robot_mesh_paths]
+        self.num_robot_bodies = len(self.robot_body_meshes)
         self.robot_mesh_ids = wp.array(
-            [self.robot_body_meshes[i].id for i in range(len(self.robot_body_meshes))],
-            dtype=wp.uint64, device=self.device
+            [mesh.id for mesh in self.robot_body_meshes],
+            dtype=wp.uint64,
+            device=self.device,
         )
 
-        # Initialize terrain mesh
         try:
-            # Add terrain mesh to the list of meshes to combine
             self.terrain_mesh = convert_to_warp_mesh(terrain.vertices, terrain.faces, device=self.device)
-            self.terrain_mesh_id = self.terrain_mesh.id
-        except Exception as e:
-            raise Exception(f"Failed to load terrain mesh: {str(e)}")
+        except Exception as error:
+            raise RuntimeError("Failed to create the Warp terrain mesh.") from error
+        self.terrain_mesh_id = self.terrain_mesh.id

@@ -4,8 +4,6 @@ from holosoma.agents.modules.ppo_modules import PPOActor, PPOActorEncoder, PPOCr
 from holosoma.agents.modules.student_teacher_modules import (
     DepthStudentTeacher,
     DepthStudentTeacherCritic,
-    StudentTeacher,
-    StudentTeacherCritic,
 )
 from holosoma.utils.helpers import get_class
 
@@ -66,6 +64,7 @@ def setup_student_teacher_module(
     num_actions: int,
     module_config,
     device,
+    init_noise_std: float,
     num_teachers: int = 1,
     module_cls: type | None = None,
 ):
@@ -95,7 +94,7 @@ def setup_student_teacher_module(
         teacher_hidden_dims=list(module_config.teacher_hidden_dims),
         critic_hidden_dims=list(module_config.critic_hidden_dims),
         activation=module_config.activation,
-        init_noise_std=module_config.init_noise_std,
+        init_noise_std=init_noise_std,
         num_teachers=num_teachers,
     ).to(device)
 
@@ -106,6 +105,7 @@ def setup_depth_student_teacher_module(
     num_actions: int,
     module_config,
     device,
+    init_noise_std: float,
     num_teachers: int = 1,
     module_cls: type | None = None,
 ):
@@ -130,6 +130,6 @@ def setup_depth_student_teacher_module(
         student_hidden_dims=list(module_config.student_hidden_dims),
         teacher_hidden_dims=list(module_config.teacher_hidden_dims),
         activation=module_config.activation,
-        init_noise_std=module_config.init_noise_std,
+        init_noise_std=init_noise_std,
         num_teachers=num_teachers,
     ).to(device)

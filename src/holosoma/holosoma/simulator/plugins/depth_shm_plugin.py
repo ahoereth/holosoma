@@ -92,7 +92,7 @@ class DepthShmPlugin(CameraConsumerPlugin):
         except FileExistsError:
             # A stale block from a previous run, or a consumer that started first.
             self._shm = shared_memory.SharedMemory(name=self.cfg.shm_name)
-            if self._shm.size < nbytes:
+            if self._shm.size != nbytes:
                 size = self._shm.size
                 self._shm.close()
                 self._shm = None

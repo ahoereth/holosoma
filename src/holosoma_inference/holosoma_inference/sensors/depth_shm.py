@@ -56,7 +56,7 @@ class DepthShmSensor(Sensor):
         FileNotFoundError
             If the block does not exist and ``required`` is True.
         ValueError
-            If the block is too small for ``shape`` — i.e. the producer and the
+            If the block size differs from ``shape`` — i.e. the producer and the
             policy disagree on the image dimensions.
         """
         from multiprocessing import shared_memory
@@ -74,7 +74,7 @@ class DepthShmSensor(Sensor):
             return
 
         expected_bytes = int(np.prod(self._shape)) * np.dtype(np.float32).itemsize
-        if self._shm.size < expected_bytes:
+        if self._shm.size != expected_bytes:
             actual = self._shm.size
             self._shm.close()
             self._shm = None

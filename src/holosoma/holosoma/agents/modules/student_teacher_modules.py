@@ -16,16 +16,15 @@ Obs layout (matches the distillation rollout storage):
 
 from __future__ import annotations
 
-from copy import deepcopy
-from typing import Any
-
 import torch
 from torch import nn
 from torch.distributions import Normal
 
+MIN_ACTION_STD = 1.0e-6
+
 
 def _build_mlp(input_dim: int, hidden_dims: list[int], output_dim: int, activation: str) -> nn.Sequential:
-    """Build a plain MLP: [input_dim] -> hidden_dims... -> output_dim with the given activation between hidden layers."""
+    """Build a plain MLP with the requested hidden layers and activation."""
     act_cls = getattr(nn, activation)
     layers: list[nn.Module] = []
     prev = input_dim
@@ -84,6 +83,7 @@ class StudentTeacher(nn.Module):
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         self.distribution: Normal | None = None
         Normal.set_default_validate_args(False)
+        self.project_action_std()
 
         self._loaded_teacher = [False] * num_teachers
         for t in self.teachers:
@@ -94,14 +94,6 @@ class StudentTeacher(nn.Module):
         print(f"Student MLP: {self.student}")
         print(f"Teachers ({num_teachers}x): {self.teachers[0]}")
 
-    # Keep ``policy.teacher`` as a legacy alias so existing call sites like
-    # ``algo._train_mode`` / ``algo.load`` (which defensively do
-    # ``self.policy.teacher.eval()`` / iterate parameters) keep working. New
-    # code should iterate ``self.teachers`` instead.
-    @property
-    def teacher(self) -> nn.Module:
-        return self.teachers
-
     @property
     def loaded_teacher(self) -> bool:
         return all(self._loaded_teacher)
@@ -109,6 +101,41 @@ class StudentTeacher(nn.Module):
     @property
     def num_teachers(self) -> int:
         return len(self.teachers)
+
+    def load_training_state_dict(self, state_dict: dict, strict: bool = True):
+        """Load a full policy state dict, upgrading legacy single-teacher keys."""
+        legacy_keys = [key for key in state_dict if key.startswith("teacher.")]
+        current_keys = [key for key in state_dict if key.startswith("teachers.")]
+        if legacy_keys and current_keys:
+            raise ValueError("Policy state dict mixes legacy 'teacher.*' and current 'teachers.*' keys.")
+        if legacy_keys:
+            state_dict = {
+                f"teachers.0.{key[len('teacher.') :]}" if key.startswith("teacher.") else key: value
+                for key, value in state_dict.items()
+            }
+        return super().load_state_dict(state_dict, strict=strict)
+
+    @property
+    def loaded_teachers(self) -> tuple[bool, ...]:
+        return tuple(self._loaded_teacher)
+
+    def set_loaded_teachers(self, loaded: list[bool] | tuple[bool, ...]) -> None:
+        """Restore teacher-readiness state from a full training checkpoint."""
+        if len(loaded) != self.num_teachers:
+            raise ValueError(f"Expected readiness state for {self.num_teachers} teachers, got {len(loaded)}.")
+        if any(type(value) is not bool for value in loaded):
+            raise TypeError("Teacher-readiness checkpoint metadata must contain only booleans.")
+        self._loaded_teacher = list(loaded)
+
+    def require_loaded_teachers(self) -> None:
+        """Fail before rollout if any frozen teacher still has random weights."""
+        missing = [index for index, loaded in enumerate(self._loaded_teacher) if not loaded]
+        if missing:
+            raise RuntimeError(
+                f"Teacher weights are not loaded for slots {missing}. "
+                "Set training.teacher_checkpoint for a new run or resume from a full "
+                "distillation checkpoint."
+            )
 
     def load_teacher_state_dict(self, ckpt: dict, strict: bool = True, teacher_index: int = 0) -> None:
         """Load a teacher-PPO checkpoint into ``self.teachers[teacher_index]``.
@@ -118,9 +145,7 @@ class StudentTeacher(nn.Module):
         they match a plain ``nn.Sequential`` layout.
         """
         if teacher_index < 0 or teacher_index >= len(self.teachers):
-            raise IndexError(
-                f"teacher_index={teacher_index} out of range for {len(self.teachers)} teachers"
-            )
+            raise IndexError(f"teacher_index={teacher_index} out of range for {len(self.teachers)} teachers")
 
         state: dict = ckpt
         # unwrap common holosoma/rsl_rl ckpt wrappers. holosoma PPO saves as
@@ -147,14 +172,14 @@ class StudentTeacher(nn.Module):
             new_k = k
             for p in prefixes:
                 if new_k.startswith(p):
-                    new_k = new_k[len(p):]
+                    new_k = new_k[len(p) :]
                     break
             renamed[new_k] = v
 
         target = self.teachers[teacher_index]
         teacher_keys = set(dict(target.named_parameters()).keys()) | set(dict(target.named_buffers()).keys())
         filtered = {k: v for k, v in renamed.items() if k in teacher_keys}
-        missing = [k for k in teacher_keys if k not in filtered]
+        missing = sorted(k for k in teacher_keys if k not in filtered)
         if missing and strict:
             raise RuntimeError(
                 f"load_teacher_state_dict[{teacher_index}]: missing keys after renaming: "
@@ -165,7 +190,7 @@ class StudentTeacher(nn.Module):
         target.eval()
         for p in target.parameters():
             p.requires_grad_(False)
-        self._loaded_teacher[teacher_index] = True
+        self._loaded_teacher[teacher_index] = not missing
 
     # ---------- action interfaces (parallel PPOActor) ----------
 
@@ -185,8 +210,16 @@ class StudentTeacher(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, actor_obs: torch.Tensor, depth_obs: torch.Tensor | None = None) -> None:
+        self.project_action_std()
         mean = self.student(self._student_input(actor_obs, depth_obs))
         self.distribution = Normal(mean, mean * 0.0 + self.std)
+
+    @torch.no_grad()
+    def project_action_std(self) -> None:
+        """Keep the directly optimized Gaussian scale finite and positive."""
+        if not torch.isfinite(self.std).all():
+            raise FloatingPointError("Student action standard deviation became non-finite.")
+        self.std.clamp_(min=MIN_ACTION_STD)
 
     def act(self, policy_state_dict: dict) -> torch.Tensor:
         self.update_distribution(
@@ -196,19 +229,13 @@ class StudentTeacher(nn.Module):
         return self.distribution.sample()
 
     def act_inference(self, policy_state_dict: dict) -> torch.Tensor:
-        return self.student(
-            self._student_input(
-                policy_state_dict["actor_obs"], policy_state_dict.get("depth_obs")
-            )
-        )
+        return self.student(self._student_input(policy_state_dict["actor_obs"], policy_state_dict.get("depth_obs")))
 
     def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     @torch.no_grad()
-    def teacher_act(
-        self, teacher_obs: torch.Tensor, teacher_idx: torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def teacher_act(self, teacher_obs: torch.Tensor, teacher_idx: torch.Tensor | None = None) -> torch.Tensor:
         """Deterministic teacher forward. Used to generate DAgger labels.
 
         ``teacher_obs`` is the privileged observation, passed to the teacher
@@ -225,20 +252,40 @@ class StudentTeacher(nn.Module):
         the ``DistillationPPO._dagger_loss`` docstring for the corresponding
         loss-side extension point.
         """
-        if teacher_obs.shape[-1] != self.num_teacher_obs:
-            raise RuntimeError(
-                f"teacher_act: expected last dim {self.num_teacher_obs}, "
-                f"got {teacher_obs.shape[-1]}"
+        self.require_loaded_teachers()
+        if teacher_obs.ndim != 2 or teacher_obs.shape[1] != self.num_teacher_obs:
+            raise ValueError(
+                f"teacher_obs must have shape [N, {self.num_teacher_obs}], got {tuple(teacher_obs.shape)}."
             )
-        out = self.teachers[0](teacher_obs)
         if teacher_idx is None:
-            return out
-        idx = teacher_idx.long().reshape(-1)
-        for i in range(1, len(self.teachers)):
+            if self.num_teachers != 1:
+                raise ValueError(f"teacher_idx is required when {self.num_teachers} teachers are configured.")
+            return self.teachers[0](teacher_obs)
+
+        if teacher_idx.shape != (teacher_obs.shape[0],):
+            raise ValueError(f"teacher_idx must have shape [{teacher_obs.shape[0]}], got {tuple(teacher_idx.shape)}.")
+        if teacher_idx.device != teacher_obs.device:
+            raise ValueError(f"teacher_idx is on {teacher_idx.device}, but teacher_obs is on {teacher_obs.device}.")
+        if teacher_idx.dtype == torch.bool or teacher_idx.is_complex():
+            raise TypeError(f"teacher_idx must contain integer-valued indices, got {teacher_idx.dtype}.")
+        if teacher_idx.is_floating_point():
+            if not torch.isfinite(teacher_idx).all() or not torch.equal(teacher_idx, teacher_idx.round()):
+                raise ValueError("teacher_idx must contain finite integer-valued indices.")
+
+        idx = teacher_idx.to(dtype=torch.long)
+        invalid = (idx < -1) | (idx >= self.num_teachers)
+        if invalid.any():
+            invalid_values = torch.unique(idx[invalid]).tolist()
+            raise IndexError(
+                f"teacher_idx contains invalid values {invalid_values}; expected -1 or "
+                f"indices in [0, {self.num_teachers - 1}]."
+            )
+
+        out = teacher_obs.new_zeros((teacher_obs.shape[0], self.num_actions))
+        for i in range(self.num_teachers):
             mask = idx == i
             if mask.any():
                 out[mask] = self.teachers[i](teacher_obs[mask])
-        out[idx < 0] = 0.0
         return out
 
     def reset(self, dones=None) -> None:
@@ -322,7 +369,7 @@ class StudentTeacherCritic(StudentTeacher):
 
 
 class DepthStudentTeacherCritic(DepthStudentTeacher):
-    """Depth-aware student + frozen teacher + privileged critic. The target class used by ``Warp-Distillation-Finetune``."""
+    """Depth-aware student, frozen teacher, and privileged critic."""
 
     def __init__(
         self,

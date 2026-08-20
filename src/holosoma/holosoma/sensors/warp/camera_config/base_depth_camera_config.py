@@ -1,8 +1,7 @@
-from abc import ABC, abstractmethod
 from dataclasses import MISSING
 
 
-class BaseSensorConfigCamera(ABC):
+class BaseSensorConfigCamera:
     num_sensors = MISSING
     sensor_type = MISSING
 
@@ -27,12 +26,22 @@ class BaseDepthCameraConfig(BaseSensorConfigCamera):
     max_range = MISSING
     min_range = MISSING
 
+    # Border crop applied before resizing the depth image. Keeping this with
+    # the camera geometry prevents a generic observation term from silently
+    # hard-coding one sensor's field of view.
+    crop_top = 0
+    crop_bottom = 0
+    crop_left = 0
+    crop_right = 0
+
     # Type of camera (depth, range, pointcloud, segmentation)
     # You can combine: (depth+segmentation), (range+segmentation), (pointcloud+segmentation)
     # Other combinations are trivial and you can add support for them in the code if you want.
 
     calculate_depth = True  # Get a depth image and not a range image. False will result in a range image
-    return_pointcloud = False  # Return a pointcloud instead of an image. Above depth option will be ignored if this is set to True
+    return_pointcloud = (
+        False  # Return a pointcloud instead of an image. Above depth option will be ignored if this is set to True
+    )
     pointcloud_in_world_frame = False
     segmentation_camera = False
 

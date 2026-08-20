@@ -4,8 +4,7 @@ NO_HIT_RAY_VAL = wp.constant(1000.0)
 
 
 class DepthCameraWarpKernels:
-    def __init__(self):
-        pass
+    """Warp kernels for static and articulated-scene depth rendering."""
 
     @staticmethod
     @wp.kernel
@@ -13,50 +12,44 @@ class DepthCameraWarpKernels:
         terrain_mesh_id: wp.uint64,
         cam_poss: wp.array(dtype=wp.vec3, ndim=2),
         cam_quats: wp.array(dtype=wp.quat, ndim=2),
-        K_inv: wp.mat44,
+        k_inv: wp.mat44,
         far_plane: float,
         pixels: wp.array(dtype=wp.vec3, ndim=4),
-        c_x: int,
-        c_y: int,
         pointcloud_in_world_frame: bool,
     ):
-
         env_id, cam_id, x, y = wp.tid()
-        mesh = terrain_mesh_id
         cam_pos = cam_poss[env_id, cam_id]
         cam_quat = cam_quats[env_id, cam_id]
-        cam_coords = wp.vec3(
-            float(x), float(y), 1.0
-        )  # this only converts the frame from warp's z-axis front to Isaac Gym's x-axis front
-        cam_coords_principal = wp.vec3(
-            float(c_x), float(c_y), 1.0
-        )  # get the vector of principal axis
-        # transform to uv [-1,1]
-        uv = wp.normalize(wp.transform_vector(K_inv, cam_coords))
-        uv_principal = wp.normalize(
-            wp.transform_vector(K_inv, cam_coords_principal)
-        )  # uv for principal axis
-        # compute camera ray
-        # cam origin in world space
-        ro = cam_pos
-        # tf the direction from camera to world space and normalize
-        rd = wp.normalize(wp.quat_rotate(cam_quat, uv))
-        rd_principal = wp.normalize(
-            wp.quat_rotate(cam_quat, uv_principal)
-        )  # ray direction of principal axis
-        t = float(0.0)
+        cam_coords = wp.vec3(float(x), float(y), 1.0)
+        uv = wp.normalize(wp.transform_vector(k_inv, cam_coords))
+        ray_direction = wp.normalize(wp.quat_rotate(cam_quat, uv))
+
+        # These explicit constructors produce mutable Warp scalars required by
+        # mesh_query_ray's output parameters. Bare literals are constants.
+        distance = float(0.0)
         u = float(0.0)
         v = float(0.0)
         sign = float(0.0)
-        n = wp.vec3()
-        f = int(0)
-        dist = NO_HIT_RAY_VAL
-        if wp.mesh_query_ray(mesh, ro, rd, far_plane, t, u, v, sign, n, f):
-            dist = t
+        normal = wp.vec3()
+        face = int(0)
+        if not wp.mesh_query_ray(
+            terrain_mesh_id,
+            cam_pos,
+            ray_direction,
+            far_plane,
+            distance,
+            u,
+            v,
+            sign,
+            normal,
+            face,
+        ):
+            distance = NO_HIT_RAY_VAL
+
         if pointcloud_in_world_frame:
-            pixels[env_id, cam_id, y, x] = ro + dist * rd
+            pixels[env_id, cam_id, y, x] = cam_pos + distance * ray_direction
         else:
-            pixels[env_id, cam_id, y, x] = dist * uv
+            pixels[env_id, cam_id, y, x] = distance * uv
 
     @staticmethod
     @wp.kernel
@@ -64,214 +57,132 @@ class DepthCameraWarpKernels:
         terrain_mesh_id: wp.uint64,
         cam_poss: wp.array(dtype=wp.vec3, ndim=2),
         cam_quats: wp.array(dtype=wp.quat, ndim=2),
-        K_inv: wp.mat44,
+        k_inv: wp.mat44,
         far_plane: float,
-        pixels: wp.array(dtype=float, ndim=4),
+        pixels: wp.array(dtype=wp.float32, ndim=4),
         c_x: int,
         c_y: int,
         calculate_depth: bool,
     ):
-
         env_id, cam_id, x, y = wp.tid()
-        mesh = terrain_mesh_id
         cam_pos = cam_poss[env_id, cam_id]
         cam_quat = cam_quats[env_id, cam_id]
-        cam_coords = wp.vec3(
-            float(x), float(y), 1.0
-        )  # this only converts the frame from warp's z-axis front to Isaac Gym's x-axis front
-        cam_coords_principal = wp.vec3(
-            float(c_x), float(c_y), 1.0
-        )  # get the vector of principal axis
-        # transform to uv [-1,1]
-        uv = wp.transform_vector(K_inv, cam_coords)
-        uv_principal = wp.transform_vector(K_inv, cam_coords_principal)  # uv for principal axis
-        # compute camera ray
-        # cam origin in world space
-        ro = cam_pos
-        # tf the direction from camera to world space and normalize
-        rd = wp.normalize(wp.quat_rotate(cam_quat, uv))
-        rd_principal = wp.normalize(
-            wp.quat_rotate(cam_quat, uv_principal)
-        )  # ray direction of principal axis
-        t = float(0.0)
+        uv = wp.transform_vector(k_inv, wp.vec3(float(x), float(y), 1.0))
+        uv_principal = wp.transform_vector(k_inv, wp.vec3(float(c_x), float(c_y), 1.0))
+        ray_direction = wp.normalize(wp.quat_rotate(cam_quat, uv))
+        principal_direction = wp.normalize(wp.quat_rotate(cam_quat, uv_principal))
+
+        multiplier = wp.float32(1.0)
+        if calculate_depth:
+            multiplier = wp.min(
+                wp.max(wp.dot(ray_direction, principal_direction), wp.float32(1.0e-6)),
+                wp.float32(1.0),
+            )
+
+        distance = float(0.0)
         u = float(0.0)
         v = float(0.0)
         sign = float(0.0)
-        n = wp.vec3()
-        f = int(0)
-        multiplier = 1.0
-        if calculate_depth:
-            multiplier = wp.dot(
-                rd, rd_principal
-            )  # multiplier to project each ray on principal axis for depth instead of range
-        dist = NO_HIT_RAY_VAL
-        if wp.mesh_query_ray(mesh, ro, rd, far_plane / multiplier, t, u, v, sign, n, f):
-            dist = multiplier * t
-
-        pixels[env_id, cam_id, y, x] = dist
+        normal = wp.vec3()
+        face = int(0)
+        depth = wp.float32(NO_HIT_RAY_VAL)
+        if wp.mesh_query_ray(
+            terrain_mesh_id,
+            cam_pos,
+            ray_direction,
+            far_plane / multiplier,
+            distance,
+            u,
+            v,
+            sign,
+            normal,
+            face,
+        ):
+            depth = multiplier * distance
+        pixels[env_id, cam_id, y, x] = depth
 
     @staticmethod
     @wp.kernel
     def draw_optimized_kernel_depth_range_dynamic(
-        # --- static terrain ---
         terrain_id: wp.uint64,
-        # --- robot bodies: canonical meshes (one per body, shared across envs) ---
-        robot_ids: wp.array(dtype=wp.uint64),            # [num_bodies]
-        # --- per-env body poses in world ---
-        body_poss: wp.array(dtype=wp.vec3, ndim=2),      # [num_envs, num_bodies]
-        body_quats: wp.array(dtype=wp.quat,  ndim=2),    # [num_envs, num_bodies]
-        # --- cameras ---
-        cam_poss: wp.array(dtype=wp.vec3, ndim=2),       # [num_envs, num_cams]
-        cam_quats: wp.array(dtype=wp.quat,  ndim=2),     # [num_envs, num_cams]
-        K_inv: wp.mat44,
+        robot_ids: wp.array(dtype=wp.uint64),
+        body_poss: wp.array(dtype=wp.vec3, ndim=2),
+        body_quats: wp.array(dtype=wp.quat, ndim=2),
+        cam_poss: wp.array(dtype=wp.vec3, ndim=2),
+        cam_quats: wp.array(dtype=wp.quat, ndim=2),
+        k_inv: wp.mat44,
         far_plane: float,
-        pixels: wp.array(dtype=wp.float32, ndim=4),      # [env, cam, H, W]
+        pixels: wp.array(dtype=wp.float32, ndim=4),
         c_x: int,
         c_y: int,
         calculate_depth: bool,
         num_bodies: int,
     ):
         env_id, cam_id, x, y = wp.tid()
-
-        # camera ray in world
-        cam_pos  = cam_poss[env_id, cam_id]
+        cam_pos = cam_poss[env_id, cam_id]
         cam_quat = cam_quats[env_id, cam_id]
+        uv = wp.transform_vector(k_inv, wp.vec3(float(x), float(y), 1.0))
+        uv_principal = wp.transform_vector(k_inv, wp.vec3(float(c_x), float(c_y), 1.0))
+        ray_direction = wp.normalize(wp.quat_rotate(cam_quat, uv))
+        principal_direction = wp.normalize(wp.quat_rotate(cam_quat, uv_principal))
 
-        uv   = wp.transform_vector(K_inv, wp.vec3(float(x),   float(y),   1.0))
-        uv_c = wp.transform_vector(K_inv, wp.vec3(float(c_x), float(c_y), 1.0))
-
-        ro   = cam_pos
-        rd   = wp.normalize(wp.quat_rotate(cam_quat, uv))
-        rd_c = wp.normalize(wp.quat_rotate(cam_quat, uv_c))   # principal axis
-
-        # depth-vs-range multiplier (clamped)
-        mul = wp.float32(1.0)
+        multiplier = wp.float32(1.0)
         if calculate_depth:
-            d   = wp.dot(rd, rd_c)
-            eps = wp.float32(1.0e-6)
-            d = wp.max(d, eps)
-            d = wp.min(d, wp.float32(1.0))
-            mul = d
+            multiplier = wp.min(
+                wp.max(wp.dot(ray_direction, principal_direction), wp.float32(1.0e-6)),
+                wp.float32(1.0),
+            )
 
-        best = wp.float32(NO_HIT_RAY_VAL)
-        far_bound_world = wp.float32(far_plane)
+        best_depth = wp.float32(NO_HIT_RAY_VAL)
+        far_bound = wp.float32(far_plane)
 
-        # ---------- 1) robot bodies (transform ray to each body local) ----------
-        for b in range(num_bodies):
-            qb = body_quats[env_id, b]
-            tb = body_poss[env_id,  b]
+        for body_index in range(num_bodies):
+            body_quat = body_quats[env_id, body_index]
+            body_pos = body_poss[env_id, body_index]
+            local_origin = wp.quat_rotate_inv(body_quat, cam_pos - body_pos)
+            local_direction = wp.quat_rotate_inv(body_quat, ray_direction)
 
-            # world -> body local
-            ro_l = wp.quat_rotate_inv(qb, ro - tb)
-            rd_l = wp.quat_rotate_inv(qb, rd)
-
-            # fresh writable outputs for each call
-            t = float(0.0)
+            distance = float(0.0)
             u = float(0.0)
             v = float(0.0)
             sign = float(0.0)
-            n = wp.vec3()
-            f = int(0)
+            normal = wp.vec3()
+            face = int(0)
+            if wp.mesh_query_ray(
+                robot_ids[body_index],
+                local_origin,
+                local_direction,
+                far_bound / multiplier,
+                distance,
+                u,
+                v,
+                sign,
+                normal,
+                face,
+            ):
+                depth = multiplier * distance
+                if best_depth == NO_HIT_RAY_VAL or depth < best_depth:
+                    best_depth = depth
+                    far_bound = depth
 
-            if wp.mesh_query_ray(robot_ids[b], ro_l, rd_l, far_bound_world / mul, t, u, v, sign, n, f):
-                d = mul * t
-                if (best == NO_HIT_RAY_VAL) or (d < best):
-                    best = d
-                    far_bound_world = best
-
-        # ---------- 2) terrain (static, world frame) ----------
-        t = float(0.0)
+        distance = float(0.0)
         u = float(0.0)
         v = float(0.0)
         sign = float(0.0)
-        n = wp.vec3()
-        f = int(0)
+        normal = wp.vec3()
+        face = int(0)
+        if wp.mesh_query_ray(
+            terrain_id,
+            cam_pos,
+            ray_direction,
+            far_bound / multiplier,
+            distance,
+            u,
+            v,
+            sign,
+            normal,
+            face,
+        ):
+            best_depth = multiplier * distance
 
-        if wp.mesh_query_ray(terrain_id, ro, rd, far_bound_world / mul, t, u, v, sign, n, f):
-            best = mul * t
-            far_bound_world = best
-
-        pixels[env_id, cam_id, y, x] = best
-
-    # @staticmethod
-    # @wp.kernel
-    # def memset_pixels4(
-    #     pixels: wp.array(dtype=wp.float32, ndim=4),  # [env, cam, H, W]
-    #     value: float,
-    # ):
-    #     env_id, cam_id, x, y = wp.tid()
-    #     pixels[env_id, cam_id, y, x] = value
-
-    # @staticmethod
-    # @wp.kernel
-    # def draw_optimized_kernel_depth_range_dynamic_singlepass_4d(
-    #     # --- static terrain ---
-    #     terrain_id: wp.uint64,
-    #     # --- robot canonical meshes (shared) ---
-    #     robot_ids: wp.array(dtype=wp.uint64),            # [num_bodies]
-    #     # --- per-env body poses in world ---
-    #     body_poss:  wp.array(dtype=wp.vec3, ndim=2),     # [num_envs, num_bodies]
-    #     body_quats: wp.array(dtype=wp.quat,  ndim=2),    # [num_envs, num_bodies]
-    #     # --- cameras ---
-    #     cam_poss:   wp.array(dtype=wp.vec3, ndim=2),     # [num_envs, num_cams]
-    #     cam_quats:  wp.array(dtype=wp.quat,  ndim=2),    # [num_envs, num_cams]
-    #     K_inv: wp.mat44,
-    #     far_plane: float,
-    #     pixels_flat: wp.array(dtype=wp.float32),
-    #     num_cams: int,
-    #     width: int,
-    #     height: int,
-    #     c_x: int,
-    #     c_y: int,
-    #     calculate_depth: bool,
-    #     no_hit_value: float,
-    # ):
-    #     env_id, camk_id, x, y = wp.tid()
-
-    #     num_bodies = robot_ids.shape[0]
-    #     span = num_bodies + 1
-    #     cam_id = camk_id // span
-    #     k      = camk_id - cam_id * span
-
-    #     idx = (((env_id * num_cams) + cam_id) * height + y) * width + x
-
-    #     cam_pos  = cam_poss[env_id, cam_id]
-    #     cam_quat = cam_quats[env_id, cam_id]
-
-    #     uv   = wp.transform_vector(K_inv, wp.vec3(float(x),   float(y),   1.0))
-    #     uv_c = wp.transform_vector(K_inv, wp.vec3(float(c_x), float(c_y), 1.0))
-
-    #     ro   = cam_pos
-    #     rd   = wp.normalize(wp.quat_rotate(cam_quat, uv))
-    #     rd_c = wp.normalize(wp.quat_rotate(cam_quat, uv_c))
-
-    #     mul = wp.float32(1.0)
-    #     if calculate_depth:
-    #         d = wp.dot(rd, rd_c)
-    #         eps = wp.float32(1.0e-6)
-    #         d = wp.max(d, eps)
-    #         d = wp.min(d, wp.float32(1.0))
-    #         mul = d
-
-    #     t = float(0.0)
-    #     u = float(0.0)
-    #     v = float(0.0)
-    #     sign = float(0.0)
-    #     n = wp.vec3()
-    #     f = int(0)
-
-    #     dist = wp.float32(no_hit_value)
-    #     is_terrain = (k == num_bodies)
-
-    #     if is_terrain:
-    #         if wp.mesh_query_ray(terrain_id, ro, rd, wp.float32(far_plane)/mul, t, u, v, sign, n, f):
-    #             dist = mul * t
-    #     else:
-    #         qb = body_quats[env_id, k]
-    #         tb = body_poss[env_id,  k]
-    #         ro_l = wp.quat_rotate_inv(qb, ro - tb)
-    #         rd_l = wp.quat_rotate_inv(qb, rd)
-    #         if wp.mesh_query_ray(robot_ids[k], ro_l, rd_l, wp.float32(far_plane)/mul, t, u, v, sign, n, f):
-    #             dist = mul * t
-
-    #     wp.atomic_min(pixels_flat, idx, dist)
+        pixels[env_id, cam_id, y, x] = best_depth

@@ -34,7 +34,6 @@ from holosoma.config_types.algo import DistillationConfig
 from holosoma.envs.base_task.base_task import BaseTask
 from holosoma.utils.helpers import instantiate
 
-
 # Observation-group names. Kept identical to DistillationPPO's so an extension
 # can swap algos without retouching obs_cfg wiring.
 ACTOR_GROUP = "actor_obs"
@@ -73,9 +72,6 @@ class Distillation(BaseAlgo):
         multi_gpu_cfg: dict | None = None,
     ):
         super().__init__(env, config, device, multi_gpu_cfg)
-        if self.is_multi_gpu:
-            raise NotImplementedError("Distillation does not yet support multi-GPU training.")
-
         if self.config.empirical_normalization:
             raise ValueError("empirical_normalization is not supported by Distillation.")
 
@@ -115,6 +111,8 @@ class Distillation(BaseAlgo):
         logger.info("Setting up Distillation (pure DAgger)")
         self._resolve_obs_dims()
         self._build_policy()
+        if self.is_multi_gpu:
+            self._synchronize_model_weights()
         self._build_optimizer()
         self._build_storage()
 
@@ -144,9 +142,7 @@ class Distillation(BaseAlgo):
                 )
             depth_tensor = self.env.observation_manager.compute_group(DEPTH_GROUP, modify_history=False)
             if not isinstance(depth_tensor, dict):
-                raise TypeError(
-                    f"expected compute_group({DEPTH_GROUP!r}) to return a dict when concatenate=False."
-                )
+                raise TypeError(f"expected compute_group({DEPTH_GROUP!r}) to return a dict when concatenate=False.")
             depth_shape = tuple(depth_tensor[DEPTH_TERM].shape[1:])
         elif isinstance(depth_entry, int):
             depth_shape = (depth_entry,)
@@ -170,16 +166,14 @@ class Distillation(BaseAlgo):
             num_actions=self.num_act,
             module_config=self.config.module,
             device=self.device,
+            init_noise_std=self.config.init_noise_std,
             num_teachers=self.num_teachers,
         )
 
     def _build_optimizer(self) -> None:
         """Single Adam over student MLP + depth CNN backbone. Teacher is frozen;
         ``self.policy.std`` is untrained in pure DAgger so we don't include it."""
-        trainable_params = (
-            list(self.policy.student.parameters())
-            + list(self.policy.depth_backbone.parameters())
-        )
+        trainable_params = list(self.policy.student.parameters()) + list(self.policy.depth_backbone.parameters())
         self.optimizer = torch.optim.Adam(trainable_params, lr=self.config.learning_rate)
         self.learning_rate = self.config.learning_rate
 
@@ -196,9 +190,7 @@ class Distillation(BaseAlgo):
 
     # --------------------------------------------------------------- obs helpers
 
-    def _extract_groups(
-        self, obs_dict: dict[str, Any]
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _extract_groups(self, obs_dict: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Pull (actor_obs, teacher_obs, depth_obs) from a manager obs dict."""
         actor_obs = obs_dict[ACTOR_GROUP]
         teacher_obs = obs_dict[TEACHER_GROUP]
@@ -213,7 +205,7 @@ class Distillation(BaseAlgo):
 
     def _train_mode(self) -> None:
         self.policy.train()
-        self.policy.teacher.eval()
+        self.policy.teachers.eval()
 
     def _eval_mode(self) -> None:
         self.policy.eval()
@@ -222,6 +214,7 @@ class Distillation(BaseAlgo):
 
     def learn(self, num_learning_iterations: int | None = None) -> None:
         self._train_mode()
+        self.policy.require_loaded_teachers()
 
         obs_dict = self.env.reset_all()
         for k in obs_dict:
@@ -238,7 +231,7 @@ class Distillation(BaseAlgo):
 
         for it in range(start_iter, stop_iter):
             self.current_learning_iteration = it
-            self._warmup_active = (it - start_iter) < self.config.distillation_warmup_steps
+            self._warmup_active = it < self.config.distillation_warmup_steps
 
             with self.logging_helper.record_collection_time():
                 obs_dict = self._rollout_step(obs_dict)
@@ -298,9 +291,7 @@ class Distillation(BaseAlgo):
     # ------------------------------------------------------------ training step
 
     def _training_step(self) -> dict[str, float]:
-        generator = self.storage.mini_batch_generator(
-            self.config.num_mini_batches, self.config.num_learning_epochs
-        )
+        generator = self.storage.mini_batch_generator(self.config.num_mini_batches, self.config.num_learning_epochs)
         loss_accum = 0.0
         num_updates = 0
 
@@ -315,13 +306,13 @@ class Distillation(BaseAlgo):
             # sampled action. Matches far-tracking's
             # DepthDistillation.update() (my_distillation.py:206-209):
             # simple MSE, no expert-terminate mask.
-            student_mean = self.policy.student(
-                self.policy._student_input(actor_obs, depth_obs)
-            )
+            student_mean = self.policy.student(self.policy._student_input(actor_obs, depth_obs))
             loss = self.distill_loss_fn(student_mean, teacher_actions)
 
             self.optimizer.zero_grad()
             loss.backward()
+            if self.is_multi_gpu:
+                self._reduce_parameters()
             nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
             self.optimizer.step()
 
@@ -337,6 +328,28 @@ class Distillation(BaseAlgo):
 
         self.storage.clear()
         return loss_dict
+
+    def _reduce_parameters(self) -> None:
+        """Average trainable gradients across distributed workers."""
+        parameters = [parameter for parameter in self.policy.parameters() if parameter.grad is not None]
+        if not parameters:
+            return
+
+        flat_grad = torch.cat([parameter.grad.view(-1) for parameter in parameters])
+        torch.distributed.all_reduce(flat_grad, op=torch.distributed.ReduceOp.SUM)
+        flat_grad /= self.gpu_world_size
+
+        offset = 0
+        for parameter in parameters:
+            numel = parameter.numel()
+            parameter.grad.copy_(flat_grad[offset : offset + numel].view_as(parameter.grad))
+            offset += numel
+
+    def _synchronize_model_weights(self) -> None:
+        """Start every distributed worker from the rank-zero policy weights."""
+        for parameter in self.policy.parameters():
+            torch.distributed.broadcast(parameter.data, src=0)
+        logger.info(f"Synchronized Distillation model weights across {self.gpu_world_size} GPUs")
 
     # ------------------------------------------------------------------- logging
 
@@ -361,6 +374,8 @@ class Distillation(BaseAlgo):
             "optimizer_state_dict": self.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
             "learning_rate": self.learning_rate,
+            "num_teachers": self.policy.num_teachers,
+            "teacher_loaded": list(self.policy.loaded_teachers),
         }
         checkpoint_dict.update(self._checkpoint_metadata(iteration=self.current_learning_iteration))
         env_state = self._collect_env_state()
@@ -373,7 +388,15 @@ class Distillation(BaseAlgo):
             return None
         logger.info(f"Loading Distillation checkpoint from {path}")
         loaded = torch.load(path, map_location=self.device)
-        self.policy.load_state_dict(loaded["model_state_dict"])
+        self.policy.load_training_state_dict(loaded["model_state_dict"])
+        teacher_loaded = loaded.get("teacher_loaded")
+        if teacher_loaded is None:
+            logger.warning(
+                "Checkpoint predates teacher-readiness metadata. Teacher weights remain "
+                "unverified; provide training.teacher_checkpoint before continuing training."
+            )
+            teacher_loaded = [False] * self.policy.num_teachers
+        self.policy.set_loaded_teachers(teacher_loaded)
         if "optimizer_state_dict" in loaded:
             try:
                 self.optimizer.load_state_dict(loaded["optimizer_state_dict"])
@@ -382,9 +405,10 @@ class Distillation(BaseAlgo):
         self.current_learning_iteration = int(loaded.get("iter", 0))
         if "learning_rate" in loaded:
             self.learning_rate = float(loaded["learning_rate"])
+        self.policy.project_action_std()
         self._restore_env_state(loaded.get("env_state"))
-        self.policy.teacher.eval()
-        for p in self.policy.teacher.parameters():
+        self.policy.teachers.eval()
+        for p in self.policy.teachers.parameters():
             p.requires_grad_(False)
         return loaded.get("infos")
 
@@ -398,8 +422,7 @@ class Distillation(BaseAlgo):
             paths = [paths]
         if len(paths) != self.policy.num_teachers:
             raise RuntimeError(
-                f"load_teacher: got {len(paths)} paths but policy has "
-                f"{self.policy.num_teachers} teacher slots."
+                f"load_teacher: got {len(paths)} paths but policy has {self.policy.num_teachers} teacher slots."
             )
         for i, path in enumerate(paths):
             logger.info(f"Loading teacher[{i}] weights from {path}")

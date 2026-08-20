@@ -271,7 +271,15 @@ class DepthDistillationPolicy(LocomotionPolicy):
             scale = metadata["action_scale"]
             if isinstance(scale, (int, float)):
                 self.policy_action_scale = float(scale)
-                logger.info(f"[DepthDistillation] action_scale from metadata: {self.policy_action_scale}")
+            else:
+                scale_values = np.asarray(self._as_float_list(scale), dtype=np.float32)
+                if scale_values.shape != (self.num_dofs,):
+                    raise ValueError(
+                        f"action_scale metadata must be scalar or have {self.num_dofs} entries, "
+                        f"got shape {scale_values.shape}."
+                    )
+                self.policy_action_scale = scale_values
+            logger.info(f"[DepthDistillation] action_scale from metadata: {self.policy_action_scale}")
 
         # Gains arrive in model joint order; reorder to robot order before use.
         if self.onnx_kp is not None and self._model_joint_names is not None:
@@ -318,6 +326,8 @@ class DepthDistillationPolicy(LocomotionPolicy):
 
         self._real2model_index = get_index_of_a_in_b(self._model_joint_names, real_joint_names)
         self._model2real_index = get_index_of_a_in_b(real_joint_names, self._model_joint_names)
+        if isinstance(self.policy_action_scale, np.ndarray):
+            self.policy_action_scale = self.policy_action_scale[self._model2real_index]
         logger.info("[DepthDistillation] joint reordering enabled (model order != robot order)")
 
     def _init_waist_joint_indices(self):

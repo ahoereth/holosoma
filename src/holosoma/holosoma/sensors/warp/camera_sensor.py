@@ -1,82 +1,60 @@
-# import nvtx
-import warp as wp
 import math
+
 import torch
-from holosoma.sensors.warp.sensor_utils import (
-    quat_from_euler_xyz_tensor,
-    torch_rand_float_tensor
-)
-from holosoma.sensors.warp.camera_kernels_warp import (
-    DepthCameraWarpKernels,
-)
+import warp as wp
+
 from holosoma.sensors.warp.base_sensor import BaseSensor
+from holosoma.sensors.warp.camera_kernels_warp import DepthCameraWarpKernels
+from holosoma.sensors.warp.sensor_utils import quat_from_euler_xyz_tensor, torch_rand_float_tensor
 
-@torch.jit.script
-def quat_from_euler_xyz(roll, pitch, yaw):
-    cy = torch.cos(yaw * 0.5)
-    sy = torch.sin(yaw * 0.5)
-    cr = torch.cos(roll * 0.5)
-    sr = torch.sin(roll * 0.5)
-    cp = torch.cos(pitch * 0.5)
-    sp = torch.sin(pitch * 0.5)
-
-    qw = cy * cr * cp + sy * sr * sp
-    qx = cy * sr * cp - sy * cr * sp
-    qy = cy * cr * sp + sy * sr * cp
-    qz = sy * cr * cp - cy * sr * sp
-
-    return torch.stack([qx, qy, qz, qw], dim=-1)
 
 class CameraSensor(BaseSensor):
-    def __init__(
-        self, num_envs, config, terrain, device="cuda:0",
-    ):
-        super().__init__(num_envs, config, terrain, device)
+    """Warp ray-cast camera used by the depth observation pipeline."""
+
+    def __init__(self, num_envs, config, terrain, device="cuda:0"):
+        if config.segmentation_camera:
+            raise NotImplementedError("Warp segmentation rendering is not implemented.")
+        if config.return_pointcloud and config.dynamic_meshes:
+            raise NotImplementedError("Dynamic robot meshes are not implemented for point-cloud rendering.")
+
         self.cfg = config
-        self.num_envs = num_envs
-        self.num_sensors = self.cfg.num_sensors
-        all_camera_names = list(self.cfg.base_link_frame.keys())
-        self.camera_names = []
-        for i in range(self.num_sensors):
-            self.camera_names.append(all_camera_names[i])
+        self.num_sensors = int(config.num_sensors)
+        self.camera_names = list(config.base_link_frame)
+        if len(self.camera_names) != self.num_sensors:
+            raise ValueError(
+                f"num_sensors={self.num_sensors}, but base_link_frame defines {len(self.camera_names)} cameras."
+            )
+        missing_offsets = set(self.camera_names) - set(config.offset)
+        if missing_offsets:
+            raise ValueError(f"Missing camera offsets for: {sorted(missing_offsets)}.")
 
-        self.width = self.cfg.width
-        self.height = self.cfg.height
-
-        self.horizontal_fov = math.radians(self.cfg.horizontal_fov_deg)
-        self.far_plane = self.cfg.max_range
-        self.calculate_depth = self.cfg.calculate_depth
-        self.device = device
-
-        self.camera_position_array = None
-        self.camera_orientation_array = None
+        super().__init__(num_envs, config, terrain, device)
+        self.width = int(config.width)
+        self.height = int(config.height)
+        self.horizontal_fov = math.radians(config.horizontal_fov_deg)
+        self.far_plane = float(config.max_range)
+        self.calculate_depth = bool(config.calculate_depth)
         self.graph = None
 
-        # Initialize camera matrices
-        self.initialize_camera_matrices()
-        # Initialize camera tensors
-        self.create_warp_camera_tensors()
+        self._initialize_camera_matrix()
+        self._create_camera_tensors()
 
-    def initialize_camera_matrices(self):
-        # Calculate camera params
-        W = self.width
-        H = self.height
-        (u_0, v_0) = (W / 2, H / 2)
-        f = W / 2 * 1 / math.tan(self.horizontal_fov / 2)
+    def _initialize_camera_matrix(self) -> None:
+        center_x = self.width / 2
+        center_y = self.height / 2
+        focal_length = center_x / math.tan(self.horizontal_fov / 2)
+        vertical_fov = 2 * math.atan(self.height / (2 * focal_length))
+        focal_x = center_x / math.tan(self.horizontal_fov / 2)
+        focal_y = center_y / math.tan(vertical_fov / 2)
 
-        vertical_fov = 2 * math.atan(H / (2 * f))
-        alpha_u = u_0 / math.tan(self.horizontal_fov / 2)
-        alpha_v = v_0 / math.tan(vertical_fov / 2)
-
-        # simple pinhole model
-        self.K = wp.mat44(
-            alpha_u,
+        intrinsics = wp.mat44(
+            focal_x,
             0.0,
-            u_0,
+            center_x,
             0.0,
             0.0,
-            alpha_v,
-            v_0,
+            focal_y,
+            center_y,
             0.0,
             0.0,
             0.0,
@@ -87,288 +65,172 @@ class CameraSensor(BaseSensor):
             0.0,
             1.0,
         )
-        self.K_inv = wp.inverse(self.K)
+        self.intrinsics_inverse = wp.inverse(intrinsics)
+        self.center_x = int(center_x)
+        self.center_y = int(center_y)
 
-        self.c_x = int(u_0)
-        self.c_y = int(v_0)
+    def _create_camera_tensors(self) -> None:
+        image_shape = (self.num_envs, self.num_sensors, self.height, self.width)
+        if self.cfg.return_pointcloud:
+            image_shape += (3,)
+        self.image_tensors = torch.zeros(image_shape, device=self.device, requires_grad=False)
 
-    def create_warp_camera_tensors(self):
-        """Create all camera-related tensors and attach them to the CameraSensor.
+        data_frame_rotation = torch.deg2rad(
+            torch.as_tensor(self.cfg.offset_rot_base, device=self.device, dtype=torch.float32)
+        )
+        data_frame_quat = quat_from_euler_xyz_tensor(data_frame_rotation)
+        self.camera_sensor_data_frame_quat = data_frame_quat.expand(self.num_envs, self.num_sensors, -1)
 
-        Returns a dict with created tensors and base link indices.
-        """
-        # Create camera image/segmentation tensors
-        self.depth_tensors = torch.zeros(
-            (
-                self.num_envs,
-                self.num_sensors,
-                self.cfg.height,
-                self.cfg.width,
-            ),
-            device=self.device,
-            requires_grad=False,
-        )
-        self.segmentation_tensors = torch.zeros(
-            (
-                self.num_envs,
-                self.num_sensors,
-                self.cfg.height,
-                self.cfg.width,
-            ),
-            device=self.device,
-            requires_grad=False,
-        )
-        # Create camera sensor pose tensors
-        euler_sensor_frame_rot = self.cfg.offset_rot_base
-        sensor_frame_rot_rad = torch.deg2rad(
-            torch.tensor(euler_sensor_frame_rot, device=self.device, requires_grad=False)
-        )
-        sensor_quat = quat_from_euler_xyz_tensor(sensor_frame_rot_rad)
-        self.camera_sensor_data_frame_quat = sensor_quat.expand(self.num_envs, self.num_sensors, -1)
-        self.camera_sensor_local_position = torch.zeros(
-            (self.num_envs, self.num_sensors, 3),
-            device=self.device,
-            requires_grad=False,
-        )
-        self.camera_sensor_local_orientation = torch.zeros(
+        vector_shape = (self.num_envs, self.num_sensors, 3)
+        self.camera_sensor_translation = torch.zeros(vector_shape, device=self.device)
+        self.camera_sensor_rotation = torch.zeros(vector_shape, device=self.device)
+        for camera_index, camera_name in enumerate(self.camera_names):
+            self.camera_sensor_translation[:, camera_index] = torch.as_tensor(
+                self.cfg.offset[camera_name]["offset_pos"],
+                device=self.device,
+            )
+            self.camera_sensor_rotation[:, camera_index] = torch.as_tensor(
+                self.cfg.offset[camera_name]["offset_rot"],
+                device=self.device,
+            )
+
+        self.camera_sensor_local_position = torch.empty_like(self.camera_sensor_translation)
+        self.camera_sensor_local_orientation = torch.empty(
             (self.num_envs, self.num_sensors, 4),
             device=self.device,
-            requires_grad=False,
         )
-        self.camera_sensor_local_orientation[..., 3] = 1.0
-        # Define min and max translation and rotation
-        self.camera_sensor_translation = torch.zeros(
-            (self.num_envs, self.num_sensors, 3),
-            device=self.device,
-            requires_grad=False,
-        )
-        self.camera_sensor_rotation = torch.zeros(
-            (self.num_envs, self.num_sensors, 3),
-            device=self.device,
-            requires_grad=False,
-        )
-        for cam_id, cam_name in enumerate(self.camera_names):
-            camera_sensor_translation = self.cfg.offset[cam_name]['offset_pos']
-            camera_sensor_rotation = torch.tensor(
-                self.cfg.offset[cam_name]['offset_rot'], device=self.device, requires_grad=False
-            )
-            self.camera_sensor_translation[:, cam_id, :] = torch.tensor(camera_sensor_translation, device=self.device, requires_grad=False)
-            self.camera_sensor_rotation[:, cam_id, :] = torch.tensor(camera_sensor_rotation, device=self.device, requires_grad=False)
+        self._initialize_local_poses()
 
-        # Randomize placement of the sensor
-        if self.cfg.randomize_placement == True:
-            camera_sensor_min_translation = torch.zeros_like(self.camera_sensor_local_position)
-            camera_sensor_max_translation = torch.zeros_like(self.camera_sensor_local_position)
-            # rpy and xyz both have 3 dimensions anyways :D
-            camera_sensor_min_rotation = torch.zeros_like(self.camera_sensor_local_position)
-            camera_sensor_max_rotation = torch.zeros_like(self.camera_sensor_local_position)
+        self.camera_sensor_position = torch.zeros_like(self.camera_sensor_local_position)
+        self.camera_sensor_orientation = torch.zeros_like(self.camera_sensor_local_orientation)
+        self.camera_sensor_orientation[..., 3] = 1.0
+        self.set_pose_tensor(self.camera_sensor_position, self.camera_sensor_orientation)
+        self.set_image_tensor(self.image_tensors)
 
-            for cam_id, cam_name in enumerate(self.camera_names):
-                camera_sensor_min_translation[:, cam_id, :] = torch.tensor(
-                    self.cfg.min_translation[cam_name], device=self.device, requires_grad=False
-                ) + self.camera_sensor_translation[:, cam_id, :]
-                camera_sensor_max_translation[:, cam_id, :] = torch.tensor(
-                    self.cfg.max_translation[cam_name], device=self.device, requires_grad=False
-                ) + self.camera_sensor_translation[:, cam_id, :]
-                camera_sensor_min_rotation[:, cam_id, :] = torch.deg2rad(
-                    torch.tensor(
-                        self.cfg.min_euler_rotation_deg[cam_name], device=self.device, requires_grad=False
-                    ) + self.camera_sensor_rotation[:, cam_id, :]
+    def _initialize_local_poses(self) -> None:
+        if self.cfg.randomize_placement:
+            min_translation = torch.empty_like(self.camera_sensor_translation)
+            max_translation = torch.empty_like(self.camera_sensor_translation)
+            min_rotation = torch.empty_like(self.camera_sensor_rotation)
+            max_rotation = torch.empty_like(self.camera_sensor_rotation)
+            for camera_index, camera_name in enumerate(self.camera_names):
+                min_translation[:, camera_index] = torch.as_tensor(
+                    self.cfg.min_translation[camera_name],
+                    device=self.device,
                 )
-                camera_sensor_max_rotation[:, cam_id, :] = torch.deg2rad(
-                    torch.tensor(
-                        self.cfg.max_euler_rotation_deg[cam_name], device=self.device, requires_grad=False
-                    ) + self.camera_sensor_rotation[:, cam_id, :]
+                max_translation[:, camera_index] = torch.as_tensor(
+                    self.cfg.max_translation[camera_name],
+                    device=self.device,
                 )
-            # sample local position from min and max translations
+                min_rotation[:, camera_index] = torch.as_tensor(
+                    self.cfg.min_euler_rotation_deg[camera_name],
+                    device=self.device,
+                )
+                max_rotation[:, camera_index] = torch.as_tensor(
+                    self.cfg.max_euler_rotation_deg[camera_name],
+                    device=self.device,
+                )
+
             self.camera_sensor_local_position[:] = torch_rand_float_tensor(
-                camera_sensor_min_translation[:],
-                camera_sensor_max_translation[:],
+                min_translation + self.camera_sensor_translation,
+                max_translation + self.camera_sensor_translation,
             )
-            # sample local orientation from min and max rotations
-            local_euler_rotation = torch_rand_float_tensor(
-                camera_sensor_min_rotation[:], camera_sensor_max_rotation[:]
-            )
-            self.camera_sensor_local_orientation[:] = quat_from_euler_xyz(
-                local_euler_rotation[..., 0],
-                local_euler_rotation[..., 1],
-                local_euler_rotation[..., 2],
+            local_euler_rotation = torch.deg2rad(
+                torch_rand_float_tensor(
+                    min_rotation + self.camera_sensor_rotation,
+                    max_rotation + self.camera_sensor_rotation,
+                )
             )
         else:
             self.camera_sensor_local_position[:] = self.camera_sensor_translation
-            camera_sensor_local_orientation = torch.deg2rad(self.camera_sensor_rotation)
-            self.camera_sensor_local_orientation[:] = quat_from_euler_xyz(
-                camera_sensor_local_orientation[..., 0],
-                camera_sensor_local_orientation[..., 1],
-                camera_sensor_local_orientation[..., 2],
-            )
+            local_euler_rotation = torch.deg2rad(self.camera_sensor_rotation)
 
-        # Initialize GLOBAL camera sensor position and orientation
-        self.camera_sensor_position = torch.zeros(
-            (self.num_envs, self.num_sensors, 3),
-            device=self.device,
-            requires_grad=False,
-        )
-        self.camera_sensor_orientation = torch.zeros(
-            (self.num_envs, self.num_sensors, 4),
-            device=self.device,
-            requires_grad=False,
-        )
-        self.camera_sensor_orientation[..., 3] = 1.0
-        self.set_pose_tensor(
-            positions=self.camera_sensor_position, orientations=self.camera_sensor_orientation
-        )
-        # The base simulator creates pixels with shape (num_envs, num_sensors, height, width)
-        # The warp kernel expects (num_envs, num_sensors, height, width) for depth mode
-        # So we can pass the tensor directly since num_sensors == num_sensors
-        self.set_image_tensors(
-            pixels=self.depth_tensors, segmentation_pixels=self.segmentation_tensors
-        )
-        # Set No Hit Value
-        self.no_hit = float(self.far_plane) + 1.0
+        self.camera_sensor_local_orientation[:] = quat_from_euler_xyz_tensor(local_euler_rotation)
 
-    def create_render_graph_pointcloud(self, debug=False):
+    def create_render_graph_pointcloud(self, debug: bool = False) -> None:
         if not debug:
-            print(f"creating render graph")
             wp.capture_begin(device=self.device)
-        # with wp.ScopedTimer("render"):
-        if self.cfg.segmentation_camera == True:
-            raise ValueError("Segmentation camera is not supported for pointcloud")
+        wp.launch(
+            kernel=DepthCameraWarpKernels.draw_optimized_kernel_pointcloud,
+            dim=(self.num_envs, self.num_sensors, self.width, self.height),
+            inputs=[
+                self.terrain_mesh_id,
+                self.camera_position_array,
+                self.camera_orientation_array,
+                self.intrinsics_inverse,
+                self.far_plane,
+                self.pixels,
+                self.cfg.pointcloud_in_world_frame,
+            ],
+            device=self.device,
+        )
+        if not debug:
+            self.graph = wp.capture_end(device=self.device)
+
+    def create_render_graph_depth_range(self, debug: bool = False) -> None:
+        if not debug:
+            wp.capture_begin(device=self.device)
+        if self.is_dyna_mesh:
+            wp.launch(
+                kernel=DepthCameraWarpKernels.draw_optimized_kernel_depth_range_dynamic,
+                dim=(self.num_envs, self.num_sensors, self.width, self.height),
+                inputs=[
+                    self.terrain_mesh_id,
+                    self.robot_mesh_ids,
+                    self.ray_cast_body_poses,
+                    self.ray_cast_body_quats,
+                    self.camera_position_array,
+                    self.camera_orientation_array,
+                    self.intrinsics_inverse,
+                    self.far_plane,
+                    self.pixels,
+                    self.center_x,
+                    self.center_y,
+                    self.calculate_depth,
+                    self.num_robot_bodies,
+                ],
+                device=self.device,
+            )
         else:
             wp.launch(
-                kernel=DepthCameraWarpKernels.draw_optimized_kernel_pointcloud,
+                kernel=DepthCameraWarpKernels.draw_optimized_kernel_depth_range,
                 dim=(self.num_envs, self.num_sensors, self.width, self.height),
                 inputs=[
                     self.terrain_mesh_id,
                     self.camera_position_array,
                     self.camera_orientation_array,
-                    self.K_inv,
+                    self.intrinsics_inverse,
                     self.far_plane,
                     self.pixels,
-                    self.c_x,
-                    self.c_y,
-                    self.pointcloud_in_world_frame,
+                    self.center_x,
+                    self.center_y,
+                    self.calculate_depth,
                 ],
                 device=self.device,
             )
         if not debug:
-            print(f"finishing capture of render graph")
             self.graph = wp.capture_end(device=self.device)
 
-    def create_render_graph_depth_range(self, debug=False):
-        if not debug:
-            print(f"creating render graph")
-            wp.capture_begin(device=self.device)
-        # with wp.ScopedTimer("render"):
-        if self.cfg.segmentation_camera == True:
-            raise ValueError("Segmentation camera is not supported for depth range")
-        else:
-            if not self.is_dyna_mesh:
-                wp.launch(
-                    kernel=DepthCameraWarpKernels.draw_optimized_kernel_depth_range,
-                    dim=(self.num_envs, self.num_sensors, self.width, self.height),
-                    inputs=[
-                        self.terrain_mesh_id,
-                        self.camera_position_array,
-                        self.camera_orientation_array,
-                        self.K_inv,
-                        self.far_plane,
-                        self.pixels,
-                        self.c_x,
-                        self.c_y,
-                        self.calculate_depth,
-                    ],
-                    device=self.device,
-                )
-            else:
-                # Dynamic mesh support
-                wp.launch(
-                    kernel=DepthCameraWarpKernels.draw_optimized_kernel_depth_range_dynamic,
-                    dim=(self.num_envs, self.num_sensors, self.width, self.height),
-                    inputs=[
-                        self.terrain_mesh_id,
-                        self.robot_mesh_ids,
-                        self.ray_cast_body_poses,
-                        self.ray_cast_body_quats,
-                        self.camera_position_array,
-                        self.camera_orientation_array,
-                        self.K_inv,
-                        self.far_plane,
-                        self.pixels,
-                        self.c_x,
-                        self.c_y,
-                        self.calculate_depth,
-                        self.num_robot_bodies,
-                    ],
-                    device=self.device,
-                )
-                # # 1) refill with no_hit
-                # wp.launch(
-                #     DepthCameraWarpKernels.memset_pixels4,
-                #     dim=(self.num_envs, self.num_sensors, self.width, self.height),
-                #     inputs=[self.pixels, self.no_hit],
-                #     device=self.device,
-                # )
+    def set_image_tensor(self, pixels: torch.Tensor) -> None:
+        warp_dtype = wp.vec3 if self.cfg.return_pointcloud else wp.float32
+        self.pixels = wp.from_torch(pixels, dtype=warp_dtype)
 
-                # # 2) single pass (4D)
-                # wp.launch(
-                #     DepthCameraWarpKernels.draw_optimized_kernel_depth_range_dynamic_singlepass_4d,
-                #     dim=(self.num_envs, self.num_sensors * (self.num_robot_bodies + 1), self.width, self.height),
-                #     inputs=[
-                #         self.terrain_mesh_id,
-                #         self.robot_mesh_ids,
-                #         self.ray_cast_body_poses,
-                #         self.ray_cast_body_quats,
-                #         self.camera_position_array,
-                #         self.camera_orientation_array,
-                #         self.K_inv,
-                #         self.far_plane,
-                #         self.pixels_flat,        # 1D view used by kernel for atomic_min
-                #         self.num_sensors,        # num_cams (only pass real camera count!)
-                #         self.width,
-                #         self.height,
-                #         self.c_x,
-                #         self.c_y,
-                #         self.calculate_depth,
-                #         self.no_hit,                  # same as memset
-                #     ],
-                #     device=self.device,
-                # )
-        if not debug:
-            print(f"finishing capture of render graph")
-            self.graph = wp.capture_end(device=self.device)
-
-    def set_image_tensors(self, pixels, segmentation_pixels=None):
-        # Convert to warp tensors for processing
-        if self.cfg.return_pointcloud:
-            self.pixels = wp.from_torch(pixels, dtype=wp.vec3)
-            self.pointcloud_in_world_frame = self.cfg.pointcloud_in_world_frame
-        else:
-            self.pixels = wp.from_torch(pixels, dtype=wp.float32)
-            self.pixels_flat = wp.from_torch(pixels.view(-1), dtype=wp.float32)
-        self.pixels_tensors = torch.zeros_like(pixels)
-        self.pixels_flat_tensors = torch.zeros_like(pixels.view(-1))
-
-        if self.cfg.segmentation_camera == True:
-            self.segmentation_pixels = wp.from_torch(segmentation_pixels, dtype=wp.int32)
-        else:
-            self.segmentation_pixels = segmentation_pixels
-
-    def set_pose_tensor(self, positions, orientations):
+    def set_pose_tensor(self, positions: torch.Tensor, orientations: torch.Tensor) -> None:
         self.camera_position_array = wp.from_torch(positions, dtype=wp.vec3)
         self.camera_orientation_array = wp.from_torch(orientations, dtype=wp.quat)
 
-    # @nvtx.annotate()
-    def capture(self, debug=False):
+    def capture(self, debug: bool = False) -> torch.Tensor:
+        if debug:
+            if self.cfg.return_pointcloud:
+                self.create_render_graph_pointcloud(debug=True)
+            else:
+                self.create_render_graph_depth_range(debug=True)
+            return self.image_tensors
+
         if self.graph is None:
             if self.cfg.return_pointcloud:
-                self.create_render_graph_pointcloud(debug=debug)
+                self.create_render_graph_pointcloud()
             else:
-                self.create_render_graph_depth_range(debug=debug)
-        if self.graph is not None:
-            wp.capture_launch(self.graph)
-
-        self.pixels_tensors = wp.to_torch(self.pixels)
-        # Apply noise
-        # self.apply_noise_vanilla()
-        return self.pixels_tensors
+                self.create_render_graph_depth_range()
+        wp.capture_launch(self.graph)
+        return self.image_tensors

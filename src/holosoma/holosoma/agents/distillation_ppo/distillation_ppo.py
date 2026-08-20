@@ -124,10 +124,10 @@ class DistillationPPO(BaseAlgo):
         self.current_learning_iteration = 0
         self.eval_callbacks: list[RLEvalCallback] = []
 
-        # Number of frozen teacher MLPs to build in ``_build_policy``. Set by
-        # ``train_agent.py`` from the comma count in ``training.teacher_checkpoint``
-        # before ``setup()``; defaults to 1. ``teacher_obs`` must carry the
-        # routing motion_idx in its leading column when this is > 1.
+        # Number of frozen teacher MLPs to build in ``_build_policy``. Resolved
+        # by ``train_agent.py`` before ``setup()``; defaults to 1. Applications
+        # using multiple teachers must override the policy's ``teacher_act`` to
+        # supply a per-sample teacher index.
         self.num_teachers: int = 1
 
         # PPO/DAgger schedule state -- filled in by adjust_ppo_dagger_coeff.
@@ -172,9 +172,7 @@ class DistillationPPO(BaseAlgo):
             if grp not in obs_dims:
                 raise KeyError(f"DistillationPPO expects observation group {grp!r} to be present.")
         if DEPTH_GROUP not in obs_dims:
-            raise KeyError(
-                f"DistillationPPO expects observation group {DEPTH_GROUP!r} to be present for depth input."
-            )
+            raise KeyError(f"DistillationPPO expects observation group {DEPTH_GROUP!r} to be present for depth input.")
 
         actor_dim = obs_dims[ACTOR_GROUP]
         teacher_dim = obs_dims[TEACHER_GROUP]
@@ -197,9 +195,7 @@ class DistillationPPO(BaseAlgo):
             # for a genuine image shape we need to sample the tensor.
             depth_tensor = self.env.observation_manager.compute_group(DEPTH_GROUP, modify_history=False)
             if not isinstance(depth_tensor, dict):
-                raise TypeError(
-                    f"expected compute_group({DEPTH_GROUP!r}) to return a dict when concatenate=False."
-                )
+                raise TypeError(f"expected compute_group({DEPTH_GROUP!r}) to return a dict when concatenate=False.")
             depth_shape = tuple(depth_tensor[DEPTH_TERM].shape[1:])
         elif isinstance(depth_entry, int):
             # concatenate=True; dims are flat already but we treat it as (dim,).
@@ -226,6 +222,7 @@ class DistillationPPO(BaseAlgo):
             num_actions=self.num_act,
             module_config=self.config.module,
             device=self.device,
+            init_noise_std=self.config.init_noise_std,
             num_teachers=self.num_teachers,
         )
 
@@ -259,7 +256,9 @@ class DistillationPPO(BaseAlgo):
 
     # --------------------------------------------------------------- obs helpers
 
-    def _extract_groups(self, obs_dict: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _extract_groups(
+        self, obs_dict: dict[str, Any]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Pull (actor_obs, teacher_obs, critic_obs, depth_obs) out of a
         manager-produced obs dict. Handles both concat- and non-concat depth
         groups transparently."""
@@ -285,7 +284,7 @@ class DistillationPPO(BaseAlgo):
         # Teacher MLP always stays in eval; StudentTeacher enforces this at
         # init but a user-triggered .train() on the composite flips every
         # submodule, so restore it explicitly.
-        self.policy.teacher.eval()
+        self.policy.teachers.eval()
 
     def _eval_mode(self) -> None:
         self.policy.eval()
@@ -294,6 +293,7 @@ class DistillationPPO(BaseAlgo):
 
     def learn(self, num_learning_iterations: int | None = None) -> None:
         self._train_mode()
+        self.policy.require_loaded_teachers()
 
         obs_dict = self.env.reset_all()
         for k in obs_dict:
@@ -302,16 +302,17 @@ class DistillationPPO(BaseAlgo):
             elif isinstance(obs_dict[k], dict):
                 obs_dict[k] = {kk: vv.to(self.device) for kk, vv in obs_dict[k].items()}
 
-        total_iters = num_learning_iterations if num_learning_iterations is not None else self.config.num_learning_iterations
+        total_iters = (
+            num_learning_iterations if num_learning_iterations is not None else self.config.num_learning_iterations
+        )
         start_iter = self.current_learning_iteration
         stop_iter = start_iter + total_iters
 
         for it in range(start_iter, stop_iter):
             self.current_learning_iteration = it
-            # Warm-up window: step env with teacher action so the student sees
-            # expert trajectories before its own policy is competent. Counted
-            # from the start of *this* learn() call so resumes behave sensibly.
-            self._warmup_active = (it - start_iter) < self.config.distillation_warmup_steps
+            # Warm-up is an absolute initial-training window. A resumed run
+            # must not replay it from zero.
+            self._warmup_active = it < self.config.distillation_warmup_steps
 
             # Advance the DAgger -> PPO schedule and gate the std-param-group LR.
             self.adjust_ppo_dagger_coeff(it)
@@ -374,11 +375,9 @@ class DistillationPPO(BaseAlgo):
                 action_mean = self.policy.action_mean.detach()
                 action_sigma = self.policy.action_std.detach()
 
-                # During the distillation warmup window the env follows the
-                # teacher's action (expert trajectories). We still record the
-                # student's (actions, log_prob, mean, sigma) so PPO + DAgger
-                # updates train the student head; the only thing that changes
-                # is which policy the physics follows this step.
+                # During warmup the teacher drives the environment. Student
+                # distribution fields are still stored because the common
+                # rollout storage schema requires them; updates are DAgger-only.
                 step_actions = teacher_actions if self._warmup_active else actions
                 next_obs, rewards, dones, infos = self.env.step({"actions": step_actions})
                 for k in next_obs:
@@ -454,14 +453,15 @@ class DistillationPPO(BaseAlgo):
             advantage = delta + next_is_not_terminal * self.config.gamma * self.config.lam * advantage
             returns[step] = advantage + values[step]
         advantages = returns - values
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if self.is_multi_gpu:
+            advantages = self._normalize_advantages_multi_gpu(advantages)
+        else:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         return returns, advantages
 
     # ------------------------------------------------------------ training step
 
-    def _dagger_loss(
-        self, student_mean: torch.Tensor, teacher_actions: torch.Tensor
-    ) -> torch.Tensor:
+    def _dagger_loss(self, student_mean: torch.Tensor, teacher_actions: torch.Tensor) -> torch.Tensor:
         """Behaviour-cloning loss against the teacher's actions.
 
         Plain reduction over the whole batch. Override to drop samples — e.g.
@@ -504,12 +504,45 @@ class DistillationPPO(BaseAlgo):
         self.storage.clear()
         return loss_dict
 
+    def _dagger_only_update(
+        self,
+        actor_obs: torch.Tensor,
+        depth_obs: torch.Tensor,
+        teacher_actions: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        student_mean = self.policy.student(self.policy._student_input(actor_obs, depth_obs))
+        dagger_loss = self._dagger_loss(student_mean, teacher_actions)
+        total_loss = self.config.dagger_loss_coef * dagger_loss
+        self._optimizer_step(total_loss)
+        zero = dagger_loss.new_zeros(())
+        return {
+            "total_loss": total_loss.detach(),
+            "surrogate_loss": zero,
+            "value_loss": zero,
+            "behavior": dagger_loss.detach(),
+            "entropy_mean": zero,
+            "mean_kl": zero,
+        }
+
+    def _optimizer_step(self, loss: torch.Tensor) -> None:
+        """Apply one synchronized, clipped optimizer update."""
+        self.optimizer.zero_grad()
+        loss.backward()
+        if self.is_multi_gpu:
+            self._reduce_parameters()
+        nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
+        self.optimizer.step()
+        self.policy.project_action_std()
+
     def _update_step(self, mini_batch: DistillationMinibatch) -> dict[str, torch.Tensor]:
         actor_obs = mini_batch["actor_obs"]
         depth_obs = mini_batch["depth_obs"]
         critic_obs = mini_batch["critic_obs"]
         actions = mini_batch["actions"]
         teacher_actions = mini_batch["teacher_actions"]
+        if self._warmup_active:
+            return self._dagger_only_update(actor_obs, depth_obs, teacher_actions)
+
         target_values = mini_batch["values"]
         returns = mini_batch["returns"]
         advantages = mini_batch["advantages"]
@@ -530,11 +563,7 @@ class DistillationPPO(BaseAlgo):
         value = self.policy.evaluate({"critic_obs": critic_obs})
 
         # Adaptive LR update from approximate KL -- skipped during pure-DAgger phase.
-        if (
-            self.config.desired_kl is not None
-            and self.config.schedule == "adaptive"
-            and self.ppo_coef > 0.1
-        ):
+        if self.config.desired_kl is not None and self.config.schedule == "adaptive" and self.ppo_coef > 0.1:
             kl_mean = self._compute_kl_div(old_mu, old_sigma, mu, sigma)
             self._update_learning_rate(kl_mean)
         else:
@@ -549,9 +578,7 @@ class DistillationPPO(BaseAlgo):
         surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
         # Clipped value loss.
-        value_clipped = target_values + (value - target_values).clamp(
-            -self.config.clip_param, self.config.clip_param
-        )
+        value_clipped = target_values + (value - target_values).clamp(-self.config.clip_param, self.config.clip_param)
         value_losses = (value - returns).pow(2)
         value_losses_clipped = (value_clipped - returns).pow(2)
         value_loss = torch.max(value_losses, value_losses_clipped).mean()
@@ -566,22 +593,12 @@ class DistillationPPO(BaseAlgo):
         # keep training from iteration 0; only the PPO surrogate + entropy
         # term is gated by ppo_coef. The DAgger term is independently scaled
         # by (1 - ppo_coef).
-        ppo_loss = (
-            self.config.value_loss_coef * value_loss
-            + self.ppo_coef * (surrogate_loss - self.config.entropy_coef * entropy_mean)
+        ppo_loss = self.config.value_loss_coef * value_loss + self.ppo_coef * (
+            surrogate_loss - self.config.entropy_coef * entropy_mean
         )
         total_loss = ppo_loss + (1.0 - self.ppo_coef) * self.config.dagger_loss_coef * dagger_loss
 
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        # Average gradients across ranks so every rank's optimizer.step()
-        # applies the same update. Clip-grad-norm operates on the averaged
-        # gradients (matches holosoma PPO._update_algo_step at
-        # ppo.py:505-510 and far-tracking my_distillation.py:1057-1063).
-        if self.is_multi_gpu:
-            self._reduce_parameters()
-        nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
-        self.optimizer.step()
+        self._optimizer_step(total_loss)
 
         return {
             "total_loss": total_loss.detach(),
@@ -687,6 +704,24 @@ class DistillationPPO(BaseAlgo):
             torch.distributed.broadcast(p.data, src=0)
         logger.info(f"Synchronized DistillationPPO model weights across {self.gpu_world_size} GPUs")
 
+    def _normalize_advantages_multi_gpu(self, advantages: torch.Tensor) -> torch.Tensor:
+        stats_dtype = torch.float64 if advantages.dtype != torch.float64 else advantages.dtype
+        values = advantages.to(dtype=stats_dtype)
+        local_stats = torch.stack(
+            (
+                values.sum(),
+                values.square().sum(),
+                values.new_tensor(values.numel()),
+            )
+        )
+        torch.distributed.all_reduce(local_stats, op=torch.distributed.ReduceOp.SUM)
+
+        total, squared_total, count = local_stats
+        global_mean = total / count
+        global_variance = ((squared_total - total.square() / count) / (count - 1).clamp_min(1)).clamp_min(0.0)
+        global_std = global_variance.sqrt()
+        return (advantages - global_mean.to(advantages.dtype)) / (global_std.to(advantages.dtype) + 1e-8)
+
     # ------------------------------------------------------------------- logging
 
     def _post_epoch_logging(self, it: int, loss_dict: dict[str, float]) -> None:
@@ -713,6 +748,8 @@ class DistillationPPO(BaseAlgo):
             "iter": self.current_learning_iteration,
             "learning_rate": self.learning_rate,
             "ppo_coef": self.ppo_coef,
+            "num_teachers": self.policy.num_teachers,
+            "teacher_loaded": list(self.policy.loaded_teachers),
         }
         checkpoint_dict.update(self._checkpoint_metadata(iteration=self.current_learning_iteration))
         env_state = self._collect_env_state()
@@ -725,7 +762,15 @@ class DistillationPPO(BaseAlgo):
             return None
         logger.info(f"Loading DistillationPPO checkpoint from {path}")
         loaded = torch.load(path, map_location=self.device)
-        self.policy.load_state_dict(loaded["model_state_dict"])
+        self.policy.load_training_state_dict(loaded["model_state_dict"])
+        teacher_loaded = loaded.get("teacher_loaded")
+        if teacher_loaded is None:
+            logger.warning(
+                "Checkpoint predates teacher-readiness metadata. Teacher weights remain "
+                "unverified; provide training.teacher_checkpoint before continuing training."
+            )
+            teacher_loaded = [False] * self.policy.num_teachers
+        self.policy.set_loaded_teachers(teacher_loaded)
         if "optimizer_state_dict" in loaded:
             try:
                 self.optimizer.load_state_dict(loaded["optimizer_state_dict"])
@@ -736,11 +781,10 @@ class DistillationPPO(BaseAlgo):
             self.learning_rate = float(loaded["learning_rate"])
         if "ppo_coef" in loaded:
             self.ppo_coef = float(loaded["ppo_coef"])
+        self.policy.project_action_std()
         self._restore_env_state(loaded.get("env_state"))
-        # Teacher weights inside policy.state_dict are assumed to already match
-        # a previously-loaded teacher; re-freeze defensively.
-        self.policy.teacher.eval()
-        for p in self.policy.teacher.parameters():
+        self.policy.teachers.eval()
+        for p in self.policy.teachers.parameters():
             p.requires_grad_(False)
         return loaded.get("infos")
 

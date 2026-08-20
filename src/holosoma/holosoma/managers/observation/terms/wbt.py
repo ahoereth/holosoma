@@ -148,9 +148,7 @@ def robot_anchor_projected_gravity(env: WholeBodyTrackingManager) -> torch.Tenso
         Tensor of shape [num_envs, 3].
     """
     motion_command = _get_motion_command_and_assert_type(env)
-    return quat_rotate_inverse(
-        motion_command.robot_ref_quat_w, gravity_vector(env), w_last=True
-    ).view(env.num_envs, -1)
+    return quat_rotate_inverse(motion_command.robot_ref_quat_w, gravity_vector(env), w_last=True).view(env.num_envs, -1)
 
 
 def motion_ref_pos_b(env: WholeBodyTrackingManager) -> torch.Tensor:

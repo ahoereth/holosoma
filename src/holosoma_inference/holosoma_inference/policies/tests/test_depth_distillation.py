@@ -76,7 +76,12 @@ class _Spec:
     shape: list
 
 
-def _make_policy(**task_overrides):
+def _make_policy(
+    *,
+    action_scale: str = "1.0",
+    model_dof_names: list[str] | None = None,
+    **task_overrides,
+):
     """Build a DepthDistillationPolicy with stubbed ONNX sessions and hardware."""
     config = INFERENCE_REGISTRY["g1-wbt-distillation"]
     task = dataclasses.replace(
@@ -96,7 +101,7 @@ def _make_policy(**task_overrides):
 
     # Metadata mirrors the real export: gains under joint_stiffness/joint_damping,
     # joint_names in the robot's own order (so reordering is a no-op here).
-    dof_names = ",".join(config.robot.dof_names)
+    dof_names = ",".join(model_dof_names or config.robot.dof_names)
 
     class _FakeOnnxModel:
         metadata_props = [
@@ -107,7 +112,7 @@ def _make_policy(**task_overrides):
         model = _FakeOnnxModel()
         model.metadata_props = [
             type("P", (), {"key": "joint_names", "value": dof_names})(),
-            type("P", (), {"key": "action_scale", "value": "1.0"})(),
+            type("P", (), {"key": "action_scale", "value": action_scale})(),
         ]
         return model
 
@@ -185,6 +190,30 @@ def test_model_paths_collapse_to_single_switchable_slot():
     policy = _make_policy()
     assert len(policy.model_paths) == 1
     assert len(policy._policy_states) == 1
+
+
+def test_vector_action_scale_is_reordered_to_robot_joint_order():
+    config = INFERENCE_REGISTRY["g1-wbt-distillation"]
+    model_dof_names = list(reversed(config.robot.dof_names))
+    model_scale = np.arange(1, NUM_DOFS + 1, dtype=np.float32)
+
+    policy = _make_policy(
+        action_scale=str(model_scale.tolist()),
+        model_dof_names=model_dof_names,
+    )
+
+    np.testing.assert_array_equal(policy.policy_action_scale, model_scale[::-1])
+
+
+def test_vector_action_scale_requires_one_value_per_joint():
+    with pytest.raises(ValueError, match=f"must be scalar or have {NUM_DOFS} entries"):
+        _make_policy(action_scale="[0.1, 0.2]")
+
+
+def test_scalar_action_scale_remains_supported():
+    policy = _make_policy(action_scale="0.25")
+
+    assert policy.policy_action_scale == pytest.approx(0.25)
 
 
 @pytest.mark.parametrize(

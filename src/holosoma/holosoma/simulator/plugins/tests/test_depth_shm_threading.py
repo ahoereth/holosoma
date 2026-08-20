@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import threading
 import time
+from multiprocessing import shared_memory
+from uuid import uuid4
 
 import numpy as np
 import pytest
@@ -30,6 +32,37 @@ pytestmark = pytest.mark.no_sim
 CAM = "front_depth"
 SHM_NAME = "depth_img_shm_test_threading"
 RENDER_H, RENDER_W = 60, 106
+
+
+class _FakeSharedMemory:
+    blocks: dict[str, bytearray] = {}
+
+    def __init__(self, *, name: str, create: bool = False, size: int = 0) -> None:
+        if create:
+            if name in self.blocks:
+                raise FileExistsError(name)
+            self.blocks[name] = bytearray(size)
+        elif name not in self.blocks:
+            raise FileNotFoundError(name)
+        self.name = name
+        self.buf = self.blocks[name]
+        self.size = len(self.buf)
+
+    def close(self) -> None:
+        pass
+
+    def unlink(self) -> None:
+        if self.name not in self.blocks:
+            raise FileNotFoundError(self.name)
+        del self.blocks[self.name]
+
+
+@pytest.fixture(autouse=True)
+def fake_shared_memory(monkeypatch: pytest.MonkeyPatch):
+    _FakeSharedMemory.blocks.clear()
+    monkeypatch.setattr(shared_memory, "SharedMemory", _FakeSharedMemory)
+    yield
+    _FakeSharedMemory.blocks.clear()
 
 
 def _camera_config() -> CameraSensorConfig:
@@ -195,3 +228,18 @@ def test_render_hz_must_be_positive() -> None:
     """A zero/negative rate would divide by zero in the loop period."""
     with pytest.raises(ValueError, match="render_hz must be > 0"):
         _config(render_hz=0.0)
+
+
+def test_producer_rejects_existing_block_with_different_shape() -> None:
+    name = f"depth_img_shm_test_{uuid4().hex}"
+    expected_bytes = 58 * 87 * np.dtype(np.float32).itemsize
+    stale = shared_memory.SharedMemory(name=name, create=True, size=expected_bytes + 4)
+    plugin = DepthShmPlugin(_config(shm_name=name), _FakeSimulator())
+
+    try:
+        with pytest.raises(ValueError, match=f"is {expected_bytes + 4} bytes"):
+            plugin.start()
+    finally:
+        plugin.stop()
+        stale.close()
+        stale.unlink()
