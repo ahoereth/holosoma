@@ -184,3 +184,27 @@ def test_motion_command_soft_resets_after_consuming_source_boundary() -> None:
     simulator.clear_contact_forces_history.assert_called_once_with(ended_env_ids)
     simulator.refresh_sim_tensors.assert_called_once_with()
     observation_manager.reset.assert_called_once_with(ended_env_ids)
+
+
+def test_reference_height_buffer_survives_inference_rollout_then_normal_reset() -> None:
+    command = cast("Any", MotionCommand.__new__(MotionCommand))
+    command.time_steps = torch.tensor([0, 1])
+    command._root_body_index_in_motion = 0
+    command.motion = SimpleNamespace(
+        _body_pos_w=torch.tensor(
+            [
+                [[0.0, 0.0, 0.2]],
+                [[0.0, 0.0, 0.4]],
+            ]
+        )
+    )
+    command.running_ref_root_height = torch.tensor([1.0, 1.0])
+
+    with torch.inference_mode():
+        command._update_running_ref_root_height()
+
+    assert not torch.is_inference(command.running_ref_root_height)
+    torch.testing.assert_close(command.running_ref_root_height, torch.tensor([0.92, 0.94]))
+
+    command.running_ref_root_height[torch.tensor([0])] = 0.5
+    torch.testing.assert_close(command.running_ref_root_height, torch.tensor([0.5, 0.94]))

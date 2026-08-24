@@ -1659,6 +1659,10 @@ class MotionCommand(CommandTermBase):
         sim.refresh_sim_tensors()
         self._env.observation_manager.reset(ended_env_ids)
 
+    def _update_running_ref_root_height(self) -> None:
+        ref_root_z_now = self.motion._body_pos_w[self.time_steps, self._root_body_index_in_motion, 2]
+        self.running_ref_root_height.lerp_(ref_root_z_now, 0.1)
+
     def step(self) -> None:
         """called in _update_tasks_callback of the environment. (after compute_reward, before compute_observations)"""
         # 0. update time steps, all motion joint/body poses are updated automatically with the time steps.
@@ -1677,10 +1681,7 @@ class MotionCommand(CommandTermBase):
         # it, preserve BeyondMimic's fixed-length episodes by resampling in place.
         self._advance_or_resample_motions(advance_mask)
 
-        ema_alpha_root = 0.1
-        ref_root_z_now = self.motion._body_pos_w[self.time_steps, self._root_body_index_in_motion, 2]
-        prev_running = self.running_ref_root_height
-        self.running_ref_root_height = ema_alpha_root * ref_root_z_now + (1.0 - ema_alpha_root) * prev_running
+        self._update_running_ref_root_height()
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
         # If I take this motion data and adapt it to where my robot currently is
