@@ -453,6 +453,9 @@ class DistillationPPOConfig:
     weight_decay: float = 0.0
     """Weight decay for the student/critic AdamW param groups."""
 
+    depth_weight_decay: float = 1e-2
+    """Weight decay for the depth-backbone AdamW parameter group."""
+
     eval_callbacks: Any = None
     """Evaluation callbacks configuration."""
 

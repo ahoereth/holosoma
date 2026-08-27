@@ -7,10 +7,11 @@ can be dispatched via ``tyro_config.algo._target_``.
 
 The training loop walks a schedule that interpolates between pure DAgger (PPO
 coefficient 0) and nearly-pure PPO (coefficient plateau at 0.9). Under the
-hood we build a single :class:`torch.optim.AdamW` with three parameter groups
-so the ``std`` group's learning rate can be zeroed while the DAgger phase is
-active -- this prevents the action-noise scale from drifting before PPO takes
-over.
+hood we build a single :class:`torch.optim.AdamW` with four parameter groups:
+student, critic, depth backbone, and action ``std``. This lets the depth encoder
+use its own regularization and lets the ``std`` learning rate be zeroed while
+the DAgger phase is active, preventing the action-noise scale from drifting
+before PPO takes over.
 """
 
 from __future__ import annotations
@@ -230,20 +231,31 @@ class DistillationPPO(BaseAlgo):
         )
 
     def _build_optimizer(self) -> None:
-        """AdamW with three parameter groups. The ``std`` group sits alone so
-        its LR can be toggled on/off while PPO warms up."""
-        student_params = list(self.policy.student.parameters()) + list(self.policy.depth_backbone.parameters())
+        """Build the student, critic, depth-backbone, and std AdamW groups.
+
+        The depth backbone is isolated so it can use the stronger regularization
+        from the far-tracking distillation recipe without also decaying the
+        student MLP. The ``std`` group remains separate so its learning rate can
+        be toggled while PPO warms up.
+        """
+        student_params = list(self.policy.student.parameters())
         critic_params = list(self.policy.critic.parameters())
+        depth_params = list(self.policy.depth_backbone.parameters())
 
         self.optimizer = torch.optim.AdamW(
             [
                 {"params": student_params, "lr": self.config.learning_rate, "weight_decay": self.config.weight_decay},
                 {"params": critic_params, "lr": self.config.learning_rate, "weight_decay": self.config.weight_decay},
+                {
+                    "params": depth_params,
+                    "lr": self.config.learning_rate,
+                    "weight_decay": self.config.depth_weight_decay,
+                },
                 {"params": [self.policy.std], "lr": self.config.learning_rate, "weight_decay": 0.0},
             ]
         )
         # Indices are hardcoded; _set_std_lr / _update_learning_rate rely on them.
-        self._STD_GROUP_IDX = 2
+        self._STD_GROUP_IDX = 3
 
     def _build_storage(self) -> None:
         self.storage = RolloutStorageDistillation(
