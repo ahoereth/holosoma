@@ -111,9 +111,9 @@ class LocomotionPolicy(BasePolicy):
         # here would read 0 even when the operator is commanding a velocity.
         # The raw input reflects what is being commanded now.
         vc = self._last_vel_input
-        lin_vel_x = vc.lin_vel[0] if vc is not None else 0.0
-        lin_vel_y = vc.lin_vel[1] if vc is not None else 0.0
-        ang_vel_z = vc.ang_vel if vc is not None else 0.0
+        lin_vel_x = vc.lin_vel[0]
+        lin_vel_y = vc.lin_vel[1]
+        ang_vel_z = vc.ang_vel
         is_walking = self.stand_command[0, 0] == 1
 
         # Print with clear labels and units

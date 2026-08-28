@@ -266,8 +266,9 @@ class BasePolicy:
         self.ang_vel_command = np.array([[0.0]])
         # Latest raw velocity input from the provider (ungated by mode). Kept
         # separate from lin_vel_command so status prints reflect the operator's
-        # actual input rather than the mode-gated command.
-        self._last_vel_input: VelCmd | None = None
+        # actual input rather than the mode-gated command. Starts at zero — no
+        # input yet is the same commanded state as an explicit zero.
+        self._last_vel_input = VelCmd((0.0, 0.0), 0.0)
         self.stand_command = np.array([[0]])
         self.base_height_command = np.array([[self.desired_base_height]])
 
@@ -835,9 +836,6 @@ class BasePolicy:
     def _print_velocity_input(self):
         """Print the current raw velocity input (ungated by mode)."""
         vc = self._last_vel_input
-        if vc is None:
-            self.logger.info("Velocity input: (none received yet)")
-            return
         self.logger.info(
             f"Velocity input: x={vc.lin_vel[0]:+.2f} m/s, y={vc.lin_vel[1]:+.2f} m/s, yaw={vc.ang_vel:+.2f} rad/s"
         )
